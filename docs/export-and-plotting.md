@@ -1,8 +1,9 @@
 # Export & Plotting
 
-Plottter can export artwork in three vector formats: **SVG** (primary), **HPGL**
-(for vintage plotters), and **G-code** (for CNC-style machines with a pen mount).
-It can also plot directly to an AxiDraw via USB.
+Plottter can export artwork in four vector formats: **SVG** (primary), **HPGL**
+(for vintage plotters), **G-code** (for CNC-style machines with a pen mount), and
+**Mural** (for wall-mounted anchor-pin plotters). It can also plot directly to an
+AxiDraw via USB.
 
 ---
 
@@ -87,9 +88,24 @@ After optimization, a summary dialog shows:
 | Simplify Paths | RDP simplification only |
 | Merge Nearby Paths | Connect endpoints within threshold |
 | Clip to Canvas | Remove paths outside drawing area |
+| Weld Overlapping Paths | Remove duplicate overlapping segments — useful after merging layers |
 | Optimize All Layers | Full pipeline on every unlocked visible layer |
+| Apply Brush to Layer | Replace plain strokes with stippled, multi-stroke, or calligraphic effects |
 
 All optimization runs in a background thread and reports progress.
+
+### Bezier Curve Fitting
+
+Plottter includes a Potrace-style cubic Bezier curve fitting post-processor. When enabled
+on a generator (via the `smooth_curves` parameter on edge detection generators), raw jagged
+contours are replaced with smooth Bezier curves. The algorithm:
+
+1. Detects corners (angle change > 60deg)
+2. Fits cubic Bezier curves between corners using least-squares
+3. Recursively splits and re-fits if the error exceeds the tolerance
+
+This produces significantly smoother output that plots more cleanly, especially for edge
+detection and contour-based generators.
 
 ---
 
@@ -164,6 +180,40 @@ M5        ; spindle off
 | `draw_speed` | 1000 mm/min | Pen-down draw speed |
 | `pen_up_angle` | 0 | Servo angle for pen up (M3 S value) |
 | `pen_down_angle` | 90 | Servo angle for pen down |
+
+---
+
+## Mural Plotter Export
+
+Mural format is a plain-text command format for wall-mounted plotters that draw using two
+anchor pins and a gondola mechanism (similar to the Makelangelo or v-plotter designs).
+
+### Format details
+
+```
+d{total_distance}    # Distance header — total drawing distance in mm
+h{drawing_height}    # Height header — drawing area height in mm
+p0                   # Pen up
+{x} {y}              # Move to position
+p1                   # Pen down
+{x} {y}              # Draw to position(s)
+p0                   # Final pen up
+```
+
+### Coordinate system
+
+- Origin: top-left corner
+- Y increases downward
+- Drawing width is derived from `top_distance * 0.6`
+- Home position: center of the drawing area at y=350mm
+
+### Settings
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `top_distance` | 1025.0 mm | Distance between the two anchor pins at the top of the wall |
+
+**Best for:** Wall-mounted string plotters, v-plotters, gondola plotters.
 
 ---
 

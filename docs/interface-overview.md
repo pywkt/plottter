@@ -72,8 +72,9 @@ The **Mode Panel** selects the type of art generation:
 
 | Mode | Description |
 |------|-------------|
-| **Math Art** | Generate paths from parametric equations, polar curves, L-systems, flow fields, and tiling patterns |
-| **Image to Lines** | Convert a raster image to plotter paths via edge detection, hatching, stippling, or flow fields |
+| **Math Art** | Generate paths from parametric equations, polar curves, L-systems, flow fields, grids, text, and tiling patterns |
+| **Image to Lines** | Convert a raster image to plotter paths via edge detection, hatching, stippling, halftone, hedcut, or flow fields |
+| **3D Scene** | Create 3D wireframe objects with hidden line removal, shadows, and mesh import |
 | **Color Separation** | Separate an image by hue, luminance, or channel and assign each color to a separate layer |
 | **Mask Paint** | Paint regions on the canvas with a brush to create custom masks for per-region line art |
 
@@ -216,6 +217,8 @@ The status bar at the bottom of the window shows:
 | Simplify Paths | RDP simplification only |
 | Merge Nearby Paths | Connect nearby endpoints |
 | Clip to Canvas | Remove paths outside the margin boundary |
+| Weld Overlapping Paths | Remove duplicate overlapping segments |
+| Apply Brush to Layer | Apply stylized brush effects (stippled, multi-stroke, calligraphic) |
 | Plot with AxiDraw… | Send to AxiDraw plotter via USB |
 | Manage Plugins… | Load custom generator plugins |
 

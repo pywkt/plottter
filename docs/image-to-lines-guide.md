@@ -199,6 +199,193 @@ image features — like a topographic map of the image's tonal landscape.
 
 ---
 
+### XDoG (Extended Difference of Gaussians)
+
+**Algorithm:** XDoG
+
+An advanced edge detection method that produces stylized, illustration-like line art. XDoG extends the standard Difference of Gaussians with a sharpening step that creates crisp, ink-like strokes with controllable edge thickness.
+
+| Parameter | Description |
+|-----------|-------------|
+| `sigma` | Edge scale — controls how wide edges are detected (0.3–3.0, default 1.0) |
+| `k` | DoG ratio — ratio between the two Gaussian kernels (1.1–5.0, default 1.6) |
+| `phi` | Sharpness of the edge transition — higher values produce crisper edges (1–200, default 100) |
+| `epsilon` | Black-level offset — negative values reveal more edges (-0.5–0.5, default 0.01) |
+| `min_contour_length` | Minimum points to keep a contour (removes noise) |
+| `simplify_tolerance_mm` | RDP simplification tolerance |
+| `close_gaps_mm` | Maximum gap distance to bridge between endpoints |
+| `centerline` | Thin edge bands to single-pixel centerlines for cleaner line art |
+| `smooth_curves` | Fit cubic Bezier curves for smooth, plotter-friendly output |
+
+**Presets:**
+- **Pencil Sketch** — thin centerlines with merged fragments, mimics pencil drawing
+- **Woodcut** — bold, high-contrast edges with strong sharpening
+- **Soft Charcoal** — soft, diffuse edges with low sharpness
+
+**Best for:** Stylized portraits, illustrations, ink-drawing effects. More artistic than standard Canny edge detection.
+
+**Tips:**
+- Start with the **Pencil Sketch** preset and adjust `sigma` for edge thickness
+- Enable `centerline` for single-stroke line art (best for pen plotters)
+- Enable `smooth_curves` for Bezier output that plots more smoothly than raw contours
+- Lower `epsilon` to reveal more subtle edges; raise it to keep only the strongest
+
+---
+
+### FDoG (Coherent Line Drawing)
+
+**Algorithm:** FDoG
+
+Flow-guided Difference of Gaussians — produces coherent, flowing lines that follow the image's edge structure. Based on the Edge Tangent Flow (ETF) algorithm, which aligns edges along dominant orientations, creating a hand-drawn illustration style.
+
+| Parameter | Description |
+|-----------|-------------|
+| `sigma_c` | Line width scale for DoG Gaussians (0.5–3.0, default 1.0) |
+| `sigma_m` | ETF smoothing scale — controls flow smoothing width (0.5–6.0, default 3.0) |
+| `rho` | DoG ratio — higher values capture wider edge bands (1.1–5.0, default 3.0) |
+| `etf_iterations` | Edge Tangent Flow refinement passes — more passes = smoother flow (1–10, default 3) |
+| `fdog_iterations` | FDoG filter + threshold passes (1–5, default 1) |
+| `min_contour_length` | Minimum contour length to keep |
+| `simplify_tolerance_mm` | RDP simplification |
+| `close_gaps_mm` | Gap bridging threshold |
+| `smooth_iterations` | Chaikin smoothing passes for organic strokes |
+| `centerline` | Single-pixel centerline tracing |
+| `smooth_curves` | Bezier curve fitting |
+
+**Presets:**
+- **Coherent Lines** — balanced flow-aligned edges
+- **Fine Lines** — thin, detailed strokes with tighter Gaussians
+- **Bold Strokes** — wide, prominent edges with heavy ETF smoothing
+
+**Best for:** Portraits, figures, and images with strong directional features. Produces more natural, flowing lines than XDoG or Canny.
+
+**Tips:**
+- Increase `etf_iterations` (3–5) for smoother, more coherent line directions
+- Use `smooth_iterations = 1` for organic-feeling strokes
+- FDoG is slower than XDoG due to the ETF computation — start with small images to tune parameters
+
+---
+
+### Hedcut (Portrait Style)
+
+**Algorithm:** Hedcut
+
+Combines three techniques to create Wall Street Journal-style stipple portraits: **edge outlines** for structure, **midtone stipple dots** for tone, and **shadow hatching** for depth.
+
+**Tonal Zones:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `highlight_threshold` | Brightness above which pixels are highlights — no dots or hatching (128–255, default 200) |
+| `shadow_threshold` | Brightness below which pixels are shadows — hatching region (0–128, default 80) |
+
+**Edge Outlines:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `edge_method` | Edge detection algorithm: XDoG, FDoG, or Canny |
+| `edge_sigma` | Edge scale parameter (0.3–3.0) |
+| `edge_min_len` | Minimum contour length |
+| `edge_simplify_mm` | RDP tolerance for edge simplification |
+
+**Midtone Stipple:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `stipple_points` | Number of stipple dots (500–30,000, default 5,000) |
+| `stipple_iterations` | Lloyd relaxation iterations — more = more even distribution (5–50, default 20) |
+| `min_dot_size_mm` | Dot radius in bright areas (0.1–2.0, default 0.2) |
+| `max_dot_size_mm` | Dot radius in dark areas (0.2–4.0, default 0.8) |
+| `dot_size_gamma` | Tone curve for dot sizing (0.5–3.0, default 1.0) |
+| `dot_style` | Outline (single ring) or Filled (concentric rings for solid dots) |
+| `pen_width_mm` | Spacing for filled-dot concentric rings |
+
+**Shadow Hatching:**
+
+| Parameter | Description |
+|-----------|-------------|
+| `hatch_angle` | Direction of shadow hatching lines (0–180, default 45) |
+| `hatch_spacing_mm` | Line spacing (0.2–3.0, default 0.5) |
+| `cross_hatch_shadows` | Add perpendicular hatching in the deepest shadows |
+
+**Presets:**
+- **Classic WSJ** — standard hedcut with XDoG edges, 5,000 dots, 45deg hatching
+- **Dense Detail** — 15,000 dots with FDoG edges and cross-hatching
+- **Minimal** — 2,000 dots, sparse and fast to plot
+- **Bold Hedcut** — filled dots with wide size range and cross-hatching
+- **Fine Stipple** — 15,000 outline dots with narrow size range
+- **WSJ Portrait** — filled dots tuned for portraits with FDoG edges
+
+**Best for:** Portraits, faces, editorial illustrations. Produces the classic newspaper stipple-portrait look.
+
+**Tips:**
+- Use **Filled** dot style for bolder, more visible dots at larger sizes
+- Increase `stipple_points` to 10,000–15,000 for detailed portraits
+- Adjust `highlight_threshold` and `shadow_threshold` to control which areas get dots vs. hatching
+- Pre-process with `contrast +10` and `blur 1.0` for cleaner tonal zones
+
+---
+
+### Scanline Halftone
+
+**Algorithm:** Scanline Halftone
+
+Draws parallel scan lines across the image with line thickness varying based on local brightness. Dark areas get multiple closely-spaced parallel strokes (appearing thick), bright areas get a single thin line or nothing. Creates a classic line halftone / engraving-style effect.
+
+| Parameter | Description |
+|-----------|-------------|
+| `line_spacing_mm` | Vertical distance between scan lines (0.5–10.0, default 2.0) |
+| `angle_deg` | Rotation angle of scan lines — 0 is horizontal, 90 is vertical |
+| `max_thickness` | Maximum parallel offset lines per side in darkest areas (0–10, default 4) |
+| `pen_width_mm` | Spacing between parallel offset lines (0.1–1.0, default 0.3) |
+| `sample_interval_mm` | How often brightness is sampled along each line (0.5–5.0, default 1.0) |
+| `tone_gamma` | Tone curve — higher values emphasize dark areas (0.5–3.0, default 1.5) |
+| `skip_white` | Remove scan line segments in very bright areas (default on) |
+| `white_threshold` | Brightness above which lines are removed when skip_white is on |
+| `edge_sensitivity` | Reduce line thickness near detected edges — 0 disables, 1 full effect |
+
+**Presets:**
+- **Newspaper** — horizontal lines, moderate spacing, classic print look
+- **Engraving** — angled lines (15deg), tight spacing, high detail with edge preservation
+- **Bold Poster** — wide spacing, high contrast, dramatic thick/thin bands
+- **Fine Detail** — dense, subtle reproduction for detailed photos
+- **Cross Scan** — angled at 30deg; duplicate the layer at -30deg for a cross-hatch effect
+- **Vertical Blinds** — vertical lines for a distinctive look
+
+**Best for:** Portraits, photos, any image where you want a recognizable halftone/engraving style.
+
+**Tips:**
+- `max_thickness` controls the tonal range — higher = darker darks
+- Set `pen_width_mm` to match your actual pen width for accurate thickness
+- Enable `edge_sensitivity` (0.3–0.5) to sharpen detail around eyes, text, and object boundaries
+- For a cross-hatch halftone, create two layers at opposing angles (e.g. 30deg and -30deg)
+
+---
+
+### Circular Scribble
+
+**Algorithm:** Circular Scribble
+
+Generates tone-aware circular scribble marks across the image. Darker areas receive denser, tighter scribbles; lighter areas get fewer, larger ones. Based on the Pacific Graphics 2015 paper on Circular Scribble Art.
+
+| Parameter | Description |
+|-----------|-------------|
+| `seed` | Random seed for reproducibility |
+| `min_spacing_px` | Exclusion radius in dark areas — controls maximum density (1–50, default 2) |
+| `max_spacing_px` | Exclusion radius in bright areas — controls minimum density (5–100, default 20) |
+| `scribble_radius_mm` | Base radius of circular scribbles (0.5–20, default 3.0) |
+| `scribble_angle_variance` | Random angle variation per scribble in degrees (0–360, default 45) |
+| `brightness_influence` | How much image brightness affects scribble radius (0–1, default 0.5) |
+
+**Best for:** Artistic, hand-drawn-looking image reproductions. Produces a distinctive scribble texture.
+
+**Tips:**
+- Decrease `min_spacing_px` for denser coverage in dark areas
+- Increase `scribble_radius_mm` for more visible, expressive scribble marks
+- Use preprocessing blur (2–4) to smooth out noise before scribbling
+
+---
+
 ## After Generation
 
 After generating paths, the standard post-processing tools are available:
@@ -207,5 +394,7 @@ After generating paths, the standard post-processing tools are available:
 - **Tools › Simplify Paths** — reduce point count with RDP simplification
 - **Tools › Merge Nearby Paths** — join endpoints within a threshold distance
 - **Tools › Clip to Canvas** — remove paths outside the drawing margin
+- **Tools › Weld Overlapping Paths** — remove duplicate overlapping segments
+- **Tools › Apply Brush to Layer** — apply stippled, sketchy, or calligraphic brush effects
 
-See [Export & Plotting](export-and-plotting.md) to export as SVG, HPGL, or G-code.
+See [Export & Plotting](export-and-plotting.md) to export as SVG, HPGL, G-code, or Mural format.

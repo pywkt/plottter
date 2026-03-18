@@ -11,9 +11,14 @@ real paper.
 |------------|-----------------------|-----|
 | Photo / portrait | Stipple + TSP | Tonal gradients, single continuous line |
 | Photo / portrait | Hatching (parallel) | Classic engraving feel |
+| Photo / portrait | Hedcut | WSJ-style stipple portrait with hatched shadows |
+| Photo / portrait | Scanline Halftone | Newspaper/engraving-style line halftone |
 | Illustration / line art | Edge Detection | Preserves original outlines |
+| Illustration / line art | XDoG | Stylized, ink-like edges with adjustable thickness |
+| Illustration / line art | FDoG | Flow-aligned coherent lines, hand-drawn feel |
 | Landscape / topographic | Contour Lines | Maps tonal structure naturally |
 | Abstract / artistic | Flow Image (flow) | Organic, impressionistic curves |
+| Abstract / artistic | Circular Scribble | Tone-aware scribble texture |
 | Typography / text | Edge Detection | Clean, high-contrast input; threshold first |
 | Woodcut-style | Hatching (contour mode) | Lines follow image edges |
 
@@ -135,6 +140,30 @@ For plotters where you must remove and re-insert paper:
 - **Fountain pens** — beautiful line quality; use flow field or smooth curve generators
 - **Ballpoint** — lowest quality, but useful for very fast plotting
 - **Brush pens** — avoid for fine detail; great for calligraphic flow fields
+
+---
+
+## Using the Brush Post-Processing System
+
+The brush system replaces plain single-line strokes with stylized variants. It's available
+both as a Tools menu action (**Apply Brush to Layer**) and as a post-processing option
+on any generator.
+
+### Brush Types
+
+| Brush | Effect |
+|-------|--------|
+| **Stippled** | Replaces each line with a series of small dots along its path. Adjust spacing, dot size, and randomness. |
+| **Multi-Stroke** | Draws each line multiple times with slight offsets, creating a hand-drawn/sketchy appearance. |
+| **Calligraphic** | Simulates a flat-nib pen — line width varies based on stroke direction relative to the nib angle. |
+
+### Tips
+
+- Apply **Multi-Stroke** (stroke_count=3, spread=0.5mm) to flow fields for a hand-drawn illustration feel
+- **Calligraphic** brush works well on text and geometric generators — thick downstrokes, thin cross-strokes
+- **Stippled** brush converts any line art into a dotted texture — great for borders and decorative elements
+- The brush can be set per-generator in the Post-Processing section of the settings panel, so it
+  regenerates automatically with the effect applied
 
 ---
 
