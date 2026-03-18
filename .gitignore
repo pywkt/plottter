@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+.pytest_cache/
+
+# Dev loop infrastructure
+loop.sh
+loop_history.log
+Dockerfile
+docker-compose.yml
+docker-entrypoint.sh
+setup-mcp.sh
+screenshot.js
+screenshot-wrapper.sh
+PROMPT_*.md
+AGENTS.md
+AUTOMATION_LOCK
+IN_PROGRESS.md
+IMPLEMENTATION_PLAN.md
+IMPLEMENTATION_PLAN_ARCHIVE.md
+IMPLEMENTATION_LEARNINGS.md
+CLAUDE.md
+quality_review.py
+
+# Internal dev specs and resources
+specs/
+resources/
+scripts/
+
+# Claude Code / MCP config
+.claude/
+
+# Docker / container state
+.docker/
+
+# IDE caches
+.serena/
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "plottter"
+version = "0.1.0"
+description = "Desktop application for generating plotter-ready vector art"
+requires-python = ">=3.12"
+dependencies = [
+    "PyQt6>=6.6",
+    "numpy>=1.26",
+    "opencv-python>=4.9",
+    "Pillow>=10.2",
+    "shapely>=2.0",
+    "scipy>=1.12",
+    "svgwrite>=1.4",
+    "noise>=1.2",
+    "fontTools>=4.47",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-qt>=4.3",
+]
+ai = [
+    "replicate",
+]
+fmm = [
+    "scikit-fmm",
+]
+3d = [
+    "numba>=0.59",
+]
+
+[project.scripts]
+plottter = "plottter.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
