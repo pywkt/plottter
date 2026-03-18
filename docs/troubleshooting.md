@@ -254,7 +254,7 @@ High-resolution images (> 4000 × 4000 px) can use significant memory during pro
 
 If you encounter an issue not covered here:
 
-1. Check the [GitHub Issues page](https://github.com/your-org/plottter/issues) for known bugs
+1. Check the [GitHub Issues page](https://github.com/pywkt/plottter/issues) for known bugs
 2. Search for your error message — it may already have a resolution
 3. Open a new issue with:
    - Your operating system and Python version (`python --version`)

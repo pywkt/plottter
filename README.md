@@ -28,7 +28,7 @@ A free, open-source desktop application for generating pen-plotter-ready vector 
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/plottter.git
+git clone https://github.com/pywkt/plottter.git
 cd plottter
 
 python -m venv .venv

@@ -32,7 +32,7 @@ fails to start on a headless or minimal Linux installation.
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-org/plottter.git
+git clone https://github.com/pywkt/plottter.git
 cd plottter
 
 # 2. Create and activate a virtual environment
