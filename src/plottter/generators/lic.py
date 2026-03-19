@@ -1,10 +1,12 @@
 """LIC (Line Integral Convolution) generator — streamline-based flow visualisation.
 
 Provides:
-- ``_seed_grid()``        — generates a jittered regular grid of seed points
-                            covering the canvas.
+- ``_seed_grid()``         — generates a jittered regular grid of seed points
+                             covering the canvas.
 - ``_brightness_filter()`` — removes seeds in bright image regions using
                               bilinear brightness sampling.
+- ``_trace_streamline()``  — traces a single streamline from a seed point in
+                              both directions along a vector field.
 """
 
 from __future__ import annotations
@@ -144,6 +146,145 @@ def _brightness_filter(
             kept.append((x_mm, y_mm))
 
     return kept
+
+
+# ---------------------------------------------------------------------------
+# Streamline tracer
+# ---------------------------------------------------------------------------
+
+
+def _trace_streamline(
+    seed: tuple[float, float],
+    vector_field: np.ndarray,
+    canvas_w: float,
+    canvas_h: float,
+    kernel_length_mm: float,
+    step_size_mm: float,
+) -> list[tuple[float, float]]:
+    """Trace a single streamline from *seed* along *vector_field*.
+
+    Integrates in both forward (+v) and backward (−v) directions using
+    first-order Euler steps of length *step_size_mm*.  Each direction is
+    capped at half of *kernel_length_mm* of arc length.
+
+    Tracing stops early when any of the following conditions is met:
+
+    * the current position exits ``[0, canvas_w] × [0, canvas_h]``
+    * the bilinearly sampled vector magnitude falls below 0.01
+
+    Parameters
+    ----------
+    seed:
+        Starting point ``(x_mm, y_mm)`` in canvas millimetre coordinates.
+    vector_field:
+        NumPy array of shape ``(H, W, 2)`` containing unit direction vectors.
+        ``field[row, col, 0]`` is the *x* component and
+        ``field[row, col, 1]`` is the *y* component.  Matches the format
+        returned by ``_compute_etf()`` in ``_helpers.py``.
+    canvas_w, canvas_h:
+        Canvas dimensions in millimetres.
+    kernel_length_mm:
+        Maximum total arc length of the streamline.  Each direction is
+        traced for at most ``kernel_length_mm / 2`` mm.
+    step_size_mm:
+        Euler integration step size in millimetres.  Smaller values yield
+        smoother curves but are more expensive to compute.
+
+    Returns
+    -------
+    A single ``Polyline`` — a ``list[tuple[float, float]]`` of
+    ``(x_mm, y_mm)`` points.  The seed point is always included (index 0 of
+    the returned list after the backward segment is prepended).  If the seed
+    is outside canvas bounds or the vector field is zero at the seed, a
+    single-point polyline ``[seed]`` is returned.
+    """
+    step_size_mm = max(1e-4, float(step_size_mm))
+    half_len = float(kernel_length_mm) / 2.0
+    canvas_w = float(canvas_w)
+    canvas_h = float(canvas_h)
+
+    vf = np.asarray(vector_field, dtype=np.float32)
+    if vf.ndim != 3 or vf.shape[2] != 2:
+        raise ValueError(
+            f"vector_field must have shape (H, W, 2), got {vf.shape}"
+        )
+    vf_h, vf_w = vf.shape[:2]
+
+    def _in_bounds(x: float, y: float) -> bool:
+        return 0.0 <= x <= canvas_w and 0.0 <= y <= canvas_h
+
+    def _sample_vf(x: float, y: float) -> tuple[float, float]:
+        """Bilinearly sample *vector_field* at mm position (x, y)."""
+        # Map mm → fractional pixel coordinates
+        px = (x / canvas_w) * vf_w - 0.5
+        py = (y / canvas_h) * vf_h - 0.5
+
+        x0 = int(math.floor(px))
+        y0 = int(math.floor(py))
+        x1 = x0 + 1
+        y1 = y0 + 1
+
+        x0c = max(0, min(vf_w - 1, x0))
+        x1c = max(0, min(vf_w - 1, x1))
+        y0c = max(0, min(vf_h - 1, y0))
+        y1c = max(0, min(vf_h - 1, y1))
+
+        fx = px - x0
+        fy = py - y0
+
+        vx = (
+            float(vf[y0c, x0c, 0]) * (1 - fx) * (1 - fy)
+            + float(vf[y0c, x1c, 0]) * fx * (1 - fy)
+            + float(vf[y1c, x0c, 0]) * (1 - fx) * fy
+            + float(vf[y1c, x1c, 0]) * fx * fy
+        )
+        vy = (
+            float(vf[y0c, x0c, 1]) * (1 - fx) * (1 - fy)
+            + float(vf[y0c, x1c, 1]) * fx * (1 - fy)
+            + float(vf[y1c, x0c, 1]) * (1 - fx) * fy
+            + float(vf[y1c, x1c, 1]) * fx * fy
+        )
+        return vx, vy
+
+    def _trace_direction(
+        start_x: float, start_y: float, sign: float
+    ) -> list[tuple[float, float]]:
+        """Trace one direction; *sign* is +1 (forward) or −1 (backward)."""
+        pts: list[tuple[float, float]] = []
+        x, y = start_x, start_y
+        arc = 0.0
+
+        while arc < half_len:
+            vx, vy = _sample_vf(x, y)
+            mag = math.hypot(vx, vy)
+            if mag < 0.01:
+                break
+
+            # Normalise to unit step
+            nx_v = vx / mag
+            ny_v = vy / mag
+
+            x += sign * nx_v * step_size_mm
+            y += sign * ny_v * step_size_mm
+            arc += step_size_mm
+
+            if not _in_bounds(x, y):
+                break
+
+            pts.append((x, y))
+
+        return pts
+
+    sx, sy = float(seed[0]), float(seed[1])
+
+    if not _in_bounds(sx, sy):
+        return [(sx, sy)]
+
+    forward = _trace_direction(sx, sy, +1.0)
+    backward = _trace_direction(sx, sy, -1.0)
+
+    # Combine: reversed-backward + seed + forward
+    return list(reversed(backward)) + [(sx, sy)] + forward
 
 
 # ---------------------------------------------------------------------------
