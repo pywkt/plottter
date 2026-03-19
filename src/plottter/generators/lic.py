@@ -1,19 +1,24 @@
 """LIC (Line Integral Convolution) generator — streamline-based flow visualisation.
 
 Provides:
-- ``_seed_grid()``         — generates a jittered regular grid of seed points
-                             covering the canvas.
-- ``_brightness_filter()`` — removes seeds in bright image regions using
-                              bilinear brightness sampling.
-- ``_trace_streamline()``  — traces a single streamline from a seed point in
-                              both directions along a vector field.
+- ``_seed_grid()``            — generates a jittered regular grid of seed points
+                                covering the canvas.
+- ``_brightness_filter()``    — removes seeds in bright image regions using
+                                bilinear brightness sampling.
+- ``_trace_streamline()``     — traces a single streamline from a seed point in
+                                both directions along a vector field.
+- ``_filter_by_separation()`` — removes streamlines whose midpoints are too
+                                close to already-accepted streamlines, using a
+                                KD-tree for efficient proximity queries.
 """
 
 from __future__ import annotations
 
 import math
+from typing import Sequence
 
 import numpy as np
+from scipy.spatial import cKDTree
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +290,94 @@ def _trace_streamline(
 
     # Combine: reversed-backward + seed + forward
     return list(reversed(backward)) + [(sx, sy)] + forward
+
+
+# ---------------------------------------------------------------------------
+# Separation filter
+# ---------------------------------------------------------------------------
+
+
+def _filter_by_separation(
+    streamlines: Sequence[list[tuple[float, float]]],
+    brightnesses: Sequence[float],
+    separation_distance_mm: float,
+) -> list[list[tuple[float, float]]]:
+    """Remove streamlines that are too close to already-accepted streamlines.
+
+    Processes streamlines in brightness-priority order (darkest first) so that
+    when two streamlines compete for the same spatial region, the one in the
+    darker area is preferentially kept.  Proximity is measured between
+    streamline *midpoints* using a KD-tree for O(n log n) queries.
+
+    Parameters
+    ----------
+    streamlines:
+        Sequence of polylines, each a ``list[tuple[float, float]]`` of
+        ``(x_mm, y_mm)`` points as returned by :func:`_trace_streamline`.
+    brightnesses:
+        Sequence of float values in ``[0, 1]`` (0 = black, 1 = white), one
+        per streamline, representing the local image brightness at the seed
+        point.  Used to establish processing order: darker seeds (lower
+        brightness) are processed first and therefore win conflicts.
+    separation_distance_mm:
+        Minimum allowed distance (mm) between accepted streamline midpoints.
+        Any candidate whose midpoint is within this distance of an
+        already-accepted midpoint is discarded.
+
+    Returns
+    -------
+    Filtered list of polylines in their original order (not in processing
+    order).  Streamlines with fewer than one point are silently dropped.
+    """
+    if not streamlines:
+        return []
+
+    n = len(streamlines)
+    if n != len(brightnesses):
+        raise ValueError(
+            f"streamlines and brightnesses must have equal length, got {n} vs {len(brightnesses)}"
+        )
+
+    # Compute midpoint for each streamline
+    midpoints: list[tuple[float, float]] = []
+    for sl in streamlines:
+        if not sl:
+            midpoints.append((float("nan"), float("nan")))
+            continue
+        mid_idx = len(sl) // 2
+        midpoints.append(sl[mid_idx])
+
+    # Sort indices by brightness ascending (darkest first)
+    order = sorted(range(n), key=lambda i: float(brightnesses[i]))
+
+    accepted_midpoints: list[list[float]] = []  # list of [x, y] for KD-tree
+    accepted_indices: set[int] = set()
+
+    for i in order:
+        sl = streamlines[i]
+        if not sl:
+            continue  # skip empty streamlines
+
+        mx, my = midpoints[i]
+        if math.isnan(mx) or math.isnan(my):
+            continue
+
+        if not accepted_midpoints:
+            # First streamline is always accepted
+            accepted_midpoints.append([mx, my])
+            accepted_indices.add(i)
+            continue
+
+        # Query KD-tree for nearest accepted midpoint
+        tree = cKDTree(accepted_midpoints)
+        dist, _ = tree.query([mx, my], k=1)
+
+        if dist >= separation_distance_mm:
+            accepted_midpoints.append([mx, my])
+            accepted_indices.add(i)
+
+    # Return accepted streamlines in original order
+    return [streamlines[i] for i in range(n) if i in accepted_indices]
 
 
 # ---------------------------------------------------------------------------

@@ -18,7 +18,12 @@ import math
 import numpy as np
 import pytest
 
-from plottter.generators.lic import _brightness_filter, _seed_grid, _trace_streamline
+from plottter.generators.lic import (
+    _brightness_filter,
+    _filter_by_separation,
+    _seed_grid,
+    _trace_streamline,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -376,3 +381,84 @@ def test_streamline_zero_field_single_point():
 
     pts = _trace_streamline((50.0, 50.0), field, canvas_w, canvas_h, 20.0, 1.0)
     assert pts == [(50.0, 50.0)]
+
+
+# ---------------------------------------------------------------------------
+# Separation filter — 42.3
+# ---------------------------------------------------------------------------
+
+
+def _sl(midpoint: tuple[float, float]) -> list[tuple[float, float]]:
+    """Helper: construct a minimal streamline whose midpoint is at *midpoint*."""
+    # Three-point polyline; index 1 is the midpoint (len // 2 == 1).
+    x, y = midpoint
+    return [(x - 1.0, y), (x, y), (x + 1.0, y)]
+
+
+# (a) Two streamlines closer than separation_distance → one removed
+def test_separation_removes_close_streamline():
+    sl_a = _sl((10.0, 10.0))
+    sl_b = _sl((11.0, 10.0))  # 1 mm away — inside 5 mm separation
+    result = _filter_by_separation([sl_a, sl_b], [0.0, 0.0], separation_distance_mm=5.0)
+    assert len(result) == 1
+
+
+# (b) Two streamlines farther apart → both kept
+def test_separation_keeps_distant_streamlines():
+    sl_a = _sl((10.0, 10.0))
+    sl_b = _sl((20.0, 10.0))  # 10 mm away — outside 5 mm separation
+    result = _filter_by_separation([sl_a, sl_b], [0.0, 0.0], separation_distance_mm=5.0)
+    assert len(result) == 2
+
+
+# (c) Darkest-area streamline survives when there's a conflict
+def test_separation_darker_survives_conflict():
+    # Both midpoints at the same location → only one should survive.
+    # sl_dark has brightness 0.1 (darker), sl_light has brightness 0.9 (lighter).
+    # With darkest-first ordering, sl_dark is processed first and should be kept.
+    sl_dark = _sl((10.0, 10.0))
+    sl_light = _sl((10.5, 10.0))  # 0.5 mm — well within separation_distance
+    brightnesses = [0.9, 0.1]  # sl_dark is index 0 with brightness 0.9? No —
+    # brightnesses[0]=0.9 belongs to sl_dark and brightnesses[1]=0.1 to sl_light.
+    # Darkest (lowest brightness) first → sl_light (0.1) is processed first.
+    # But we want the "darker area" streamline to survive, i.e. the one with
+    # LOWER brightness value. Let's set up so sl_dark clearly wins:
+    sl_dark = _sl((10.0, 10.0))    # brightness 0.1 → processed first (darker)
+    sl_light = _sl((10.5, 10.0))   # brightness 0.9 → processed second (lighter)
+    brightnesses = [0.1, 0.9]
+
+    result = _filter_by_separation([sl_dark, sl_light], brightnesses, separation_distance_mm=5.0)
+
+    assert len(result) == 1
+    # The survivor must be sl_dark (the darker one)
+    assert result[0] is sl_dark
+
+
+# (d) Empty input returns empty output
+def test_separation_empty_input():
+    result = _filter_by_separation([], [], separation_distance_mm=5.0)
+    assert result == []
+
+
+# Additional: single streamline is always kept
+def test_separation_single_streamline_always_kept():
+    sl = _sl((50.0, 50.0))
+    result = _filter_by_separation([sl], [0.5], separation_distance_mm=10.0)
+    assert result == [sl]
+
+
+# Additional: three streamlines, two close together and one far away
+def test_separation_three_streamlines_mixed():
+    sl_a = _sl((0.0, 0.0))    # far from others
+    sl_b = _sl((50.0, 0.0))   # far from sl_a, close to sl_c
+    sl_c = _sl((51.0, 0.0))   # 1 mm from sl_b — within separation
+    brightnesses = [0.5, 0.2, 0.8]  # sl_b is darkest
+    result = _filter_by_separation(
+        [sl_a, sl_b, sl_c], brightnesses, separation_distance_mm=5.0
+    )
+    # sl_b (darkest) is processed first → kept; sl_c is too close to sl_b → removed
+    # sl_a is far from both → kept
+    assert len(result) == 2
+    assert sl_a in result
+    assert sl_b in result
+    assert sl_c not in result
