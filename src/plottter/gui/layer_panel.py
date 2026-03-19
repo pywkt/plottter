@@ -140,6 +140,33 @@ class _LayerItem(QWidget):
         self._opacity_label.setText(f"{value}%")
         self._controller.set_layer_opacity(self.layer_id, value / 100.0)
 
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        """Forward click to the QListWidget so Ctrl/Shift+Click multi-select works.
+
+        Without this, the item widget eats mouse events and the QListWidget
+        never sees them, making ExtendedSelection non-functional.
+        """
+        list_widget = self.parent()
+        # Walk up to find the QListWidget (parent chain: _LayerItem → viewport → QListWidget)
+        while list_widget is not None and not isinstance(list_widget, QListWidget):
+            list_widget = list_widget.parent()
+        if isinstance(list_widget, QListWidget):
+            # Find our QListWidgetItem
+            for i in range(list_widget.count()):
+                item = list_widget.item(i)
+                if list_widget.itemWidget(item) is self:
+                    # Map click position to list widget coordinates
+                    pos_in_list = self.mapTo(list_widget.viewport(), event.pos())
+                    from PyQt6.QtCore import QPointF
+                    from PyQt6.QtGui import QMouseEvent
+                    forwarded = QMouseEvent(
+                        event.type(), QPointF(pos_in_list), event.globalPosition(),
+                        event.button(), event.buttons(), event.modifiers(),
+                    )
+                    list_widget.mousePressEvent(forwarded)
+                    return
+        super().mousePressEvent(event)
+
     def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
         self._enter_edit_mode()
         super().mouseDoubleClickEvent(event)
@@ -148,6 +175,23 @@ class _LayerItem(QWidget):
         if obj is self._name_edit:
             if event.type() == QEvent.Type.MouseButtonDblClick:
                 self._enter_edit_mode()
+                return True
+            elif event.type() == QEvent.Type.MouseButtonPress:
+                # Forward single clicks on the name field to the list for selection.
+                # Remap the position from the QLineEdit's local coords to ours
+                # so mousePressEvent's mapTo(viewport) is correct.
+                from PyQt6.QtCore import QPointF
+                from PyQt6.QtGui import QMouseEvent
+                local_pos = obj.mapTo(self, event.pos())
+                remapped = QMouseEvent(
+                    event.type(),
+                    QPointF(local_pos),
+                    event.globalPosition(),
+                    event.button(),
+                    event.buttons(),
+                    event.modifiers(),
+                )
+                self.mousePressEvent(remapped)
                 return True
             elif event.type() == QEvent.Type.FocusOut:
                 self._exit_edit_mode(save=True)
@@ -214,8 +258,12 @@ class _LayerItem(QWidget):
         """
         pal = self.palette()
         if active:
-            text_color = pal.color(QPalette.ColorRole.HighlightedText).name()
-            count_color = text_color
+            # Use the window background color as text color so it contrasts
+            # against the selection highlight (e.g. dark text on light pink).
+            bg_color = pal.color(QPalette.ColorRole.Window)
+            text_color = bg_color.name()
+            # Slightly lighter/darker variant for secondary text
+            count_color = bg_color.lighter(130).name()
             bg = ""
         elif in_selection:
             text_color = pal.color(QPalette.ColorRole.WindowText).name()
