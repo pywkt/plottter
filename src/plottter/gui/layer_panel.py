@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -41,16 +42,17 @@ class _LayerItem(QWidget):
         locked: bool,
         path_count: int,
         controller: ProjectController,
+        opacity: float = 1.0,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.layer_id = layer_id
         self._controller = controller
         self._edit_original_name = ""
-        self._setup_ui(layer_name, layer_color, visible, locked, path_count)
+        self._setup_ui(layer_name, layer_color, visible, locked, path_count, opacity)
 
     def _setup_ui(
-        self, name: str, color: str, visible: bool, locked: bool, path_count: int
+        self, name: str, color: str, visible: bool, locked: bool, path_count: int, opacity: float = 1.0
     ) -> None:
         layout = QHBoxLayout(self)
         layout.setContentsMargins(4, 2, 4, 2)
@@ -98,6 +100,20 @@ class _LayerItem(QWidget):
         self._lock_btn.clicked.connect(self._on_lock_click)
         layout.addWidget(self._lock_btn)
 
+        # Opacity slider
+        self._opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self._opacity_slider.setRange(0, 100)
+        self._opacity_slider.setValue(round(opacity * 100))
+        self._opacity_slider.setFixedWidth(60)
+        self._opacity_slider.setToolTip("Layer opacity")
+        self._opacity_slider.valueChanged.connect(self._on_opacity_changed)
+        layout.addWidget(self._opacity_slider)
+
+        self._opacity_label = QLabel(f"{round(opacity * 100)}%")
+        self._opacity_label.setFixedWidth(34)
+        self._opacity_label.setStyleSheet("color: palette(placeholderText); font-size: 10px;")
+        layout.addWidget(self._opacity_label)
+
         self._visible = visible
         self._locked = locked
         self._color = color
@@ -118,6 +134,10 @@ class _LayerItem(QWidget):
         self._locked = not self._locked
         self._lock_btn.setText("🔒" if self._locked else "🔓")
         self._controller.set_layer_locked(self.layer_id, self._locked)
+
+    def _on_opacity_changed(self, value: int) -> None:
+        self._opacity_label.setText(f"{value}%")
+        self._controller.set_layer_opacity(self.layer_id, value / 100.0)
 
     def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
         self._enter_edit_mode()
@@ -163,7 +183,7 @@ class _LayerItem(QWidget):
     def _on_name_edited(self) -> None:
         self._exit_edit_mode(save=True)
 
-    def update_from_layer(self, name: str, color: str, visible: bool, locked: bool, path_count: int) -> None:
+    def update_from_layer(self, name: str, color: str, visible: bool, locked: bool, path_count: int, opacity: float = 1.0) -> None:
         self._name_edit.setText(name)
         self._color = color
         self._color_btn.setIcon(_color_swatch_icon(color))
@@ -172,6 +192,11 @@ class _LayerItem(QWidget):
         self._locked = locked
         self._lock_btn.setText("🔒" if locked else "🔓")
         self._count_label.setText(f"[{path_count}]")
+        slider_val = round(opacity * 100)
+        self._opacity_slider.blockSignals(True)
+        self._opacity_slider.setValue(slider_val)
+        self._opacity_slider.blockSignals(False)
+        self._opacity_label.setText(f"{slider_val}%")
 
     def set_selected(self, selected: bool) -> None:
         """Adjust text colors so they remain readable against the selection highlight.
@@ -195,6 +220,7 @@ class _LayerItem(QWidget):
             "QLineEdit:focus { border: 1px solid palette(highlight); background: palette(base); color: palette(text); }"
         )
         self._count_label.setStyleSheet(f"color: {count_color}; font-size: 10px;")
+        self._opacity_label.setStyleSheet(f"color: {count_color}; font-size: 10px;")
 
 
 class LayerPanel(QWidget):
@@ -275,7 +301,8 @@ class LayerPanel(QWidget):
             item = QListWidgetItem(self._list)
             widget = _LayerItem(
                 layer.id, layer.name, layer.color, layer.visible,
-                layer.locked, layer.path_count(), self._controller
+                layer.locked, layer.path_count(), self._controller,
+                opacity=layer.opacity,
             )
             item.setSizeHint(widget.sizeHint())
             item.setData(Qt.ItemDataRole.UserRole, layer.id)
@@ -311,7 +338,7 @@ class LayerPanel(QWidget):
                 layer = self._controller.get_layer(layer_id)
                 if layer and isinstance(widget, _LayerItem):
                     widget.update_from_layer(
-                        layer.name, layer.color, layer.visible, layer.locked, layer.path_count()
+                        layer.name, layer.color, layer.visible, layer.locked, layer.path_count(), layer.opacity
                     )
                 break
 
