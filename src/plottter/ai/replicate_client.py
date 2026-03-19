@@ -2,53 +2,22 @@
 
 All network calls should be run in a QThread so the GUI stays responsive.
 Check ``ReplicateClient.is_available()`` before calling any method; it returns
-``False`` when either the API key is missing or the ``replicate`` package is
-not installed.
-
-Install the optional dependency with::
-
-    pip install plottter[ai]
+``False`` when the API key is not set.
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import pathlib
+import time
+import urllib.error
 import urllib.request
 from typing import Callable
 
 import numpy as np
-
-# ---------------------------------------------------------------------------
-# Optional dependency — imported at module load time so tests can patch the
-# module-level names.
-# ---------------------------------------------------------------------------
-
-# Workaround: replicate 1.0.7 uses ``from pydantic import v1 as pydantic``
-# internally.  The pydantic-v1 compatibility shim shipped in pydantic v2
-# breaks on Python 3.14+ (ModelField.infer raises ConfigError for Optional
-# fields).  We monkey-patch ``pydantic.v1`` to redirect attribute lookups
-# straight to pydantic v2, which satisfies every usage inside replicate.
-try:
-    import pydantic as _pydantic
-
-    class _PydanticV1Redirect:
-        """Proxy that redirects pydantic.v1.X → pydantic.X (v2)."""
-        def __getattr__(self, name: str):
-            return getattr(_pydantic, name)
-
-    _pydantic.v1 = _PydanticV1Redirect()  # type: ignore[attr-defined]
-except Exception:
-    pass
-
-try:
-    import replicate as _replicate_lib  # type: ignore[import]
-    _REPLICATE_AVAILABLE = True
-except Exception:
-    _replicate_lib = None  # type: ignore[assignment]
-    _REPLICATE_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Model identifiers (update these when better models become available)
@@ -68,7 +37,7 @@ class ReplicateAPIError(Exception):
 
 
 class ReplicateClient:
-    """Thin wrapper around the Replicate Python SDK for Plottter AI features.
+    """Thin wrapper around the Replicate REST API for Plottter AI features.
 
     Args:
         api_key: Replicate API key (from QSettings ``"replicate/api_key"``).
@@ -89,27 +58,8 @@ class ReplicateClient:
     # ------------------------------------------------------------------
 
     def is_available(self) -> bool:
-        """Return True if the API key is set and the replicate package is installed.
-
-        The module-level ``_REPLICATE_AVAILABLE`` flag is set once at import
-        time.  If the initial import failed (e.g. pydantic incompatibility on
-        Python 3.14+, or the package wasn't yet installed when the app
-        launched), the flag stays ``False`` for the entire session — even after
-        the user installs the package.  We therefore re-attempt the import each
-        time availability is ``False``, so a late installation is picked up
-        without restarting the application.
-        """
-        global _REPLICATE_AVAILABLE, _replicate_lib  # noqa: PLW0603
-        if not self._api_key:
-            return False
-        if not _REPLICATE_AVAILABLE:
-            try:
-                import replicate as _lib  # type: ignore[import]
-                _replicate_lib = _lib
-                _REPLICATE_AVAILABLE = True
-            except Exception:
-                pass
-        return _REPLICATE_AVAILABLE
+        """Return True if the API key is set."""
+        return bool(self._api_key)
 
     # ------------------------------------------------------------------
     # Background removal
@@ -132,11 +82,6 @@ class ReplicateClient:
         Raises:
             ReplicateAPIError: On network failure, invalid key, or model error.
         """
-        if not _REPLICATE_AVAILABLE:
-            raise ReplicateAPIError(
-                "replicate package not installed. Run: pip install plottter[ai]"
-            )
-
         cache_key = ("remove_bg", id(image), image.shape)
         if cache_key in self._cache:
             return self._cache[cache_key]  # type: ignore[return-value]
@@ -146,11 +91,7 @@ class ReplicateClient:
                 progress_callback(10)
 
             img_b64 = _image_to_data_uri(image)
-            client = _replicate_lib.Client(api_token=self._api_key)
-            output = client.run(
-                MODEL_REMOVE_BG,
-                input={"image": img_b64},
-            )
+            output = _replicate_run(self._api_key, MODEL_REMOVE_BG, {"image": img_b64})
 
             if progress_callback:
                 progress_callback(70)
@@ -198,11 +139,6 @@ class ReplicateClient:
         Raises:
             ReplicateAPIError: On network failure, invalid key, or model error.
         """
-        if not _REPLICATE_AVAILABLE:
-            raise ReplicateAPIError(
-                "replicate package not installed. Run: pip install plottter[ai]"
-            )
-
         cache_key = ("depth", id(image), image.shape)
         if cache_key in self._cache:
             return self._cache[cache_key]  # type: ignore[return-value]
@@ -240,11 +176,7 @@ class ReplicateClient:
                 progress_callback(10)
 
             img_b64 = _image_to_data_uri(image)
-            client = _replicate_lib.Client(api_token=self._api_key)
-            output = client.run(
-                MODEL_DEPTH,
-                input={"image": img_b64},
-            )
+            output = _replicate_run(self._api_key, MODEL_DEPTH, {"image": img_b64})
 
             if progress_callback:
                 progress_callback(70)
@@ -314,11 +246,6 @@ class ReplicateClient:
         Raises:
             ReplicateAPIError: On network failure, invalid key, or model error.
         """
-        if not _REPLICATE_AVAILABLE:
-            raise ReplicateAPIError(
-                "replicate package not installed. Run: pip install plottter[ai]"
-            )
-
         cache_key = ("segment", id(image), image.shape, num_segments)
         if cache_key in self._cache:
             return self._cache[cache_key]  # type: ignore[return-value]
@@ -328,11 +255,7 @@ class ReplicateClient:
                 progress_callback(10)
 
             img_b64 = _image_to_data_uri(image)
-            client = _replicate_lib.Client(api_token=self._api_key)
-            output = client.run(
-                MODEL_SEGMENT,
-                input={"image": img_b64},
-            )
+            output = _replicate_run(self._api_key, MODEL_SEGMENT, {"image": img_b64})
 
             if progress_callback:
                 progress_callback(70)
@@ -398,10 +321,6 @@ class ReplicateClient:
         Raises:
             ReplicateAPIError: On network failure, invalid key, or model error.
         """
-        if not _REPLICATE_AVAILABLE:
-            raise ReplicateAPIError(
-                "replicate package not installed. Run: pip install plottter[ai]"
-            )
         if not positive_points:
             raise ReplicateAPIError("At least one positive point is required.")
 
@@ -429,10 +348,10 @@ class ReplicateClient:
             coords_str = ",".join(f"[{x},{y}]" for x, y in all_points)
             labels_str = ",".join(str(l) for l in labels)
 
-            client = _replicate_lib.Client(api_token=self._api_key)
-            output = client.run(
+            output = _replicate_run(
+                self._api_key,
                 MODEL_SAM2,
-                input={
+                {
                     "input_video": img_b64,
                     "click_coordinates": coords_str,
                     "click_labels": labels_str,
@@ -477,11 +396,6 @@ class ReplicateClient:
         Raises:
             ReplicateAPIError: On network failure, invalid key, or model error.
         """
-        if not _REPLICATE_AVAILABLE:
-            raise ReplicateAPIError(
-                "replicate package not installed. Run: pip install plottter[ai]"
-            )
-
         cache_key = ("sam2_box", id(image), image.shape, box_xyxy)
         if cache_key in self._cache:
             return self._cache[cache_key]  # type: ignore[return-value]
@@ -492,16 +406,16 @@ class ReplicateClient:
 
             img_b64 = _image_to_data_uri(image)
             # meta/sam-2-video doesn't have a "box" param — approximate
-            # by clicking the two diagonal corners as foreground points.
+            # by clicking the center as a foreground point.
             x1, y1, x2, y2 = box_xyxy
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
             coords_str = f"[{cx},{cy}]"
             labels_str = "1"
 
-            client = _replicate_lib.Client(api_token=self._api_key)
-            output = client.run(
+            output = _replicate_run(
+                self._api_key,
                 MODEL_SAM2,
-                input={
+                {
                     "input_video": img_b64,
                     "click_coordinates": coords_str,
                     "click_labels": labels_str,
@@ -547,10 +461,6 @@ class ReplicateClient:
         Raises:
             ReplicateAPIError: On network failure, invalid key, or model error.
         """
-        if not _REPLICATE_AVAILABLE:
-            raise ReplicateAPIError(
-                "replicate package not installed. Run: pip install plottter[ai]"
-            )
         if not text_prompt.strip():
             raise ReplicateAPIError("A non-empty text prompt is required.")
 
@@ -563,10 +473,10 @@ class ReplicateClient:
                 progress_callback(10)
 
             img_b64 = _image_to_data_uri(image)
-            client = _replicate_lib.Client(api_token=self._api_key)
-            output = client.run(
+            output = _replicate_run(
+                self._api_key,
                 MODEL_GROUNDED_SAM,
-                input={
+                {
                     "image": img_b64,
                     "mask_prompt": text_prompt.strip(),
                 },
@@ -587,6 +497,83 @@ class ReplicateClient:
             raise
         except Exception as exc:
             raise ReplicateAPIError(f"Text segmentation failed: {exc}") from exc
+
+
+# ---------------------------------------------------------------------------
+# REST API helper
+# ---------------------------------------------------------------------------
+
+def _replicate_run(api_key: str, model: str, input_data: dict) -> object:
+    """Call the Replicate REST API, poll for completion, and return the output.
+
+    Args:
+        api_key: Replicate API key.
+        model: Model identifier in the form ``"owner/name:version_hash"``.
+        input_data: Dict of model input parameters.
+
+    Returns:
+        The ``output`` field from the completed prediction (concrete Python
+        objects decoded from JSON — strings, lists, dicts, etc.).
+
+    Raises:
+        ReplicateAPIError: On HTTP errors, prediction failure, or cancellation.
+    """
+    # Extract version hash — format: "owner/name:version_hash"
+    version_hash = model.split(":")[-1] if ":" in model else model
+
+    # POST to create a new prediction
+    body = json.dumps({"version": version_hash, "input": input_data}).encode()
+    req = urllib.request.Request(
+        "https://api.replicate.com/v1/predictions",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            response: dict = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode(errors="replace")
+        if exc.code == 401:
+            raise ReplicateAPIError(
+                f"Invalid API key (HTTP 401): {body_text}"
+            ) from exc
+        elif exc.code == 422:
+            raise ReplicateAPIError(
+                f"Invalid input (HTTP 422): {body_text}"
+            ) from exc
+        else:
+            raise ReplicateAPIError(f"HTTP {exc.code}: {body_text}") from exc
+
+    # Poll until terminal status
+    poll_url: str = response["urls"]["get"]
+    while True:
+        poll_req = urllib.request.Request(
+            poll_url,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        try:
+            with urllib.request.urlopen(poll_req) as resp:
+                response = json.loads(resp.read().decode())
+        except urllib.error.HTTPError as exc:
+            body_text = exc.read().decode(errors="replace")
+            raise ReplicateAPIError(
+                f"HTTP {exc.code} while polling: {body_text}"
+            ) from exc
+
+        status = response.get("status")
+        if status == "succeeded":
+            return response["output"]
+        elif status == "failed":
+            raise ReplicateAPIError(response.get("error") or "Prediction failed")
+        elif status == "canceled":
+            raise ReplicateAPIError("Prediction was canceled")
+
+        time.sleep(1)
 
 
 # ---------------------------------------------------------------------------

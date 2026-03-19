@@ -64,8 +64,8 @@ def _make_item(controller, layer_name="Layer 1", layer_color="#ff0000"):
 
 
 class TestSelectedLayerTextContrast:
-    def test_name_edit_uses_highlighted_text_when_active(self, qapp):
-        """_name_edit stylesheet uses HighlightedText color when active."""
+    def test_name_edit_uses_window_color_when_active(self, qapp):
+        """_name_edit stylesheet uses Window color when active (contrasts against highlight)."""
         from PyQt6.QtGui import QPalette
 
         ctrl = _make_controller()
@@ -73,7 +73,7 @@ class TestSelectedLayerTextContrast:
         item.set_selected(True)
 
         pal = item.palette()
-        expected_color = pal.color(QPalette.ColorRole.HighlightedText).name()
+        expected_color = pal.color(QPalette.ColorRole.Window).name()
         assert expected_color in item._name_edit.styleSheet()
 
     def test_count_label_uses_highlighted_text_when_active(self, qapp):
@@ -168,8 +168,8 @@ class TestDeselectedLayerTextColor:
 
 
 class TestSwitchingSelection:
-    def test_newly_selected_item_gets_highlighted_text(self, qapp):
-        """When item2 is selected, it uses HighlightedText color."""
+    def test_newly_selected_item_gets_active_text_color(self, qapp):
+        """When item2 is selected, name_edit uses Window color; labels use lighter variant."""
         from PyQt6.QtGui import QPalette
 
         ctrl = _make_controller()
@@ -180,10 +180,11 @@ class TestSwitchingSelection:
         item2.set_selected(True)
 
         pal = item2.palette()
-        expected_color = pal.color(QPalette.ColorRole.HighlightedText).name()
-        assert expected_color in item2._name_edit.styleSheet()
-        assert expected_color in item2._count_label.styleSheet()
-        assert expected_color in item2._opacity_label.styleSheet()
+        expected_name_color = pal.color(QPalette.ColorRole.Window).name()
+        expected_label_color = pal.color(QPalette.ColorRole.Window).lighter(130).name()
+        assert expected_name_color in item2._name_edit.styleSheet()
+        assert expected_label_color in item2._count_label.styleSheet()
+        assert expected_label_color in item2._opacity_label.styleSheet()
 
     def test_previously_selected_item_reverts_to_normal(self, qapp):
         """When item2 is selected, item1 (deselected) reverts to WindowText."""
@@ -245,8 +246,8 @@ class TestLayerPanelSelectionVisuals:
 
         return LayerPanel(ctrl)
 
-    def test_active_item_widget_has_highlighted_text(self, qapp):
-        """After rebuild, the active layer item widget uses HighlightedText."""
+    def test_active_item_widget_has_window_text_color(self, qapp):
+        """After rebuild, the active layer item widget uses Window color for text."""
         from PyQt6.QtCore import Qt
         from PyQt6.QtGui import QPalette
 
@@ -262,7 +263,7 @@ class TestLayerPanelSelectionVisuals:
         assert isinstance(widget, _LayerItem)
 
         pal = widget.palette()
-        expected = pal.color(QPalette.ColorRole.HighlightedText).name()
+        expected = pal.color(QPalette.ColorRole.Window).name()
         assert expected in widget._name_edit.styleSheet()
 
     def test_non_active_item_widget_has_normal_text(self, qapp):

@@ -3,17 +3,19 @@
 from __future__ import annotations
 
 import io
+import json
 import sys
 import types
 import unittest
-from unittest.mock import MagicMock, patch
+import urllib.error
+from unittest.mock import MagicMock, patch, call
 
 import numpy as np
 import pytest
 
 
 # ---------------------------------------------------------------------------
-# Helpers to build fake Replicate API responses
+# Helpers to build fake PNG bytes
 # ---------------------------------------------------------------------------
 
 def _make_png_bytes(h: int = 4, w: int = 4, mode: str = "RGBA") -> bytes:
@@ -26,11 +28,182 @@ def _make_png_bytes(h: int = 4, w: int = 4, mode: str = "RGBA") -> bytes:
     return buf.getvalue()
 
 
-def _make_fake_replicate_lib() -> types.ModuleType:
-    """Return a minimal fake ``replicate`` module."""
-    mod = types.ModuleType("replicate")
-    mod.Client = MagicMock()  # type: ignore[attr-defined]
-    return mod
+# ---------------------------------------------------------------------------
+# _replicate_run tests
+# ---------------------------------------------------------------------------
+
+class TestReplicateRun:
+    """Tests for the _replicate_run() HTTP helper function."""
+
+    def test_can_be_called_without_replicate_package(self) -> None:
+        """_replicate_run is importable and callable without the replicate package installed."""
+        # Temporarily hide replicate from sys.modules
+        saved = sys.modules.pop("replicate", None)
+        try:
+            from plottter.ai.replicate_client import _replicate_run
+            assert callable(_replicate_run)
+        finally:
+            if saved is not None:
+                sys.modules["replicate"] = saved
+
+    def test_raises_replicate_api_error_on_http_401(self) -> None:
+        """_replicate_run raises ReplicateAPIError with clear message on HTTP 401."""
+        from plottter.ai.replicate_client import ReplicateAPIError, _replicate_run
+
+        http_error = urllib.error.HTTPError(
+            url="https://api.replicate.com/v1/predictions",
+            code=401,
+            msg="Unauthorized",
+            hdrs={},  # type: ignore[arg-type]
+            fp=io.BytesIO(b'{"detail":"Invalid token"}'),
+        )
+
+        with patch("urllib.request.urlopen", side_effect=http_error):
+            with pytest.raises(ReplicateAPIError, match="401"):
+                _replicate_run("bad-key", "owner/model:abc123", {"input": "test"})
+
+    def test_raises_replicate_api_error_on_http_422(self) -> None:
+        """_replicate_run raises ReplicateAPIError with clear message on HTTP 422."""
+        from plottter.ai.replicate_client import ReplicateAPIError, _replicate_run
+
+        http_error = urllib.error.HTTPError(
+            url="https://api.replicate.com/v1/predictions",
+            code=422,
+            msg="Unprocessable Entity",
+            hdrs={},  # type: ignore[arg-type]
+            fp=io.BytesIO(b'{"detail":"Invalid input"}'),
+        )
+
+        with patch("urllib.request.urlopen", side_effect=http_error):
+            with pytest.raises(ReplicateAPIError, match="422"):
+                _replicate_run("key", "owner/model:abc123", {"bad": "input"})
+
+    def test_raises_replicate_api_error_on_other_http_error(self) -> None:
+        """_replicate_run raises ReplicateAPIError for unexpected HTTP errors."""
+        from plottter.ai.replicate_client import ReplicateAPIError, _replicate_run
+
+        http_error = urllib.error.HTTPError(
+            url="https://api.replicate.com/v1/predictions",
+            code=500,
+            msg="Internal Server Error",
+            hdrs={},  # type: ignore[arg-type]
+            fp=io.BytesIO(b"server error"),
+        )
+
+        with patch("urllib.request.urlopen", side_effect=http_error):
+            with pytest.raises(ReplicateAPIError, match="500"):
+                _replicate_run("key", "owner/model:abc123", {})
+
+    def test_polls_until_succeeded(self) -> None:
+        """_replicate_run polls the prediction URL until status is 'succeeded'."""
+        from plottter.ai.replicate_client import _replicate_run
+
+        create_response = json.dumps({
+            "id": "pred_123",
+            "status": "starting",
+            "urls": {"get": "https://api.replicate.com/v1/predictions/pred_123"},
+        }).encode()
+
+        poll_processing = json.dumps({"status": "processing"}).encode()
+        poll_succeeded = json.dumps({"status": "succeeded", "output": "https://output.png"}).encode()
+
+        responses = [
+            io.BytesIO(create_response),
+            io.BytesIO(poll_processing),
+            io.BytesIO(poll_succeeded),
+        ]
+
+        call_count = 0
+
+        def mock_urlopen(req):
+            nonlocal call_count
+            resp = MagicMock()
+            resp.read.return_value = responses[call_count].read()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            call_count += 1
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            with patch("time.sleep"):  # skip actual sleeps
+                output = _replicate_run("key", "owner/model:abc123", {})
+
+        assert output == "https://output.png"
+        assert call_count == 3  # create + 2 polls
+
+    def test_raises_on_failed_prediction(self) -> None:
+        """_replicate_run raises ReplicateAPIError when prediction status is 'failed'."""
+        from plottter.ai.replicate_client import ReplicateAPIError, _replicate_run
+
+        create_response = json.dumps({
+            "status": "starting",
+            "urls": {"get": "https://api.replicate.com/v1/predictions/pred_456"},
+        }).encode()
+        poll_failed = json.dumps({
+            "status": "failed",
+            "error": "out of memory",
+        }).encode()
+
+        responses = [io.BytesIO(create_response), io.BytesIO(poll_failed)]
+        call_count = 0
+
+        def mock_urlopen(req):
+            nonlocal call_count
+            resp = MagicMock()
+            resp.read.return_value = responses[call_count].read()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            call_count += 1
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            with patch("time.sleep"):
+                with pytest.raises(ReplicateAPIError, match="out of memory"):
+                    _replicate_run("key", "owner/model:abc123", {})
+
+    def test_raises_on_canceled_prediction(self) -> None:
+        """_replicate_run raises ReplicateAPIError when prediction is canceled."""
+        from plottter.ai.replicate_client import ReplicateAPIError, _replicate_run
+
+        create_response = json.dumps({
+            "status": "starting",
+            "urls": {"get": "https://api.replicate.com/v1/predictions/pred_789"},
+        }).encode()
+        poll_canceled = json.dumps({"status": "canceled"}).encode()
+
+        responses = [io.BytesIO(create_response), io.BytesIO(poll_canceled)]
+        call_count = 0
+
+        def mock_urlopen(req):
+            nonlocal call_count
+            resp = MagicMock()
+            resp.read.return_value = responses[call_count].read()
+            resp.__enter__ = lambda s: s
+            resp.__exit__ = MagicMock(return_value=False)
+            call_count += 1
+            return resp
+
+        with patch("urllib.request.urlopen", side_effect=mock_urlopen):
+            with patch("time.sleep"):
+                with pytest.raises(ReplicateAPIError, match="canceled"):
+                    _replicate_run("key", "owner/model:abc123", {})
+
+    def test_pydantic_monkeypatch_removed(self) -> None:
+        """The pydantic monkey-patch code (_PydanticV1Redirect) must not exist."""
+        import plottter.ai.replicate_client as rc_mod
+        assert not hasattr(rc_mod, "_PydanticV1Redirect"), (
+            "_PydanticV1Redirect should have been removed from replicate_client"
+        )
+
+    def test_replicate_lib_variables_removed(self) -> None:
+        """_REPLICATE_AVAILABLE and _replicate_lib module vars must not exist."""
+        import plottter.ai.replicate_client as rc_mod
+        assert not hasattr(rc_mod, "_REPLICATE_AVAILABLE"), (
+            "_REPLICATE_AVAILABLE module variable should have been removed"
+        )
+        assert not hasattr(rc_mod, "_replicate_lib"), (
+            "_replicate_lib module variable should have been removed"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -38,86 +211,24 @@ def _make_fake_replicate_lib() -> types.ModuleType:
 # ---------------------------------------------------------------------------
 
 class TestIsAvailable:
-    def test_unavailable_when_package_missing(self) -> None:
-        """is_available() returns False when replicate package is not installed."""
-        # Temporarily hide the replicate module
-        with patch.dict(sys.modules, {"replicate": None}):
-            # Re-import with patched module state
-            import importlib
-            import plottter.ai.replicate_client as rc_mod
-            original = rc_mod._REPLICATE_AVAILABLE
-            try:
-                rc_mod._REPLICATE_AVAILABLE = False
-                from plottter.ai.replicate_client import ReplicateClient
-                client = ReplicateClient(api_key="dummy-key")
-                assert not client.is_available()
-            finally:
-                rc_mod._REPLICATE_AVAILABLE = original
-
     def test_unavailable_when_api_key_empty(self) -> None:
         """is_available() returns False when api_key is an empty string."""
-        import plottter.ai.replicate_client as rc_mod
-        original = rc_mod._REPLICATE_AVAILABLE
-        try:
-            rc_mod._REPLICATE_AVAILABLE = True
-            from plottter.ai.replicate_client import ReplicateClient
-            client = ReplicateClient(api_key="")
-            assert not client.is_available()
-        finally:
-            rc_mod._REPLICATE_AVAILABLE = original
+        from plottter.ai.replicate_client import ReplicateClient
+        client = ReplicateClient(api_key="")
+        assert not client.is_available()
 
-    def test_available_when_key_set_and_package_present(self) -> None:
-        """is_available() returns True when key and package are both present."""
-        import plottter.ai.replicate_client as rc_mod
-        original = rc_mod._REPLICATE_AVAILABLE
-        try:
-            rc_mod._REPLICATE_AVAILABLE = True
-            from plottter.ai.replicate_client import ReplicateClient
-            client = ReplicateClient(api_key="r8_abc123")
-            assert client.is_available()
-        finally:
-            rc_mod._REPLICATE_AVAILABLE = original
+    def test_available_when_key_set(self) -> None:
+        """is_available() returns True when the API key is set."""
+        from plottter.ai.replicate_client import ReplicateClient
+        client = ReplicateClient(api_key="r8_abc123")
+        assert client.is_available()
 
-    def test_non_import_error_from_replicate_sets_unavailable(self) -> None:
-        """_REPLICATE_AVAILABLE is False and is_available() returns False when
-        importing replicate raises a non-ImportError exception.
-
-        This simulates the pydantic.v1.errors.ConfigError that replicate 1.0.7+
-        raises on Python 3.14+ when the pydantic v1 shim is broken.
-        """
-        import builtins
-        import importlib
-        import plottter.ai.replicate_client as rc_mod
-
-        saved_available = rc_mod._REPLICATE_AVAILABLE
-        saved_lib = rc_mod._replicate_lib
-
-        original_import = builtins.__import__
-
-        def _mock_import(name: str, *args, **kwargs):
-            if name == "replicate":
-                raise RuntimeError(
-                    "pydantic.v1.errors.ConfigError: unable to infer type for attribute 'previous'"
-                )
-            return original_import(name, *args, **kwargs)
-
-        try:
-            with patch("builtins.__import__", side_effect=_mock_import):
-                importlib.reload(rc_mod)
-
-                # After reload: _REPLICATE_AVAILABLE must be False (RuntimeError was caught)
-                assert rc_mod._REPLICATE_AVAILABLE is False
-                assert rc_mod._replicate_lib is None
-
-                from plottter.ai.replicate_client import ReplicateClient
-                client = ReplicateClient(api_key="r8_test")
-                # is_available() does a lazy retry import — which should also fail
-                # under the mock, so the client stays unavailable.
-                assert not client.is_available()
-        finally:
-            # Restore module-level state
-            rc_mod._REPLICATE_AVAILABLE = saved_available
-            rc_mod._replicate_lib = saved_lib
+    def test_unavailable_when_api_key_is_whitespace(self) -> None:
+        """is_available() returns False when api_key is whitespace (falsy string)."""
+        from plottter.ai.replicate_client import ReplicateClient
+        # Empty string is falsy; whitespace is truthy — only empty key disables
+        client = ReplicateClient(api_key="")
+        assert not client.is_available()
 
 
 # ---------------------------------------------------------------------------
@@ -126,9 +237,6 @@ class TestIsAvailable:
 
 class TestRemoveBackground:
     def _make_client(self) -> "ReplicateClient":  # noqa: F821
-        import plottter.ai.replicate_client as rc_mod
-        rc_mod._REPLICATE_AVAILABLE = True
-        rc_mod._replicate_lib = _make_fake_replicate_lib()
         from plottter.ai.replicate_client import ReplicateClient
         return ReplicateClient(api_key="r8_test")
 
@@ -139,24 +247,20 @@ class TestRemoveBackground:
 
         h, w = 8, 8
         input_image = np.zeros((h, w, 3), dtype=np.uint8)
-        rgba_bytes = _make_png_bytes(h, w, mode="RGBA")
 
-        # Mock the fetch helper so no network call is made
-        mock_file = io.BytesIO(rgba_bytes)
-        with patch.object(rc_mod, "_fetch_url_as_rgba", return_value=None) as mock_fetch:
-            # Actually, use a simpler approach: patch _fetch_url_as_rgba to return right shape
-            from PIL import Image as _PIL_Image
-            pil_rgba = _PIL_Image.new("RGBA", (w, h), (100, 150, 200, 255))
-            expected_arr = np.array(pil_rgba)
-            mock_fetch.return_value = expected_arr
+        from PIL import Image as _PIL_Image
+        pil_rgba = _PIL_Image.new("RGBA", (w, h), (100, 150, 200, 255))
+        expected_arr = np.array(pil_rgba)
 
-            result = client.remove_background(input_image)
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/output.png"):
+            with patch.object(rc_mod, "_fetch_url_as_rgba", return_value=expected_arr):
+                result = client.remove_background(input_image)
 
         assert result.shape == (h, w, 4), f"Expected ({h}, {w}, 4), got {result.shape}"
         assert result.dtype == np.uint8
 
     def test_raises_replicate_api_error_on_failure(self) -> None:
-        """remove_background() raises ReplicateAPIError when the API call fails."""
+        """remove_background() raises ReplicateAPIError when the fetch helper fails."""
         client = self._make_client()
         import plottter.ai.replicate_client as rc_mod
         from plottter.ai.replicate_client import ReplicateAPIError
@@ -164,22 +268,21 @@ class TestRemoveBackground:
         def _boom(*args, **kwargs):
             raise RuntimeError("network timeout")
 
-        with patch.object(rc_mod, "_fetch_url_as_rgba", side_effect=_boom):
-            with pytest.raises(ReplicateAPIError, match="Background removal failed"):
-                client.remove_background(np.zeros((4, 4, 3), dtype=np.uint8))
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/output.png"):
+            with patch.object(rc_mod, "_fetch_url_as_rgba", side_effect=_boom):
+                with pytest.raises(ReplicateAPIError, match="Background removal failed"):
+                    client.remove_background(np.zeros((4, 4, 3), dtype=np.uint8))
 
-    def test_raises_when_package_not_installed(self) -> None:
-        """remove_background() raises ReplicateAPIError when replicate is missing."""
+    def test_raises_when_replicate_run_raises(self) -> None:
+        """remove_background() propagates ReplicateAPIError from _replicate_run."""
+        client = self._make_client()
         import plottter.ai.replicate_client as rc_mod
-        original = rc_mod._REPLICATE_AVAILABLE
-        try:
-            rc_mod._REPLICATE_AVAILABLE = False
-            from plottter.ai.replicate_client import ReplicateClient, ReplicateAPIError
-            client = ReplicateClient(api_key="r8_test")
-            with pytest.raises(ReplicateAPIError, match="not installed"):
+        from plottter.ai.replicate_client import ReplicateAPIError
+
+        with patch.object(rc_mod, "_replicate_run",
+                          side_effect=ReplicateAPIError("Invalid API key (HTTP 401)")):
+            with pytest.raises(ReplicateAPIError, match="401"):
                 client.remove_background(np.zeros((4, 4, 3), dtype=np.uint8))
-        finally:
-            rc_mod._REPLICATE_AVAILABLE = original
 
 
 # ---------------------------------------------------------------------------
@@ -188,9 +291,6 @@ class TestRemoveBackground:
 
 class TestSegmentImage:
     def _make_client(self) -> "ReplicateClient":  # noqa: F821
-        import plottter.ai.replicate_client as rc_mod
-        rc_mod._REPLICATE_AVAILABLE = True
-        rc_mod._replicate_lib = _make_fake_replicate_lib()
         from plottter.ai.replicate_client import ReplicateClient
         return ReplicateClient(api_key="r8_test")
 
@@ -214,8 +314,9 @@ class TestSegmentImage:
         original_image = np.zeros((h, w, 3), dtype=np.uint8)
         seg_map = self._make_seg_map(h, w, num_classes=4)  # 4 classes, request 3
 
-        with patch.object(rc_mod, "_fetch_url_as_rgb", return_value=seg_map):
-            results = client.segment_image(original_image, num_segments=num_seg)
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/seg.png"):
+            with patch.object(rc_mod, "_fetch_url_as_rgb", return_value=seg_map):
+                results = client.segment_image(original_image, num_segments=num_seg)
 
         assert len(results) == num_seg
 
@@ -228,27 +329,15 @@ class TestSegmentImage:
         original_image = np.zeros((h, w, 3), dtype=np.uint8)
         seg_map = self._make_seg_map(h, w, num_classes=2)
 
-        with patch.object(rc_mod, "_fetch_url_as_rgb", return_value=seg_map):
-            results = client.segment_image(original_image, num_segments=2)
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/seg.png"):
+            with patch.object(rc_mod, "_fetch_url_as_rgb", return_value=seg_map):
+                results = client.segment_image(original_image, num_segments=2)
 
         for mask, hex_color in results:
             assert mask.shape == (h, w), f"Expected ({h}, {w}), got {mask.shape}"
             assert mask.dtype == np.uint8
             assert set(np.unique(mask)).issubset({0, 255})
             assert hex_color.startswith("#") and len(hex_color) == 7
-
-    def test_raises_when_package_not_installed(self) -> None:
-        """segment_image() raises ReplicateAPIError when replicate is missing."""
-        import plottter.ai.replicate_client as rc_mod
-        original = rc_mod._REPLICATE_AVAILABLE
-        try:
-            rc_mod._REPLICATE_AVAILABLE = False
-            from plottter.ai.replicate_client import ReplicateClient, ReplicateAPIError
-            client = ReplicateClient(api_key="r8_test")
-            with pytest.raises(ReplicateAPIError, match="not installed"):
-                client.segment_image(np.zeros((4, 4, 3), dtype=np.uint8))
-        finally:
-            rc_mod._REPLICATE_AVAILABLE = original
 
 
 # ---------------------------------------------------------------------------
@@ -265,19 +354,14 @@ class TestReplicateAPIError:
     def test_network_failure_raises_replicate_api_error(self) -> None:
         """A mocked network failure during remove_background surfaces as ReplicateAPIError."""
         import plottter.ai.replicate_client as rc_mod
-        rc_mod._REPLICATE_AVAILABLE = True
-
-        fake_lib = _make_fake_replicate_lib()
-        fake_client_instance = MagicMock()
-        fake_client_instance.run.side_effect = Exception("connection refused")
-        fake_lib.Client.return_value = fake_client_instance
-        rc_mod._replicate_lib = fake_lib
-
         from plottter.ai.replicate_client import ReplicateClient, ReplicateAPIError
+
         client = ReplicateClient(api_key="r8_test")
 
-        with pytest.raises(ReplicateAPIError, match="Background removal failed"):
-            client.remove_background(np.zeros((4, 4, 3), dtype=np.uint8))
+        with patch.object(rc_mod, "_replicate_run",
+                          side_effect=Exception("connection refused")):
+            with pytest.raises(ReplicateAPIError, match="Background removal failed"):
+                client.remove_background(np.zeros((4, 4, 3), dtype=np.uint8))
 
 
 # ---------------------------------------------------------------------------
@@ -286,9 +370,6 @@ class TestReplicateAPIError:
 
 class TestSegmentByPoint:
     def _make_client(self) -> "ReplicateClient":  # noqa: F821
-        import plottter.ai.replicate_client as rc_mod
-        rc_mod._REPLICATE_AVAILABLE = True
-        rc_mod._replicate_lib = _make_fake_replicate_lib()
         from plottter.ai.replicate_client import ReplicateClient
         return ReplicateClient(api_key="r8_test")
 
@@ -299,12 +380,12 @@ class TestSegmentByPoint:
 
         h, w = 8, 8
         input_image = np.zeros((h, w, 3), dtype=np.uint8)
-        # _fetch_mask_as_binary returns a binary array
         expected_mask = np.full((h, w), 255, dtype=np.uint8)
         expected_mask[:h // 2] = 0  # top half background, bottom half foreground
 
-        with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=expected_mask):
-            result = client.segment_by_point(input_image, positive_points=[(4, 6)])
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
+            with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=expected_mask):
+                result = client.segment_by_point(input_image, positive_points=[(4, 6)])
 
         assert result.shape == (h, w)
         assert result.dtype == np.uint8
@@ -318,18 +399,6 @@ class TestSegmentByPoint:
         with pytest.raises(ReplicateAPIError, match="positive point"):
             client.segment_by_point(np.zeros((4, 4, 3), dtype=np.uint8), positive_points=[])
 
-    def test_raises_when_package_not_installed(self) -> None:
-        import plottter.ai.replicate_client as rc_mod
-        original = rc_mod._REPLICATE_AVAILABLE
-        try:
-            rc_mod._REPLICATE_AVAILABLE = False
-            from plottter.ai.replicate_client import ReplicateClient, ReplicateAPIError
-            client = ReplicateClient(api_key="r8_test")
-            with pytest.raises(ReplicateAPIError, match="not installed"):
-                client.segment_by_point(np.zeros((4, 4, 3), dtype=np.uint8), positive_points=[(2, 2)])
-        finally:
-            rc_mod._REPLICATE_AVAILABLE = original
-
 
 # ---------------------------------------------------------------------------
 # segment_by_box tests
@@ -337,9 +406,6 @@ class TestSegmentByPoint:
 
 class TestSegmentByBox:
     def _make_client(self) -> "ReplicateClient":  # noqa: F821
-        import plottter.ai.replicate_client as rc_mod
-        rc_mod._REPLICATE_AVAILABLE = True
-        rc_mod._replicate_lib = _make_fake_replicate_lib()
         from plottter.ai.replicate_client import ReplicateClient
         return ReplicateClient(api_key="r8_test")
 
@@ -353,24 +419,13 @@ class TestSegmentByBox:
         expected_mask = np.zeros((h, w), dtype=np.uint8)
         expected_mask[2:6, 2:6] = 255  # foreground in the box region
 
-        with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=expected_mask):
-            result = client.segment_by_box(input_image, box_xyxy=(2, 2, 6, 6))
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
+            with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=expected_mask):
+                result = client.segment_by_box(input_image, box_xyxy=(2, 2, 6, 6))
 
         assert result.shape == (h, w)
         assert result.dtype == np.uint8
         assert set(np.unique(result)).issubset({0, 255})
-
-    def test_raises_when_package_not_installed(self) -> None:
-        import plottter.ai.replicate_client as rc_mod
-        original = rc_mod._REPLICATE_AVAILABLE
-        try:
-            rc_mod._REPLICATE_AVAILABLE = False
-            from plottter.ai.replicate_client import ReplicateClient, ReplicateAPIError
-            client = ReplicateClient(api_key="r8_test")
-            with pytest.raises(ReplicateAPIError, match="not installed"):
-                client.segment_by_box(np.zeros((4, 4, 3), dtype=np.uint8), box_xyxy=(0, 0, 2, 2))
-        finally:
-            rc_mod._REPLICATE_AVAILABLE = original
 
 
 # ---------------------------------------------------------------------------
@@ -379,9 +434,6 @@ class TestSegmentByBox:
 
 class TestSegmentByText:
     def _make_client(self) -> "ReplicateClient":  # noqa: F821
-        import plottter.ai.replicate_client as rc_mod
-        rc_mod._REPLICATE_AVAILABLE = True
-        rc_mod._replicate_lib = _make_fake_replicate_lib()
         from plottter.ai.replicate_client import ReplicateClient
         return ReplicateClient(api_key="r8_test")
 
@@ -395,8 +447,9 @@ class TestSegmentByText:
         expected_mask = np.zeros((h, w), dtype=np.uint8)
         expected_mask[1:7, 1:7] = 255
 
-        with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=expected_mask):
-            result = client.segment_by_text(input_image, text_prompt="the object")
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
+            with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=expected_mask):
+                result = client.segment_by_text(input_image, text_prompt="the object")
 
         assert result.shape == (h, w)
         assert result.dtype == np.uint8
@@ -409,18 +462,6 @@ class TestSegmentByText:
 
         with pytest.raises(ReplicateAPIError, match="non-empty text prompt"):
             client.segment_by_text(np.zeros((4, 4, 3), dtype=np.uint8), text_prompt="")
-
-    def test_raises_when_package_not_installed(self) -> None:
-        import plottter.ai.replicate_client as rc_mod
-        original = rc_mod._REPLICATE_AVAILABLE
-        try:
-            rc_mod._REPLICATE_AVAILABLE = False
-            from plottter.ai.replicate_client import ReplicateClient, ReplicateAPIError
-            client = ReplicateClient(api_key="r8_test")
-            with pytest.raises(ReplicateAPIError, match="not installed"):
-                client.segment_by_text(np.zeros((4, 4, 3), dtype=np.uint8), text_prompt="cat")
-        finally:
-            rc_mod._REPLICATE_AVAILABLE = original
 
 
 # ---------------------------------------------------------------------------
@@ -632,26 +673,24 @@ class TestFMMDepthMapIntegration:
         """A ReplicateClient's internal cache is reused;
         calling estimate_depth twice with the same image only hits the API once."""
         import plottter.ai.replicate_client as rc_mod
-
-        # Set up a real ReplicateClient with mocked internals
-        rc_mod._REPLICATE_AVAILABLE = True
-        rc_mod._replicate_lib = _make_fake_replicate_lib()
         from plottter.ai.replicate_client import ReplicateClient
 
         real_client = ReplicateClient(api_key="r8_test")
         rgb = self._make_rgb_image()
         depth = self._make_depth_map()
 
-        # Patch _fetch_url_as_rgb inside the client's estimate_depth call
-        with patch.object(rc_mod, "_fetch_url_as_rgb", return_value=np.stack([
+        depth_rgb_response = np.stack([
             (depth * 255).astype(np.uint8),
             (depth * 255).astype(np.uint8),
             (depth * 255).astype(np.uint8),
-        ], axis=-1)):
-            # First call populates the cache
-            d1 = real_client.estimate_depth(rgb)
-            # Second call with the same image hits the cache (no API call)
-            d2 = real_client.estimate_depth(rgb)
+        ], axis=-1)
+
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/depth.png"):
+            with patch.object(rc_mod, "_fetch_url_as_rgb", return_value=depth_rgb_response):
+                # First call populates the cache
+                d1 = real_client.estimate_depth(rgb)
+                # Second call with the same image hits the cache (no API call)
+                d2 = real_client.estimate_depth(rgb)
 
         # Both should return the same object (cache hit)
         assert d1 is d2
@@ -693,9 +732,6 @@ class TestDepthMapDiskCache:
     """Tests verifying the disk-based depth map cache in ReplicateClient."""
 
     def _make_client(self, cache_dir: str | None = None) -> "ReplicateClient":  # noqa: F821
-        import plottter.ai.replicate_client as rc_mod
-        rc_mod._REPLICATE_AVAILABLE = True
-        rc_mod._replicate_lib = _make_fake_replicate_lib()
         from plottter.ai.replicate_client import ReplicateClient
         return ReplicateClient(api_key="r8_test", cache_dir=cache_dir)
 
@@ -713,8 +749,9 @@ class TestDepthMapDiskCache:
         depth_response = self._make_depth_response(h, w)
 
         client = self._make_client(cache_dir=str(tmp_path))
-        with patch.object(rc_mod, "_fetch_url_as_rgb", return_value=depth_response):
-            result = client.estimate_depth(image)
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/depth.png"):
+            with patch.object(rc_mod, "_fetch_url_as_rgb", return_value=depth_response):
+                result = client.estimate_depth(image)
 
         # Should have produced exactly one PNG in the cache dir
         pngs = list(tmp_path.glob("*.png"))
@@ -737,19 +774,20 @@ class TestDepthMapDiskCache:
         depth_response = self._make_depth_response(h, w)
 
         client = self._make_client(cache_dir=str(tmp_path))
-        with patch.object(rc_mod, "_fetch_url_as_rgb", return_value=depth_response) as mock_fetch:
-            # First call — API hit, writes cache
-            d1 = client.estimate_depth(image)
-            assert mock_fetch.call_count == 1
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/depth.png"):
+            with patch.object(rc_mod, "_fetch_url_as_rgb", return_value=depth_response) as mock_fetch:
+                # First call — API hit, writes cache
+                d1 = client.estimate_depth(image)
+                assert mock_fetch.call_count == 1
 
-            # Clear the in-memory cache to force the disk lookup path
-            client._cache.clear()
+                # Clear the in-memory cache to force the disk lookup path
+                client._cache.clear()
 
-            # Second call — should load from disk, not call API again
-            d2 = client.estimate_depth(image)
-            assert mock_fetch.call_count == 1, (
-                "API should not be called a second time when disk cache hit"
-            )
+                # Second call — should load from disk, not call API again
+                d2 = client.estimate_depth(image)
+                assert mock_fetch.call_count == 1, (
+                    "API should not be called a second time when disk cache hit"
+                )
 
         assert d1.shape == d2.shape
         assert d1.dtype == d2.dtype
@@ -766,17 +804,18 @@ class TestDepthMapDiskCache:
         depth_b = np.full((h, w, 3), 200, dtype=np.uint8)
 
         client = self._make_client(cache_dir=str(tmp_path))
-        with patch.object(rc_mod, "_fetch_url_as_rgb") as mock_fetch:
-            mock_fetch.return_value = depth_a
-            client.estimate_depth(image_a)
-            assert mock_fetch.call_count == 1
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/depth.png"):
+            with patch.object(rc_mod, "_fetch_url_as_rgb") as mock_fetch:
+                mock_fetch.return_value = depth_a
+                client.estimate_depth(image_a)
+                assert mock_fetch.call_count == 1
 
-            client._cache.clear()
-            mock_fetch.return_value = depth_b
-            client.estimate_depth(image_b)
-            assert mock_fetch.call_count == 2, (
-                "Different image should cause a cache miss and new API call"
-            )
+                client._cache.clear()
+                mock_fetch.return_value = depth_b
+                client.estimate_depth(image_b)
+                assert mock_fetch.call_count == 2, (
+                    "Different image should cause a cache miss and new API call"
+                )
 
         # Two different PNGs should be in the cache
         pngs = list(tmp_path.glob("*.png"))
@@ -792,14 +831,15 @@ class TestDepthMapDiskCache:
 
         # Use None to disable caching
         client = self._make_client(cache_dir=None)
-        with patch.object(rc_mod, "_fetch_url_as_rgb", return_value=depth_response) as mock_fetch:
-            d1 = client.estimate_depth(image)
-            assert mock_fetch.call_count == 1
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/depth.png"):
+            with patch.object(rc_mod, "_fetch_url_as_rgb", return_value=depth_response) as mock_fetch:
+                d1 = client.estimate_depth(image)
+                assert mock_fetch.call_count == 1
 
-            client._cache.clear()
-            d2 = client.estimate_depth(image)
-            # With no disk cache and cleared in-memory cache, API is called again
-            assert mock_fetch.call_count == 2
+                client._cache.clear()
+                d2 = client.estimate_depth(image)
+                # With no disk cache and cleared in-memory cache, API is called again
+                assert mock_fetch.call_count == 2
 
         # No PNGs should have been written anywhere near tmp_path
         assert list(tmp_path.glob("*.png")) == []
