@@ -5,10 +5,8 @@ from __future__ import annotations
 import io
 import json
 import sys
-import types
-import unittest
 import urllib.error
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -223,12 +221,12 @@ class TestIsAvailable:
         client = ReplicateClient(api_key="r8_abc123")
         assert client.is_available()
 
-    def test_unavailable_when_api_key_is_whitespace(self) -> None:
-        """is_available() returns False when api_key is whitespace (falsy string)."""
+    def test_available_when_api_key_is_whitespace(self) -> None:
+        """is_available() returns True when api_key is whitespace (truthy string)."""
         from plottter.ai.replicate_client import ReplicateClient
-        # Empty string is falsy; whitespace is truthy — only empty key disables
-        client = ReplicateClient(api_key="")
-        assert not client.is_available()
+        # Whitespace is truthy — only empty string disables the client
+        client = ReplicateClient(api_key="   ")
+        assert client.is_available()
 
 
 # ---------------------------------------------------------------------------
