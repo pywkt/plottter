@@ -1,8 +1,7 @@
 """Optional AI image processing via Replicate.com.
 
-All features in this package are optional.  Install the extra dependency with::
-
-    pip install plottter[ai]
+All features in this package are optional.  Configure a Replicate API key in
+Preferences > AI Integration to enable them.
 
 Check availability before calling any API::
 

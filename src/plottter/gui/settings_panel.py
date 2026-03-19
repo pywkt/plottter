@@ -3331,8 +3331,8 @@ class SettingsPanel(QScrollArea):
                 QMessageBox.warning(
                     self,
                     "AI Unavailable",
-                    "AI Layer Separation requires a Replicate API key and the 'replicate' package.\n"
-                    "Go to Preferences > AI Integration to configure it.",
+                    "AI Layer Separation requires a Replicate API key.\n"
+                    "Set your Replicate API key in Preferences > AI Integration.",
                 )
                 return
 

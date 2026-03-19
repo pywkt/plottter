@@ -79,11 +79,11 @@ class PreferencesDialog(QDialog):
 
         note = QLabel(
             "Leave blank to disable AI features.  "
-            "Install the optional dependency with "
-            "<code>pip install plottter[ai]</code>."
+            "Get a free API key at <a href=\"https://replicate.com\">replicate.com</a>."
         )
         note.setWordWrap(True)
         note.setTextFormat(Qt.TextFormat.RichText)
+        note.setOpenExternalLinks(True)
         form.addRow(note)
 
         return group
@@ -234,34 +234,32 @@ class PreferencesDialog(QDialog):
             )
             return
 
-        from plottter.ai.replicate_client import ReplicateClient, ReplicateAPIError
+        # Attempt a lightweight REST API call to verify the key
+        import urllib.request
+        import urllib.error
+        import json
 
-        client = ReplicateClient(api_key=key)
-        if not client.is_available():
-            QMessageBox.warning(
-                self,
-                "Test Connection",
-                "The 'replicate' package is not installed.\n"
-                "Run: pip install plottter[ai]",
-            )
-            return
-
-        # Attempt a lightweight API list call to verify the key
         try:
-            import replicate  # type: ignore[import]
-            replicate_client = replicate.Client(api_token=key)
-            # A simple models list call; catches 401 Unauthorized quickly
-            _ = list(replicate_client.models.list())
-            status_msg = "Connection successful! API key is valid."
+            req = urllib.request.Request(
+                "https://api.replicate.com/v1/account",
+                headers={"Authorization": f"Bearer {key}"},
+            )
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read().decode())
+            username = data.get("username", "")
+            status_msg = f"Connection successful! Signed in as: {username}" if username else "Connection successful! API key is valid."
             success = True
-        except Exception as exc:
-            msg = str(exc)
-            if "401" in msg or "Unauthorized" in msg or "authentication" in msg.lower():
+        except urllib.error.HTTPError as exc:
+            body_text = exc.read().decode(errors="replace")
+            if exc.code == 401:
                 status_msg = "Authentication failed: invalid API key."
-            elif "rate limit" in msg.lower():
-                status_msg = f"Rate limited — key is valid, but you are being throttled.\n{msg}"
+            elif "rate limit" in body_text.lower():
+                status_msg = f"Rate limited — key may be valid, but you are being throttled.\n{body_text}"
             else:
-                status_msg = f"Connection error: {msg}"
+                status_msg = f"Connection error (HTTP {exc.code}): {body_text}"
+            success = False
+        except Exception as exc:
+            status_msg = f"Connection error: {exc}"
             success = False
 
         if success:
