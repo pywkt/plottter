@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QSize
+from PyQt6.QtCore import Qt, QSize, QEvent
 from PyQt6.QtGui import QColor, QIcon, QPalette, QPixmap
 from PyQt6.QtWidgets import (
     QColorDialog,
@@ -46,6 +46,7 @@ class _LayerItem(QWidget):
         super().__init__(parent)
         self.layer_id = layer_id
         self._controller = controller
+        self._edit_original_name = ""
         self._setup_ui(layer_name, layer_color, visible, locked, path_count)
 
     def _setup_ui(
@@ -64,15 +65,18 @@ class _LayerItem(QWidget):
         self._color_btn.clicked.connect(self._on_color_click)
         layout.addWidget(self._color_btn)
 
-        # Inline editable name — explicitly use WindowText so Qt's selection
-        # cascade (which can force white) does not bleed into the label.
+        # Inline editable name — read-only by default; double-click to rename.
+        # Explicitly use WindowText so Qt's selection cascade (which can force
+        # white) does not bleed into the label.
         self._name_edit = QLineEdit(name)
+        self._name_edit.setReadOnly(True)
         self._name_edit.setMinimumWidth(60)
         self._name_edit.setStyleSheet(
             "QLineEdit { border: none; background: transparent; color: palette(windowText); }"
             "QLineEdit:focus { border: 1px solid palette(highlight); background: palette(base); color: palette(text); }"
         )
         self._name_edit.editingFinished.connect(self._on_name_edited)
+        self._name_edit.installEventFilter(self)
         layout.addWidget(self._name_edit, stretch=1)
 
         # Path count badge
@@ -115,15 +119,49 @@ class _LayerItem(QWidget):
         self._lock_btn.setText("🔒" if self._locked else "🔓")
         self._controller.set_layer_locked(self.layer_id, self._locked)
 
-    def _on_name_edited(self) -> None:
-        new_name = self._name_edit.text().strip()
-        if new_name:
-            self._controller.set_layer_name(self.layer_id, new_name)
+    def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
+        self._enter_edit_mode()
+        super().mouseDoubleClickEvent(event)
+
+    def eventFilter(self, obj, event) -> bool:  # type: ignore[override]
+        if obj is self._name_edit:
+            if event.type() == QEvent.Type.MouseButtonDblClick:
+                self._enter_edit_mode()
+                return True
+            elif event.type() == QEvent.Type.FocusOut:
+                self._exit_edit_mode(save=True)
+            elif event.type() == QEvent.Type.KeyPress:
+                if event.key() == Qt.Key.Key_Escape:
+                    self._exit_edit_mode(save=False)
+                    return True
+        return super().eventFilter(obj, event)
+
+    def _enter_edit_mode(self) -> None:
+        """Enter inline rename mode: make the name field editable and select all."""
+        self._edit_original_name = self._name_edit.text()
+        self._name_edit.setReadOnly(False)
+        self._name_edit.setFocus()
+        self._name_edit.selectAll()
+
+    def _exit_edit_mode(self, save: bool = True) -> None:
+        """Exit inline rename mode. If save=False, restore the original name."""
+        if self._name_edit.isReadOnly():
+            return
+        self._name_edit.setReadOnly(True)
+        if save:
+            new_name = self._name_edit.text().strip()
+            if new_name:
+                self._controller.set_layer_name(self.layer_id, new_name)
+            else:
+                # Restore previous name from model if blank
+                layer = self._controller.get_layer(self.layer_id)
+                if layer:
+                    self._name_edit.setText(layer.name)
         else:
-            # Restore previous name from model if blank
-            layer = self._controller.get_layer(self.layer_id)
-            if layer:
-                self._name_edit.setText(layer.name)
+            self._name_edit.setText(self._edit_original_name)
+
+    def _on_name_edited(self) -> None:
+        self._exit_edit_mode(save=True)
 
     def update_from_layer(self, name: str, color: str, visible: bool, locked: bool, path_count: int) -> None:
         self._name_edit.setText(name)

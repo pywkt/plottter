@@ -586,13 +586,16 @@ class TestLayerPanelIntegration:
         assert controller.get_layer(layer_id).locked is True
 
     def test_layer_item_name_edit(self, main_window, controller, qtbot):
-        """Editing the name field on a layer item renames the layer."""
+        """Double-clicking the name field enters edit mode and renames the layer."""
         panel = main_window._layer_panel
         item = panel._list.item(0)
         from plottter.gui.layer_panel import _LayerItem
         widget = panel._list.itemWidget(item)
         assert isinstance(widget, _LayerItem)
         layer_id = widget.layer_id
+        # Enter edit mode first (simulates double-click), then type a new name
+        widget._enter_edit_mode()
+        assert not widget._name_edit.isReadOnly()
         widget._name_edit.setText("Edited Name")
         with qtbot.waitSignal(controller.layer_changed, timeout=1000):
             widget._name_edit.editingFinished.emit()
@@ -607,6 +610,8 @@ class TestLayerPanelIntegration:
         assert isinstance(widget, _LayerItem)
         layer_id = widget.layer_id
         original_name = controller.get_layer(layer_id).name
+        # Enter edit mode first, then clear the text
+        widget._enter_edit_mode()
         widget._name_edit.setText("")
         widget._name_edit.editingFinished.emit()
         # Name should revert in the widget
