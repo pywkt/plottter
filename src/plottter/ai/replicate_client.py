@@ -1,8 +1,9 @@
 """Replicate.com API wrapper for AI-powered image processing.
 
+This module uses the Replicate REST API directly with no third-party SDK.
 All network calls should be run in a QThread so the GUI stays responsive.
 Check ``ReplicateClient.is_available()`` before calling any method; it returns
-``False`` when the API key is not set.
+``False`` when the API key is not set. The API key is configured in Preferences.
 """
 
 from __future__ import annotations
