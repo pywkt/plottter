@@ -1,4 +1,4 @@
-"""Tests for the LIC generator seed utilities — 42.1 and streamline tracer — 42.2.
+"""Tests for the LIC generator — 42.1, 42.2, 42.3, 42.5.
 
 Covers:
   (a) Grid produces expected number of seeds for given canvas size and spacing
@@ -9,6 +9,11 @@ Covers:
   (f) Streamline in a uniform 45° field produces a diagonal line
   (g) Streamline stops at canvas boundaries
   (h) Returned points are spaced by approximately step_size_mm
+  [42.5]
+  (e2) Generator produces valid polylines within canvas bounds
+  (f2) All three vector field modes produce output
+  (g2) Missing image returns [] (no error)
+  (h2) density_modulation=False produces more streamlines than True on bright image
 """
 
 from __future__ import annotations
@@ -462,3 +467,244 @@ def test_separation_three_streamlines_mixed():
     assert sl_a in result
     assert sl_b in result
     assert sl_c not in result
+
+
+# ---------------------------------------------------------------------------
+# 42.5 — LICGenerator integration tests
+# ---------------------------------------------------------------------------
+
+
+def _make_canvas() -> "Canvas":
+    from plottter.models.canvas import Canvas
+
+    return Canvas.from_preset("A4", margin=10.0)
+
+
+def _gradient_image(size: int = 64) -> np.ndarray:
+    """Return a float32 image that linearly ramps from 0 (left) to 1 (right).
+
+    A horizontal ramp has a constant non-zero Sobel x-gradient everywhere, so
+    all three vector field modes (gradient, perpendicular_gradient, etf) produce
+    a non-zero field that the streamline tracer can follow.
+    """
+    row = np.linspace(0.0, 1.0, size, dtype=np.float32)
+    return np.tile(row, (size, 1))  # shape (size, size)
+
+
+def _default_lic_params(img: np.ndarray) -> dict:
+    return {
+        "_source_image": img,
+        "vector_field": "gradient",
+        "kernel_length_mm": 10.0,
+        "seed_spacing_mm": 5.0,
+        "separation_distance_mm": 3.0,
+        "step_size_mm": 1.0,
+        "density_modulation": False,
+        "brightness_threshold": 220,
+        "etf_kernel_radius": 3.0,
+        "etf_iterations": 2,
+        "brightness": 0.0,
+        "contrast": 0.0,
+        "blur_radius": 0.0,
+        "invert": False,
+        "x_offset_mm": 0.0,
+        "y_offset_mm": 0.0,
+    }
+
+
+# (e2) Generator produces valid polylines within canvas bounds
+class TestLICGeneratorOutput:
+    def setup_method(self):
+        pytest.importorskip("cv2")
+        from plottter.generators.lic import LICGenerator
+
+        self.gen = LICGenerator()
+        self.canvas = _make_canvas()
+
+    def test_polylines_have_at_least_two_points(self):
+        """Every returned polyline must have ≥ 2 points."""
+        # Gradient image ensures non-zero vector field so streamlines can be traced
+        img = _gradient_image()
+        result = self.gen.generate(_default_lic_params(img), self.canvas)
+        assert len(result) > 0, "Gradient image should produce at least one polyline"
+        for poly in result:
+            assert len(poly) >= 2, f"Polyline has only {len(poly)} point(s)"
+
+    def test_polylines_within_canvas_bounds(self):
+        """All returned points must lie within the canvas drawing area."""
+        img = _gradient_image()
+        result = self.gen.generate(_default_lic_params(img), self.canvas)
+        x1, y1, x2, y2 = self.canvas.drawing_area()
+        tol = 1.0  # 1 mm tolerance for boundary rounding
+
+        assert len(result) > 0
+        for poly in result:
+            for x, y in poly:
+                assert x1 - tol <= x <= x2 + tol, (
+                    f"x={x} outside canvas [{x1 - tol:.1f}, {x2 + tol:.1f}]"
+                )
+                assert y1 - tol <= y <= y2 + tol, (
+                    f"y={y} outside canvas [{y1 - tol:.1f}, {y2 + tol:.1f}]"
+                )
+
+    def test_generator_is_registered(self):
+        """LICGenerator must be present in the GENERATORS registry."""
+        from plottter.generators import GENERATORS
+
+        assert "Line Integral Convolution" in GENERATORS
+        assert GENERATORS["Line Integral Convolution"].category == "image"
+
+    def test_progress_callback_fires(self):
+        """Progress callback must be called and reach 100."""
+        img = _gradient_image()
+        progress_values = []
+        self.gen.generate(
+            _default_lic_params(img),
+            self.canvas,
+            progress_callback=lambda v: progress_values.append(v),
+        )
+        assert len(progress_values) > 0, "Progress callback should have been called"
+        assert 100 in progress_values, "Progress should reach 100"
+
+
+# (f2) All three vector field modes produce output
+class TestLICVectorFieldModes:
+    def setup_method(self):
+        pytest.importorskip("cv2")
+        from plottter.generators.lic import LICGenerator
+
+        self.gen = LICGenerator()
+        self.canvas = _make_canvas()
+
+    def _run_mode(self, mode: str) -> list:
+        img = _gradient_image()
+        params = _default_lic_params(img)
+        params["vector_field"] = mode
+        return self.gen.generate(params, self.canvas)
+
+    def test_gradient_mode_produces_output(self):
+        result = self._run_mode("gradient")
+        assert isinstance(result, list), "gradient mode must return a list"
+        assert len(result) > 0, "gradient mode produced no polylines on black image"
+
+    def test_perpendicular_gradient_mode_produces_output(self):
+        result = self._run_mode("perpendicular_gradient")
+        assert isinstance(result, list)
+        assert len(result) > 0, "perpendicular_gradient mode produced no polylines"
+
+    def test_etf_mode_produces_output(self):
+        result = self._run_mode("etf")
+        assert isinstance(result, list)
+        assert len(result) > 0, "etf mode produced no polylines on black image"
+
+    def test_all_modes_return_valid_polylines(self):
+        """Every polyline from each mode must have ≥ 2 points."""
+        for mode in ("gradient", "perpendicular_gradient", "etf"):
+            result = self._run_mode(mode)
+            for poly in result:
+                assert len(poly) >= 2, (
+                    f"mode={mode!r}: polyline has only {len(poly)} point(s)"
+                )
+
+
+# (g2) Missing image returns [] without raising an exception
+class TestLICMissingImage:
+    def setup_method(self):
+        from plottter.generators.lic import LICGenerator
+
+        self.gen = LICGenerator()
+        self.canvas = _make_canvas()
+
+    def _base_params(self) -> dict:
+        return {
+            "vector_field": "gradient",
+            "kernel_length_mm": 10.0,
+            "seed_spacing_mm": 5.0,
+            "separation_distance_mm": 3.0,
+            "step_size_mm": 1.0,
+            "density_modulation": False,
+            "brightness_threshold": 220,
+            "etf_kernel_radius": 3.0,
+            "etf_iterations": 2,
+            "brightness": 0.0,
+            "contrast": 0.0,
+            "blur_radius": 0.0,
+            "invert": False,
+            "x_offset_mm": 0.0,
+            "y_offset_mm": 0.0,
+        }
+
+    def test_no_source_image_key_returns_empty(self):
+        """Generator returns [] when '_source_image' key is absent."""
+        result = self.gen.generate(self._base_params(), self.canvas)
+        assert result == [], (
+            "Expected [] when _source_image is absent, "
+            f"got {len(result)} polylines"
+        )
+
+    def test_none_source_image_returns_empty(self):
+        """Generator returns [] when '_source_image' is None."""
+        params = self._base_params()
+        params["_source_image"] = None
+        result = self.gen.generate(params, self.canvas)
+        assert result == [], (
+            "Expected [] when _source_image is None, "
+            f"got {len(result)} polylines"
+        )
+
+
+# (h2) density_modulation=False produces more streamlines than True for bright image
+class TestLICDensityModulation:
+    def setup_method(self):
+        pytest.importorskip("cv2")
+        from plottter.generators.lic import LICGenerator
+
+        self.gen = LICGenerator()
+        self.canvas = _make_canvas()
+
+    def test_density_off_more_streamlines_on_bright_image(self):
+        """density_modulation=False must keep seeds in bright areas that True removes.
+
+        Uses a horizontal gradient ramp (left=0, right=1) scaled to be mostly
+        bright (0.5–1.0).  With a very low brightness_threshold (50/255 ≈ 0.20),
+        density_modulation=True removes all seeds in the right (bright) half while
+        density_modulation=False keeps them all.
+        """
+        # Gradient from 0.5 to 1.0 — right half is clearly above threshold 0.20
+        row = np.linspace(0.5, 1.0, 64, dtype=np.float32)
+        img = np.tile(row, (64, 1))
+
+        params_on = _default_lic_params(img)
+        params_on["density_modulation"] = True
+        params_on["brightness_threshold"] = 50  # 50/255 ≈ 0.20 — removes most seeds
+
+        params_off = _default_lic_params(img)
+        params_off["density_modulation"] = False
+
+        result_on = self.gen.generate(params_on, self.canvas)
+        result_off = self.gen.generate(params_off, self.canvas)
+
+        assert len(result_off) > len(result_on), (
+            f"density_modulation=False ({len(result_off)}) should produce more "
+            f"streamlines than True ({len(result_on)}) on a mostly-bright image"
+        )
+
+    def test_density_on_removes_seeds_above_threshold(self):
+        """density_modulation=True with a very low threshold eliminates bright-area seeds.
+
+        A gradient image (0.5–1.0) with brightness_threshold=50 (≈0.20 normalised)
+        removes all seeds because every pixel exceeds the threshold.  The result
+        must be empty (no seeds survive to trace).
+        """
+        row = np.linspace(0.5, 1.0, 64, dtype=np.float32)
+        img = np.tile(row, (64, 1))  # all pixels in [0.5, 1.0]
+
+        params = _default_lic_params(img)
+        params["density_modulation"] = True
+        params["brightness_threshold"] = 50  # 50/255 ≈ 0.20 — below every pixel
+
+        result = self.gen.generate(params, self.canvas)
+        assert result == [], (
+            f"Bright image with low brightness threshold should yield no streamlines, "
+            f"got {len(result)}"
+        )
