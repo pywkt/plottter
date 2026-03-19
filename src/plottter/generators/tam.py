@@ -241,6 +241,165 @@ def _render_strokes(
     return polylines
 
 
+def _select_strokes_for_image(
+    tone_levels: list[list[tuple[float, float, float]]],
+    image: np.ndarray,
+    canvas_w: float,
+    canvas_h: float,
+    density_curve: str = "linear",
+) -> list[tuple[float, float, float]]:
+    """Select which strokes to draw based on local image brightness.
+
+    For each stroke position, the local image brightness (0.0 = black,
+    1.0 = white) is mapped to a *tone index* in ``[0, N-1]`` where N is the
+    number of tone levels.  A stroke that first appears at tone level K is
+    included in the output if the mapped tone index ≥ K.
+
+    Because tone levels are nested (level K is a subset of level K+1), the
+    full darkest level is used as the master list and each stroke's *birth
+    level* is determined as the smallest K for which it appears.
+
+    Parameters
+    ----------
+    tone_levels:
+        Nested stroke sets from :func:`_build_tone_levels`.  Level 0 is
+        lightest (fewest strokes); level ``N-1`` is darkest (all strokes).
+    image:
+        Grayscale image as a 2-D float array with values in ``[0.0, 1.0]``.
+        0.0 = black (maximum hatching), 1.0 = white (no hatching).
+        May also be a 3-channel (H, W, 3) or 4-channel (H, W, 4) uint8
+        array; in that case the luminance is computed automatically.
+    canvas_w, canvas_h:
+        Canvas dimensions in mm, used to map stroke positions to pixel
+        coordinates.
+    density_curve:
+        Controls the non-linear mapping from brightness to tone index.
+
+        * ``"linear"``      — tone index = darkness * N  (darkness = 1 - brightness)
+        * ``"quadratic"``   — tone index = sqrt(darkness) * N; concave curve
+          that produces more strokes than linear at mid-gray brightness.
+        * ``"logarithmic"`` — tone index = log1p(darkness*(e-1)) * N;
+          similar concave shape, slightly gentler than quadratic.
+
+    Returns
+    -------
+    List of ``(x_mm, y_mm, angle_rad)`` tuples — the strokes that should be
+    rendered for the given image.  Pure-white regions produce no strokes;
+    pure-black regions produce all strokes from the darkest tone level.
+    """
+    if len(tone_levels) == 0:
+        return []
+
+    num_levels = len(tone_levels)
+
+    # ------------------------------------------------------------------
+    # 1. Normalise image to float32 luminance in [0, 1]
+    # ------------------------------------------------------------------
+    img = np.asarray(image)
+    if img.dtype != np.float32 and img.dtype != np.float64:
+        img = img.astype(np.float64) / 255.0
+
+    if img.ndim == 3:
+        # Take luminance: weighted RGB or simple mean
+        if img.shape[2] >= 3:
+            img = (
+                0.2126 * img[:, :, 0]
+                + 0.7152 * img[:, :, 1]
+                + 0.0722 * img[:, :, 2]
+            )
+        else:
+            img = img[:, :, 0]
+
+    img = np.asarray(img, dtype=np.float64)
+    img = np.clip(img, 0.0, 1.0)
+
+    h_px, w_px = img.shape
+
+    # ------------------------------------------------------------------
+    # 2. Determine the *birth level* of every stroke
+    # ------------------------------------------------------------------
+    # The darkest level contains all strokes; lighter levels are subsets.
+    # Birth level K = smallest level index at which the stroke appears.
+    # We build a mapping stroke_id → birth_level.
+    all_strokes = tone_levels[num_levels - 1]  # all strokes (darkest level)
+    n_strokes = len(all_strokes)
+
+    # Build set membership: which strokes are in each level
+    # Use tuple identity via position in the all_strokes list.
+    # Because tone_levels are built as prefix slices, level K contains the
+    # first len(tone_levels[K]) strokes from all_strokes.
+    birth_level = np.zeros(n_strokes, dtype=np.int32)
+    level_sizes = [len(lvl) for lvl in tone_levels]
+
+    # Birth level for stroke i = smallest K such that i < level_sizes[K]
+    # Since level_sizes is strictly increasing, we can vectorise this.
+    sizes = np.array(level_sizes, dtype=np.int32)  # shape (N,)
+    for i in range(n_strokes):
+        # First level whose size exceeds i
+        bl = np.searchsorted(sizes, i + 1, side="left")
+        birth_level[i] = int(bl)
+
+    # ------------------------------------------------------------------
+    # 3. Vectorised brightness sampling
+    # ------------------------------------------------------------------
+    xs = np.array([s[0] for s in all_strokes], dtype=np.float64)
+    ys = np.array([s[1] for s in all_strokes], dtype=np.float64)
+
+    if w_px > 0 and canvas_w > 0:
+        px_coords = np.clip((xs / canvas_w) * (w_px - 1), 0.0, w_px - 1.0)
+    else:
+        px_coords = np.zeros(n_strokes)
+    if h_px > 0 and canvas_h > 0:
+        py_coords = np.clip((ys / canvas_h) * (h_px - 1), 0.0, h_px - 1.0)
+    else:
+        py_coords = np.zeros(n_strokes)
+
+    ix = np.round(px_coords).astype(np.int32)
+    iy = np.round(py_coords).astype(np.int32)
+    brightness = img[iy, ix]  # shape (n_strokes,)
+
+    # ------------------------------------------------------------------
+    # 4. Apply density curve: darkness → tone_index in [0, N]
+    #
+    # Mapping uses the open interval (0, N] so that:
+    #   brightness = 1.0  →  darkness = 0.0  →  tone_index = 0.0  → no strokes
+    #   brightness = 0.0  →  darkness = 1.0  →  tone_index = N    → all strokes
+    #
+    # Stroke born at level K is included when tone_index > K  (strict).
+    #
+    # Curve definitions (darkness ∈ [0, 1]):
+    #   "linear"      — tone_index = darkness * N
+    #   "quadratic"   — tone_index = sqrt(darkness) * N  (concave, > linear for mid)
+    #                   Emphasises mid-tones: a small amount of darkness
+    #                   quickly produces many strokes.
+    #   "logarithmic" — tone_index = log1p(darkness*(e-1))/1 * N
+    #                   Similar concave shape, slightly gentler than sqrt.
+    # ------------------------------------------------------------------
+    darkness = 1.0 - brightness  # 0.0 = white, 1.0 = black
+    n_full = float(num_levels)
+
+    curve = density_curve.lower().strip()
+    if curve == "quadratic":
+        # sqrt is a "quadratic" root — concave up, more strokes than linear
+        tone_index = np.sqrt(darkness) * n_full
+    elif curve == "logarithmic":
+        import math as _math
+        scale = _math.log1p(_math.e - 1.0)  # = 1.0 exactly (log1p(e-1) = 1)
+        tone_index = np.log1p(darkness * (_math.e - 1.0)) / scale * n_full
+    else:
+        # "linear" (default)
+        tone_index = darkness * n_full
+
+    # ------------------------------------------------------------------
+    # 5. Include stroke i if tone_index[i] > birth_level[i]  (strict)
+    #
+    # Strict inequality ensures brightness=1.0 (tone_index=0) excludes
+    # all strokes, including those born at the lightest level 0.
+    # ------------------------------------------------------------------
+    mask = tone_index > birth_level.astype(np.float64)
+    return [all_strokes[i] for i in range(n_strokes) if mask[i]]
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
