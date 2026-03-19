@@ -83,24 +83,34 @@ class _OptimizeWorker(QThread):
         self,
         paths: list[Polyline],
         run_weld: bool = False,
+        weld_tolerance: float = 0.1,
         run_simplify: bool = True,
+        simplify_tolerance: float = 0.1,
         run_filter: bool = True,
+        filter_min_length: float = 0.5,
         run_clip: bool = True,
         clip_bounds: tuple[float, float, float, float] | None = None,
         run_merge: bool = True,
+        merge_threshold: float = 0.5,
         run_2opt: bool = True,
+        run_or_opt: bool = True,
         num_starts: int = 5,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._paths = paths
         self._run_weld = run_weld
+        self._weld_tolerance = weld_tolerance
         self._run_simplify = run_simplify
+        self._simplify_tolerance = simplify_tolerance
         self._run_filter = run_filter
+        self._filter_min_length = filter_min_length
         self._run_clip = run_clip
         self._clip_bounds = clip_bounds
         self._run_merge = run_merge
+        self._merge_threshold = merge_threshold
         self._run_2opt = run_2opt
+        self._run_or_opt = run_or_opt
         self._num_starts = num_starts
         self._cancelled = False
 
@@ -129,15 +139,15 @@ class _OptimizeWorker(QThread):
             # --- Preprocessing steps (0-10%) ---
             self.progress.emit(0)
             if self._run_weld:
-                paths = weld_overlapping_paths(paths)
+                paths = weld_overlapping_paths(paths, tolerance_mm=self._weld_tolerance)
             if self._run_simplify:
-                paths = simplify_paths(paths)
+                paths = simplify_paths(paths, tolerance_mm=self._simplify_tolerance)
             if self._run_filter:
-                paths = filter_short_paths(paths)
+                paths = filter_short_paths(paths, min_length_mm=self._filter_min_length)
             if self._run_clip and self._clip_bounds is not None:
                 paths = clip_to_bounds(paths, self._clip_bounds)
             if self._run_merge:
-                paths = merge_nearby_paths(paths)
+                paths = merge_nearby_paths(paths, threshold_mm=self._merge_threshold)
             self.progress.emit(10)
 
             if self._cancelled:
@@ -169,17 +179,17 @@ class _OptimizeWorker(QThread):
                 )
                 self.progress.emit(70)
 
+            if self._run_or_opt and not self._cancelled:
                 # --- Or-opt improvement (70-100%) ---
-                if not self._cancelled:
-                    def _oropt_progress(f: float) -> None:
-                        self.progress.emit(70 + int(f * 30))
+                def _oropt_progress(f: float) -> None:
+                    self.progress.emit(70 + int(f * 30))
 
-                    paths = optimize_or_opt(
-                        paths,
-                        progress_callback=_oropt_progress,
-                        cancelled=lambda: self._cancelled,
-                    )
-                    self.progress.emit(100)
+                paths = optimize_or_opt(
+                    paths,
+                    progress_callback=_oropt_progress,
+                    cancelled=lambda: self._cancelled,
+                )
+                self.progress.emit(100)
 
             after_travel = calculate_travel_distance(paths)
             after_lifts = len(paths)
@@ -1237,8 +1247,15 @@ class MainWindow(QMainWindow):
         if not layer.paths:
             QMessageBox.information(self, "Optimize", "Selected layer has no paths.")
             return
+
+        from plottter.gui.dialogs.optimize_dialog import OptimizeSettingsDialog
+
+        dlg = OptimizeSettingsDialog(parent=self)
+        if dlg.exec() != OptimizeSettingsDialog.DialogCode.Accepted:
+            return
+
         bounds = self._controller.current_project.canvas.drawing_area()
-        self._run_optimization([layer], bounds)
+        self._run_optimization([layer], bounds, settings=dlg.get_settings())
 
     def _on_optimize_all(self) -> None:
         """Run the full optimization pipeline on all unlocked layers."""
@@ -1444,10 +1461,12 @@ class MainWindow(QMainWindow):
         self,
         layers: list[Layer],
         bounds: tuple[float, float, float, float],
+        settings: dict | None = None,
     ) -> None:
         """Run optimization on each layer sequentially (one worker per layer)."""
         self._opt_layers = list(layers)
         self._opt_bounds = bounds
+        self._opt_settings = settings  # None → use worker defaults
         self._opt_layer_idx = 0
         self._opt_results: list[tuple[Layer, list[Polyline], float, float, int, int]] = []
 
@@ -1479,9 +1498,21 @@ class MainWindow(QMainWindow):
             f"Step: Preprocessing"
         )
 
+        s = self._opt_settings or {}
         worker = _OptimizeWorker(
             paths=list(layer.paths),
+            run_weld=s.get("run_weld", False),
+            weld_tolerance=s.get("weld_tolerance", 0.1),
+            run_simplify=s.get("run_simplify", True),
+            simplify_tolerance=s.get("simplify_tolerance", 0.1),
+            run_filter=s.get("run_filter", True),
+            filter_min_length=s.get("filter_min_length", 0.5),
+            run_clip=s.get("run_clip", True),
             clip_bounds=self._opt_bounds,
+            run_merge=s.get("run_merge", True),
+            merge_threshold=s.get("merge_threshold", 0.5),
+            run_2opt=s.get("run_2opt", True),
+            run_or_opt=s.get("run_or_opt", True),
             num_starts=5,
             parent=self,
         )
