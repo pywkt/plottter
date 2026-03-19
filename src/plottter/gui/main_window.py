@@ -1268,8 +1268,12 @@ class MainWindow(QMainWindow):
         layer = self._controller.get_layer(layer_id) if layer_id else None
         if layer is None or not layer.paths:
             return
+        from plottter.gui.dialogs.merge_dialog import MergeDialog
+        dialog = MergeDialog(list(layer.paths), parent=self)
+        if dialog.exec() != MergeDialog.DialogCode.Accepted:
+            return
         from plottter.processing import merge_nearby_paths
-        new_paths = merge_nearby_paths(layer.paths)
+        new_paths = merge_nearby_paths(layer.paths, dialog.get_threshold())
         self._controller.set_layer_paths(layer.id, new_paths, "Merge Nearby Paths")
 
     def _on_clip_layer(self) -> None:
