@@ -1255,8 +1255,12 @@ class MainWindow(QMainWindow):
         layer = self._controller.get_layer(layer_id) if layer_id else None
         if layer is None or not layer.paths:
             return
+        from plottter.gui.dialogs.simplify_dialog import SimplifyDialog
+        dialog = SimplifyDialog(list(layer.paths), parent=self)
+        if dialog.exec() != SimplifyDialog.DialogCode.Accepted:
+            return
         from plottter.processing import simplify_paths
-        new_paths = simplify_paths(layer.paths)
+        new_paths = simplify_paths(layer.paths, dialog.get_tolerance())
         self._controller.set_layer_paths(layer.id, new_paths, "Simplify Paths")
 
     def _on_merge_layer(self) -> None:
