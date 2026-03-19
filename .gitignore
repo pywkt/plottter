@@ -16,15 +16,17 @@ docker-entrypoint.sh
 setup-mcp.sh
 screenshot.js
 screenshot-wrapper.sh
-PROMPT_*.md
-AGENTS.md
-AUTOMATION_LOCK
-IN_PROGRESS.md
 IMPLEMENTATION_PLAN.md
-IMPLEMENTATION_PLAN_ARCHIVE.md
-IMPLEMENTATION_LEARNINGS.md
 CLAUDE.md
-quality_review.py
+TASK.md
+.loop_state
+
+# Dev loop prompts
+prompts/
+
+# Dev loop staging directories
+old-loop-files/
+new-loop-files/
 
 # Internal dev specs and resources
 specs/
