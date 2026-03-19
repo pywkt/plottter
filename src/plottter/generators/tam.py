@@ -1,4 +1,4 @@
-"""TAM (Tone-level Aware Marking) generator utilities.
+"""TAM (Tonal Art Maps) generator — brightness-driven short-stroke hatching.
 
 Provides `_build_tone_levels()` — a grid-jittered stroke-placement engine
 that constructs N hierarchically nested stroke sets suitable for multi-tone
@@ -24,9 +24,21 @@ Orientation modes (resolved by the caller before calling `_build_tone_levels`):
 from __future__ import annotations
 
 import math
-from typing import Union
+from typing import Any, Union
 
 import numpy as np
+
+from plottter.generators import register_generator
+from plottter.generators.base import (
+    BoolParam,
+    ChoiceParam,
+    FloatParam,
+    Generator,
+    IntParam,
+    Parameter,
+    Preset,
+)
+from plottter.models import Canvas, Polyline
 
 
 # ---------------------------------------------------------------------------
@@ -466,3 +478,614 @@ def _sample_orientation(
             + v10 * fx * (1.0 - fy)
             + v01 * (1.0 - fx) * fy
             + v11 * fx * fy)
+
+
+# ---------------------------------------------------------------------------
+# Private helpers for TAMGenerator
+# ---------------------------------------------------------------------------
+
+
+def _to_float_gray(img: np.ndarray) -> np.ndarray:
+    """Convert any image array to float64 grayscale in [0, 1]."""
+    arr = np.asarray(img)
+    if arr.dtype not in (np.float32, np.float64):
+        arr = arr.astype(np.float64) / 255.0
+    if arr.ndim == 3:
+        if arr.shape[2] >= 3:
+            arr = (
+                0.2126 * arr[:, :, 0]
+                + 0.7152 * arr[:, :, 1]
+                + 0.0722 * arr[:, :, 2]
+            )
+        else:
+            arr = arr[:, :, 0]
+    return np.clip(arr.astype(np.float64), 0.0, 1.0)
+
+
+def _compute_tam_orientation_field(
+    img_gray: np.ndarray,
+    mode: str,
+    fixed_angle_rad: float,
+    etf_kernel_radius: float,
+    etf_iterations: int,
+) -> OrientationField:
+    """Return an orientation field for TAM stroke placement.
+
+    Parameters
+    ----------
+    img_gray:
+        Float64 grayscale image in [0, 1].
+    mode:
+        ``"fixed"`` — scalar float; ``"gradient"`` — Sobel angle array;
+        ``"etf"`` — Edge Tangent Flow angle array.
+    fixed_angle_rad:
+        Constant angle used in ``"fixed"`` mode (radians).
+    etf_kernel_radius, etf_iterations:
+        ETF smoothing parameters (pixels, count).
+
+    Returns
+    -------
+    Scalar float or 2-D float64 array of angle values in radians.
+    """
+    if mode == "fixed":
+        return fixed_angle_rad
+
+    try:
+        import cv2  # noqa: F401 — only needed for gradient/etf modes
+    except ImportError:
+        return fixed_angle_rad
+
+    img_f = img_gray.astype(np.float32)
+
+    if mode == "gradient":
+        import cv2 as _cv2
+        gx = _cv2.Sobel(img_f, _cv2.CV_32F, 1, 0, ksize=5)
+        gy = _cv2.Sobel(img_f, _cv2.CV_32F, 0, 1, ksize=5)
+        return np.arctan2(gy, gx).astype(np.float64)
+
+    if mode == "etf":
+        from plottter.generators._helpers import _compute_etf
+        tx, ty = _compute_etf(img_f, etf_kernel_radius, etf_iterations)
+        return np.arctan2(ty, tx).astype(np.float64)
+
+    return fixed_angle_rad
+
+
+def _perpendicular_orientation_field(
+    field: OrientationField,
+    fixed_perp_angle: float,
+) -> OrientationField:
+    """Return an orientation field rotated 90° (π/2 radians).
+
+    For a scalar field, ``fixed_perp_angle`` is returned directly (already
+    offset by π/2 by the caller).  For an array field, every element is
+    shifted by π/2.
+    """
+    if isinstance(field, (int, float, np.floating)):
+        return float(fixed_perp_angle)
+    return np.asarray(field, dtype=np.float64) + math.pi / 2.0
+
+
+def _restrict_high_birth_levels(
+    tone_levels: list[list[tuple[float, float, float]]],
+    threshold_level: int,
+) -> list[list[tuple[float, float, float]]]:
+    """Return tone_levels containing only strokes born at >= threshold_level.
+
+    The prefix-slice nesting property is preserved: each level in the
+    returned list is a prefix slice of the high-birth-strokes sub-sequence.
+
+    Parameters
+    ----------
+    tone_levels:
+        Nested stroke sets from :func:`_build_tone_levels`.
+    threshold_level:
+        Minimum birth level to include.  Strokes born at levels below this
+        are excluded from the returned levels.
+
+    Returns
+    -------
+    New list of the same length as ``tone_levels``.  Levels 0 through
+    ``threshold_level - 1`` are empty; later levels contain only strokes
+    whose birth level in the original set is ≥ ``threshold_level``.
+    """
+    num_levels = len(tone_levels)
+    if threshold_level <= 0:
+        return tone_levels
+    if threshold_level >= num_levels:
+        return [[] for _ in range(num_levels)]
+
+    # Strokes born at level < threshold_level occupy indices 0..n_before-1
+    n_before = len(tone_levels[threshold_level - 1])
+    all_strokes_darkest = tone_levels[num_levels - 1]
+    high_birth_strokes = all_strokes_darkest[n_before:]
+
+    restricted: list[list[tuple[float, float, float]]] = []
+    for k in range(num_levels):
+        if k < threshold_level:
+            restricted.append([])
+        else:
+            level_size = max(0, len(tone_levels[k]) - n_before)
+            restricted.append(high_birth_strokes[:level_size])
+
+    return restricted
+
+
+# ---------------------------------------------------------------------------
+# TAMGenerator — Generator ABC implementation
+# ---------------------------------------------------------------------------
+
+
+@register_generator
+class TAMGenerator(Generator):
+    """Tonal Art Maps: brightness-driven short-stroke hatching for pen plotters.
+
+    Constructs a set of nested tone levels (from a grid-jittered stroke
+    seeding strategy) and selects which strokes to draw based on local image
+    brightness.  Orientation can be fixed, gradient-driven, or ETF-coherent.
+    Optional cross-hatching adds perpendicular strokes only in darker regions.
+    """
+
+    name = "Tonal Art Maps (TAM)"
+    category = "image"
+
+    def get_parameters(self) -> list[Parameter]:
+        return [
+            IntParam(
+                name="num_tone_levels",
+                label="Tone Levels",
+                min=3,
+                max=8,
+                step=1,
+                default=6,
+                description=(
+                    "Number of discrete tone levels (3–8). "
+                    "More levels = smoother tone gradation."
+                ),
+            ),
+            FloatParam(
+                name="stroke_length_mm",
+                label="Stroke Length (mm)",
+                min=1.0,
+                max=20.0,
+                step=0.5,
+                default=5.0,
+                description="Length of each stroke in mm.",
+            ),
+            FloatParam(
+                name="stroke_angle",
+                label="Stroke Angle (deg)",
+                min=0.0,
+                max=180.0,
+                step=1.0,
+                default=45.0,
+                description=(
+                    "Primary stroke direction in degrees "
+                    "(0 = horizontal, 90 = vertical). "
+                    "Used only in 'fixed' orientation mode."
+                ),
+            ),
+            BoolParam(
+                name="cross_hatch",
+                label="Cross-Hatch",
+                default=False,
+                description=(
+                    "Add a perpendicular set of strokes in darker regions "
+                    "for a cross-hatch texture."
+                ),
+            ),
+            FloatParam(
+                name="cross_hatch_threshold",
+                label="Cross-Hatch Threshold",
+                min=0.0,
+                max=1.0,
+                step=0.05,
+                default=0.5,
+                description=(
+                    "Tone level fraction at which perpendicular strokes begin. "
+                    "0 = everywhere, 1 = only the very darkest regions."
+                ),
+                visible_when={"cross_hatch": [True]},
+            ),
+            ChoiceParam(
+                name="orientation_mode",
+                label="Orientation Mode",
+                choices=["fixed", "gradient", "etf"],
+                default="fixed",
+                description="How stroke direction is determined.",
+                choice_descriptions={
+                    "fixed": "All strokes use the fixed stroke angle.",
+                    "gradient": (
+                        "Strokes follow the image brightness gradient (Sobel). "
+                        "Results in strokes running across brightness transitions."
+                    ),
+                    "etf": (
+                        "Strokes follow the Edge Tangent Flow — "
+                        "coherent alignment with image edges for a painterly look."
+                    ),
+                },
+            ),
+            FloatParam(
+                name="etf_kernel_radius",
+                label="ETF Kernel Radius",
+                min=1.0,
+                max=10.0,
+                step=0.5,
+                default=5.0,
+                description="Spatial scale for ETF smoothing in pixels.",
+                visible_when={"orientation_mode": ["etf"]},
+            ),
+            IntParam(
+                name="etf_iterations",
+                label="ETF Iterations",
+                min=1,
+                max=10,
+                step=1,
+                default=3,
+                description="Number of ETF smoothing passes (more = smoother flow).",
+                visible_when={"orientation_mode": ["etf"]},
+            ),
+            FloatParam(
+                name="curvature",
+                label="Stroke Curvature",
+                min=0.0,
+                max=1.0,
+                step=0.05,
+                default=0.0,
+                description=(
+                    "Blend factor: 0 = straight 2-point strokes, "
+                    "1 = fully curved streamlines following the orientation field."
+                ),
+            ),
+            FloatParam(
+                name="stroke_density",
+                label="Stroke Density",
+                min=0.5,
+                max=5.0,
+                step=0.1,
+                default=1.5,
+                description=(
+                    "Strokes per mm² for the darkest tone level — "
+                    "higher values produce denser hatching."
+                ),
+            ),
+            ChoiceParam(
+                name="density_curve",
+                label="Density Curve",
+                choices=["linear", "quadratic", "logarithmic"],
+                default="linear",
+                description="Non-linear mapping from image darkness to tone index.",
+                choice_descriptions={
+                    "linear": "Density scales linearly with darkness.",
+                    "quadratic": (
+                        "Emphasises dark tones (sqrt curve) — "
+                        "more hatching in shadows than linear."
+                    ),
+                    "logarithmic": (
+                        "Gentle concave curve that emphasises midtones."
+                    ),
+                },
+            ),
+            # Standard image preprocessing params
+            FloatParam(
+                name="brightness",
+                label="Brightness",
+                min=-100.0,
+                max=100.0,
+                step=1.0,
+                default=0.0,
+                description="Adjust image brightness before processing (-100 to +100).",
+            ),
+            FloatParam(
+                name="contrast",
+                label="Contrast",
+                min=-100.0,
+                max=100.0,
+                step=1.0,
+                default=0.0,
+                description="Adjust image contrast before processing (-100 to +100).",
+            ),
+            FloatParam(
+                name="blur_radius",
+                label="Blur Radius",
+                min=0.0,
+                max=20.0,
+                step=0.5,
+                default=1.0,
+                description=(
+                    "Gaussian blur applied before stroke placement — "
+                    "reduces noise and smooths tone transitions."
+                ),
+            ),
+            BoolParam(
+                name="invert",
+                label="Invert Image",
+                default=False,
+                description=(
+                    "Invert image tones before processing "
+                    "(dark areas become sparse, bright areas become dense)."
+                ),
+            ),
+            # Offset params
+            FloatParam(
+                name="x_offset_mm",
+                label="X Offset (mm)",
+                min=-500.0,
+                max=500.0,
+                step=0.5,
+                default=0.0,
+                randomizable=False,
+                description="Horizontal offset applied to the output on the canvas page (mm).",
+            ),
+            FloatParam(
+                name="y_offset_mm",
+                label="Y Offset (mm)",
+                min=-500.0,
+                max=500.0,
+                step=0.5,
+                default=0.0,
+                randomizable=False,
+                description="Vertical offset applied to the output on the canvas page (mm).",
+            ),
+        ]
+
+    def get_presets(self) -> list[Preset]:
+        return [
+            Preset(
+                name="Default",
+                params={
+                    "num_tone_levels": 6,
+                    "stroke_length_mm": 5.0,
+                    "stroke_angle": 45.0,
+                    "cross_hatch": False,
+                    "cross_hatch_threshold": 0.5,
+                    "orientation_mode": "fixed",
+                    "etf_kernel_radius": 5.0,
+                    "etf_iterations": 3,
+                    "curvature": 0.0,
+                    "stroke_density": 1.5,
+                    "density_curve": "linear",
+                    "brightness": 0.0,
+                    "contrast": 0.0,
+                    "blur_radius": 1.0,
+                    "invert": False,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="Cross-Hatch Portrait",
+                params={
+                    "num_tone_levels": 6,
+                    "stroke_length_mm": 4.0,
+                    "stroke_angle": 45.0,
+                    "cross_hatch": True,
+                    "cross_hatch_threshold": 0.4,
+                    "orientation_mode": "fixed",
+                    "etf_kernel_radius": 5.0,
+                    "etf_iterations": 3,
+                    "curvature": 0.0,
+                    "stroke_density": 2.0,
+                    "density_curve": "quadratic",
+                    "brightness": 0.0,
+                    "contrast": 20.0,
+                    "blur_radius": 1.0,
+                    "invert": False,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="ETF Flow Strokes",
+                params={
+                    "num_tone_levels": 5,
+                    "stroke_length_mm": 6.0,
+                    "stroke_angle": 45.0,
+                    "cross_hatch": False,
+                    "cross_hatch_threshold": 0.5,
+                    "orientation_mode": "etf",
+                    "etf_kernel_radius": 5.0,
+                    "etf_iterations": 3,
+                    "curvature": 0.3,
+                    "stroke_density": 1.5,
+                    "density_curve": "linear",
+                    "brightness": 0.0,
+                    "contrast": 10.0,
+                    "blur_radius": 1.5,
+                    "invert": False,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="Fine Engraving",
+                params={
+                    "num_tone_levels": 8,
+                    "stroke_length_mm": 3.0,
+                    "stroke_angle": 30.0,
+                    "cross_hatch": True,
+                    "cross_hatch_threshold": 0.6,
+                    "orientation_mode": "fixed",
+                    "etf_kernel_radius": 5.0,
+                    "etf_iterations": 3,
+                    "curvature": 0.0,
+                    "stroke_density": 3.0,
+                    "density_curve": "logarithmic",
+                    "brightness": 0.0,
+                    "contrast": 30.0,
+                    "blur_radius": 0.5,
+                    "invert": False,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
+        ]
+
+    def generate(
+        self,
+        params: dict[str, Any],
+        canvas: Canvas,
+        progress_callback: Any = None,
+        cancelled_callback: Any = None,
+    ) -> list[Polyline]:
+        source: np.ndarray | None = params.get("_source_image")
+        if source is None:
+            return []
+
+        from plottter.io.image_import import (
+            adjust_brightness,
+            adjust_contrast,
+            apply_blur,
+            invert_image,
+        )
+
+        # ------------------------------------------------------------------
+        # 1. Image preprocessing
+        # ------------------------------------------------------------------
+        img = source.copy()
+        brightness_val = float(params.get("brightness", 0.0))
+        contrast_val = float(params.get("contrast", 0.0))
+        blur_radius = float(params.get("blur_radius", 1.0))
+        do_invert = bool(params.get("invert", False))
+
+        if brightness_val != 0.0:
+            img = adjust_brightness(img, brightness_val)
+        if contrast_val != 0.0:
+            img = adjust_contrast(img, contrast_val)
+        if blur_radius > 0.0:
+            img = apply_blur(img, blur_radius)
+        if do_invert:
+            img = invert_image(img)
+
+        img_gray = _to_float_gray(img)
+
+        if progress_callback:
+            progress_callback(10)
+
+        # ------------------------------------------------------------------
+        # 2. Extract parameters
+        # ------------------------------------------------------------------
+        num_levels = max(1, int(params.get("num_tone_levels", 6)))
+        stroke_length_mm = float(params.get("stroke_length_mm", 5.0))
+        stroke_angle_deg = float(params.get("stroke_angle", 45.0))
+        stroke_angle_rad = math.radians(stroke_angle_deg)
+        do_cross_hatch = bool(params.get("cross_hatch", False))
+        cross_hatch_threshold = float(params.get("cross_hatch_threshold", 0.5))
+        orientation_mode = str(params.get("orientation_mode", "fixed"))
+        etf_kernel_radius = float(params.get("etf_kernel_radius", 5.0))
+        etf_iterations = int(params.get("etf_iterations", 3))
+        curvature = float(params.get("curvature", 0.0))
+        stroke_density = float(params.get("stroke_density", 1.5))
+        density_curve = str(params.get("density_curve", "linear"))
+        x_off = float(params.get("x_offset_mm", 0.0))
+        y_off = float(params.get("y_offset_mm", 0.0))
+
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        canvas_w = draw_x2 - draw_x1
+        canvas_h = draw_y2 - draw_y1
+
+        if canvas_w <= 0 or canvas_h <= 0:
+            return []
+
+        # ------------------------------------------------------------------
+        # 3. Compute orientation field
+        # ------------------------------------------------------------------
+        orientation_field = _compute_tam_orientation_field(
+            img_gray,
+            orientation_mode,
+            stroke_angle_rad,
+            etf_kernel_radius,
+            etf_iterations,
+        )
+
+        if progress_callback:
+            progress_callback(25)
+        if cancelled_callback and cancelled_callback():
+            return []
+
+        # ------------------------------------------------------------------
+        # 4. Build primary tone levels and select strokes
+        # ------------------------------------------------------------------
+        rng = np.random.default_rng(42)
+        tone_levels = _build_tone_levels(
+            canvas_w, canvas_h, num_levels, stroke_density, orientation_field, rng
+        )
+
+        if progress_callback:
+            progress_callback(45)
+        if cancelled_callback and cancelled_callback():
+            return []
+
+        selected_strokes = _select_strokes_for_image(
+            tone_levels, img_gray, canvas_w, canvas_h, density_curve
+        )
+
+        if progress_callback:
+            progress_callback(60)
+
+        # ------------------------------------------------------------------
+        # 5. Render primary strokes to polylines
+        # ------------------------------------------------------------------
+        polylines: list[Polyline] = _render_strokes(
+            selected_strokes,
+            stroke_length_mm,
+            orientation_field,
+            canvas_w,
+            canvas_h,
+            curvature,
+        )
+
+        # ------------------------------------------------------------------
+        # 6. Cross-hatch: perpendicular strokes in darker regions
+        # ------------------------------------------------------------------
+        if do_cross_hatch:
+            perp_angle_rad = stroke_angle_rad + math.pi / 2.0
+            perp_orientation = _perpendicular_orientation_field(
+                orientation_field, perp_angle_rad
+            )
+
+            rng2 = np.random.default_rng(123)
+            secondary_tone_levels = _build_tone_levels(
+                canvas_w, canvas_h, num_levels, stroke_density,
+                perp_orientation, rng2,
+            )
+
+            threshold_level = int(cross_hatch_threshold * num_levels)
+            threshold_level = max(0, min(num_levels - 1, threshold_level))
+
+            restricted_levels = _restrict_high_birth_levels(
+                secondary_tone_levels, threshold_level
+            )
+
+            # Only proceed if there are high-birth strokes to render
+            if restricted_levels and restricted_levels[-1]:
+                secondary_selected = _select_strokes_for_image(
+                    restricted_levels, img_gray, canvas_w, canvas_h, density_curve
+                )
+                cross_polylines = _render_strokes(
+                    secondary_selected,
+                    stroke_length_mm,
+                    perp_orientation,
+                    canvas_w,
+                    canvas_h,
+                    curvature,
+                )
+                polylines.extend(cross_polylines)
+
+            if progress_callback:
+                progress_callback(85)
+            if cancelled_callback and cancelled_callback():
+                return []
+
+        # ------------------------------------------------------------------
+        # 7. Translate from local canvas coordinates to page mm coordinates
+        # ------------------------------------------------------------------
+        result: list[Polyline] = [
+            [(x + draw_x1 + x_off, y + draw_y1 + y_off) for x, y in pl]
+            for pl in polylines
+        ]
+
+        if progress_callback:
+            progress_callback(100)
+
+        return result

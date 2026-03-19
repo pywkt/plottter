@@ -42,6 +42,7 @@ def _import_builtin_generators() -> None:
     from plottter.generators import dot_grid as _dot_grid  # noqa: F401
     from plottter.generators import concentric_rings as _concentric_rings  # noqa: F401
     from plottter.generators import geometric_grid as _geometric_grid  # noqa: F401
+    from plottter.generators import tam as _tam  # noqa: F401
 
 
 def load_plugins(extra_dirs=None) -> list[str]:
