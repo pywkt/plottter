@@ -4,6 +4,9 @@ Provides `_build_tone_levels()` — a grid-jittered stroke-placement engine
 that constructs N hierarchically nested stroke sets suitable for multi-tone
 pen-plotter rendering.
 
+Provides `_render_strokes()` — converts stroke tuples into polylines
+suitable for the plotter path model (straight or curved streamlines).
+
 The *nesting property*: every stroke that appears at tone level K also
 appears at every darker level K+1, K+2, … N-1.  This means the darkest
 level is a superset of all lighter levels, so the artwork looks correct at
@@ -150,6 +153,92 @@ def _build_tone_levels(
         levels.append(list(candidates[:count]))
 
     return levels
+
+
+def _render_strokes(
+    strokes: list[tuple[float, float, float]],
+    stroke_length_mm: float,
+    orientation_field: OrientationField,
+    canvas_w: float,
+    canvas_h: float,
+    curvature: float = 0.0,
+    n_samples: int = 7,
+) -> list[list[tuple[float, float]]]:
+    """Convert stroke tuples into polylines.
+
+    Each stroke ``(x_mm, y_mm, angle_rad)`` becomes a polyline of length
+    approximately ``stroke_length_mm``, centered on ``(x_mm, y_mm)`` and
+    initially oriented at ``angle_rad``.
+
+    Parameters
+    ----------
+    strokes:
+        List of ``(x_mm, y_mm, angle_rad)`` tuples, e.g. from
+        :func:`_build_tone_levels`.
+    stroke_length_mm:
+        Target length of each stroke in millimetres.
+    orientation_field:
+        Scalar float or 2-D angle array used for field sampling when
+        ``curvature > 0``.  Same semantics as :func:`_build_tone_levels`.
+    canvas_w, canvas_h:
+        Canvas dimensions in mm, required for array field lookups.
+    curvature:
+        Blend factor in ``[0.0, 1.0]``.
+
+        * ``0.0`` — straight 2-point segment; the field is never sampled.
+        * ``1.0`` — fully curved streamline; every step follows the local
+          orientation field.
+        * Intermediate values linearly blend the initial stroke angle with
+          the sampled field angle at each integration step.
+    n_samples:
+        Number of points in curved polylines (``curvature > 0``).
+        Clamped to ``≥ 2``.  Ignored when ``curvature == 0``.
+
+    Returns
+    -------
+    List of polylines, one per input stroke.  Each polyline is a
+    ``list[tuple[float, float]]`` with at least 2 points.  The arc length
+    of each polyline equals ``stroke_length_mm`` exactly (straight) or
+    within floating-point precision (curved, since step sizes are fixed).
+    """
+    curvature = max(0.0, min(1.0, float(curvature)))
+    stroke_length_mm = max(0.0, float(stroke_length_mm))
+    n_samples = max(2, int(n_samples))
+
+    polylines: list[list[tuple[float, float]]] = []
+
+    for x, y, angle in strokes:
+        half = stroke_length_mm / 2.0
+        cos_a = math.cos(angle)
+        sin_a = math.sin(angle)
+
+        if curvature <= 0.0:
+            # Straight 2-point segment centered at (x, y).
+            start = (x - cos_a * half, y - sin_a * half)
+            end = (x + cos_a * half, y + sin_a * half)
+            polylines.append([start, end])
+        else:
+            # Curved streamline traced by Euler integration.
+            # Start at one end of the nominal straight stroke and walk
+            # forward, sampling the orientation field at each step.
+            step = stroke_length_mm / (n_samples - 1)
+            cx = x - cos_a * half
+            cy = y - sin_a * half
+            points: list[tuple[float, float]] = [(cx, cy)]
+
+            for _ in range(n_samples - 1):
+                field_angle = _sample_orientation(
+                    cx, cy, canvas_w, canvas_h, orientation_field
+                )
+                # Linear blend: curvature=0 → initial angle, curvature=1 → field
+                eff_angle = angle * (1.0 - curvature) + field_angle * curvature
+                cx = cx + math.cos(eff_angle) * step
+                cy = cy + math.sin(eff_angle) * step
+                points.append((cx, cy))
+
+            polylines.append(points)
+
+    return polylines
 
 
 # ---------------------------------------------------------------------------
