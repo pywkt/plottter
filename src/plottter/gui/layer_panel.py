@@ -5,6 +5,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, QSize, QEvent
 from PyQt6.QtGui import QColor, QIcon, QPalette, QPixmap
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QColorDialog,
     QHBoxLayout,
     QInputDialog,
@@ -198,22 +199,32 @@ class _LayerItem(QWidget):
         self._opacity_slider.blockSignals(False)
         self._opacity_label.setText(f"{slider_val}%")
 
-    def set_selected(self, selected: bool) -> None:
-        """Adjust text colors so they remain readable against the selection highlight.
+    def set_selected(self, active: bool, in_selection: bool = False) -> None:
+        """Adjust text colors and background for three visual states.
+
+        active: this is the "current" layer — full selection highlight.
+        in_selection: part of a multi-selection group but not the active layer —
+            subtle blue tint to indicate membership without full highlight.
+        Neither: normal appearance.
 
         Qt's stylesheet cascade can force white text onto child widgets inside a
         selected QListWidgetItem, making text unreadable against light highlight
-        colours (pink, light-blue, etc.).  We override this by reading the
-        correct foreground colour directly from the palette and applying it via
-        an explicit stylesheet rule.
+        colours.  We override this by reading the correct foreground colour
+        directly from the palette and applying it via an explicit stylesheet rule.
         """
         pal = self.palette()
-        if selected:
+        if active:
             text_color = pal.color(QPalette.ColorRole.HighlightedText).name()
             count_color = text_color
+            bg = ""
+        elif in_selection:
+            text_color = pal.color(QPalette.ColorRole.WindowText).name()
+            count_color = pal.color(QPalette.ColorRole.PlaceholderText).name()
+            bg = "background: rgba(100, 160, 220, 0.25);"
         else:
             text_color = pal.color(QPalette.ColorRole.WindowText).name()
             count_color = pal.color(QPalette.ColorRole.PlaceholderText).name()
+            bg = ""
 
         self._name_edit.setStyleSheet(
             f"QLineEdit {{ border: none; background: transparent; color: {text_color}; }}"
@@ -221,6 +232,16 @@ class _LayerItem(QWidget):
         )
         self._count_label.setStyleSheet(f"color: {count_color}; font-size: 10px;")
         self._opacity_label.setStyleSheet(f"color: {count_color}; font-size: 10px;")
+
+        # Apply subtle tint for in_selection state
+        if in_selection and not active:
+            self.setAutoFillBackground(True)
+            p = self.palette()
+            p.setColor(QPalette.ColorRole.Window, QColor(100, 160, 220, 60))
+            self.setPalette(p)
+        else:
+            self.setAutoFillBackground(False)
+            self.setPalette(self.style().standardPalette())
 
 
 class LayerPanel(QWidget):
@@ -240,6 +261,7 @@ class LayerPanel(QWidget):
 
         self._list = QListWidget()
         self._list.setDragDropMode(QListWidget.DragDropMode.InternalMove)
+        self._list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._list.customContextMenuRequested.connect(self._show_context_menu)
         self._list.model().rowsMoved.connect(self._on_rows_moved)
@@ -265,7 +287,7 @@ class LayerPanel(QWidget):
         self._dup_btn.clicked.connect(self._on_duplicate)
 
         self._merge_btn = QPushButton("⊕")
-        self._merge_btn.setToolTip("Merge Selected")
+        self._merge_btn.setToolTip("Merge Selected Layers (Ctrl+Click to select multiple)")
         self._merge_btn.setFixedWidth(28)
         self._merge_btn.clicked.connect(self._on_merge)
 
@@ -294,6 +316,7 @@ class LayerPanel(QWidget):
         c.layer_changed.connect(self._on_layer_changed)
         c.paths_changed.connect(self._on_paths_changed)
         self._list.currentItemChanged.connect(self._on_current_item_changed)
+        self._list.itemSelectionChanged.connect(self._update_selection_visuals)
 
     def _rebuild_list(self, *_args) -> None:  # type: ignore[no-untyped-def]
         self._list.clear()
@@ -329,6 +352,7 @@ class LayerPanel(QWidget):
                 widget = self._list.itemWidget(item)
                 if isinstance(widget, _LayerItem):
                     widget.set_selected(True)
+        self._update_selection_visuals()
 
     def _on_layer_changed(self, layer_id: str) -> None:
         for i in range(self._list.count()):
@@ -345,19 +369,27 @@ class LayerPanel(QWidget):
     def _on_paths_changed(self, layer_id: str) -> None:
         self._on_layer_changed(layer_id)
 
-    def _on_current_item_changed(self, current, previous) -> None:  # type: ignore[no-untyped-def]
-        """Notify the controller when the selected layer changes."""
-        if previous is not None:
-            widget = self._list.itemWidget(previous)
-            if isinstance(widget, _LayerItem):
-                widget.set_selected(False)
+    def _on_current_item_changed(self, current, _previous) -> None:  # type: ignore[no-untyped-def]
+        """Notify the controller when the active (most recently clicked) layer changes."""
         if current is not None:
             layer_id = current.data(Qt.ItemDataRole.UserRole)
             if layer_id:
                 self._controller.set_active_layer(layer_id)
-            widget = self._list.itemWidget(current)
+        self._update_selection_visuals()
+
+    def _update_selection_visuals(self) -> None:
+        """Refresh the visual state of every item based on current/selected state."""
+        current = self._list.currentItem()
+        selected_items = self._list.selectedItems()
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            if item is None:
+                continue
+            widget = self._list.itemWidget(item)
             if isinstance(widget, _LayerItem):
-                widget.set_selected(True)
+                is_active = item is current
+                is_in_sel = any(item is s for s in selected_items) and not is_active
+                widget.set_selected(is_active, in_selection=is_in_sel)
 
     def _current_layer_id(self) -> str | None:
         item = self._list.currentItem()
@@ -392,9 +424,17 @@ class LayerPanel(QWidget):
     def _on_merge(self) -> None:
         ids = self._selected_layer_ids()
         if len(ids) < 2:
-            QMessageBox.information(self, "Merge Layers", "Select at least 2 layers to merge.")
+            QMessageBox.information(self, "Merge Layers", "Select at least 2 layers to merge (Ctrl+Click to select multiple).")
             return
-        self._controller.merge_layers(ids)
+        merged = self._controller.merge_layers(ids)
+        # Select the resulting merged layer as active
+        for i in range(self._list.count()):
+            item = self._list.item(i)
+            if item and item.data(Qt.ItemDataRole.UserRole) == merged.id:
+                self._list.clearSelection()
+                self._list.setCurrentRow(i)
+                item.setSelected(True)
+                break
 
     def _on_move_up(self) -> None:
         row = self._list.currentRow()
