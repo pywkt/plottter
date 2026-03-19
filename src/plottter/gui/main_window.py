@@ -1292,6 +1292,13 @@ class MainWindow(QMainWindow):
         if layer is None or not layer.paths:
             return
 
+        from plottter.gui.dialogs.weld_dialog import WeldDialog
+
+        dlg = WeldDialog(parent=self)
+        if dlg.exec() != WeldDialog.DialogCode.Accepted:
+            return
+        tolerance_mm = dlg.get_tolerance()
+
         total = len(layer.paths)
         progress = QProgressDialog(
             f"Welding overlapping paths in '{layer.name}'…", "Cancel", 0, total, self
@@ -1300,7 +1307,7 @@ class MainWindow(QMainWindow):
         progress.show()
 
         layer_id = layer.id
-        worker = _WeldWorker(paths=list(layer.paths), parent=self)
+        worker = _WeldWorker(paths=list(layer.paths), tolerance_mm=tolerance_mm, parent=self)
 
         def on_progress(cur: int, tot: int) -> None:
             if tot > 0:
