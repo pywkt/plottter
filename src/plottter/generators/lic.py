@@ -10,15 +10,29 @@ Provides:
 - ``_filter_by_separation()`` — removes streamlines whose midpoints are too
                                 close to already-accepted streamlines, using a
                                 KD-tree for efficient proximity queries.
+- ``LICGenerator``            — Generator ABC implementation wiring all helpers
+                                together for image-driven streamline art.
 """
 
 from __future__ import annotations
 
 import math
-from typing import Sequence
+from typing import Any, Sequence
 
 import numpy as np
 from scipy.spatial import cKDTree
+
+from plottter.generators import register_generator
+from plottter.generators.base import (
+    BoolParam,
+    ChoiceParam,
+    FloatParam,
+    Generator,
+    IntParam,
+    Parameter,
+    Preset,
+)
+from plottter.models import Canvas, Polyline
 
 
 # ---------------------------------------------------------------------------
@@ -440,3 +454,448 @@ def _bilinear_sample(
         + v01 * (1 - fx) * fy
         + v11 * fx * fy
     )
+
+
+# ---------------------------------------------------------------------------
+# LICGenerator — Generator ABC implementation
+# ---------------------------------------------------------------------------
+
+
+def _to_float_gray_lic(img: np.ndarray) -> np.ndarray:
+    """Convert any image array to float32 grayscale in [0, 1]."""
+    arr = np.asarray(img)
+    if arr.dtype not in (np.float32, np.float64):
+        arr = arr.astype(np.float32) / 255.0
+    else:
+        arr = arr.astype(np.float32)
+    if arr.ndim == 3:
+        if arr.shape[2] >= 3:
+            arr = (
+                0.2126 * arr[:, :, 0]
+                + 0.7152 * arr[:, :, 1]
+                + 0.0722 * arr[:, :, 2]
+            ).astype(np.float32)
+        else:
+            arr = arr[:, :, 0]
+    return np.clip(arr, 0.0, 1.0).astype(np.float32)
+
+
+@register_generator
+class LICGenerator(Generator):
+    """Line Integral Convolution: image-driven streamline art for pen plotters.
+
+    Traces streamlines from a jittered seed grid along a dense vector field
+    derived from the source image (Sobel gradient, ETF, or perpendicular
+    gradient).  Density modulation and streamline separation keep the output
+    visually balanced and artefact-free.
+    """
+
+    name = "Line Integral Convolution"
+    category = "image"
+
+    def get_parameters(self) -> list[Parameter]:
+        return [
+            ChoiceParam(
+                name="vector_field",
+                label="Vector Field",
+                choices=["gradient", "etf", "perpendicular_gradient"],
+                default="etf",
+                description="How the flow direction is derived from the source image.",
+                choice_descriptions={
+                    "gradient": (
+                        "Streamlines follow the Sobel brightness gradient — "
+                        "they cross edges perpendicularly."
+                    ),
+                    "etf": (
+                        "Streamlines follow the Edge Tangent Flow — "
+                        "coherent alignment along image edges (painterly look)."
+                    ),
+                    "perpendicular_gradient": (
+                        "Sobel gradient rotated 90° — "
+                        "streamlines run parallel to edges (contour-like)."
+                    ),
+                },
+            ),
+            FloatParam(
+                name="kernel_length_mm",
+                label="Kernel Length (mm)",
+                min=2.0,
+                max=50.0,
+                step=0.5,
+                default=15.0,
+                description=(
+                    "Length of each streamline — controls streak appearance. "
+                    "Longer values produce bolder, more sweeping strokes."
+                ),
+            ),
+            FloatParam(
+                name="seed_spacing_mm",
+                label="Seed Spacing (mm)",
+                min=0.5,
+                max=10.0,
+                step=0.1,
+                default=2.0,
+                description=(
+                    "Distance between streamline seeds — lower = denser coverage. "
+                    "Very small values produce many candidate streamlines (before "
+                    "separation filtering)."
+                ),
+            ),
+            FloatParam(
+                name="separation_distance_mm",
+                label="Separation Distance (mm)",
+                min=0.2,
+                max=5.0,
+                step=0.1,
+                default=0.8,
+                description=(
+                    "Minimum distance between neighboring streamlines. "
+                    "Increase to spread streamlines further apart."
+                ),
+            ),
+            FloatParam(
+                name="step_size_mm",
+                label="Step Size (mm)",
+                min=0.1,
+                max=2.0,
+                step=0.05,
+                default=0.5,
+                description=(
+                    "Euler integration step in mm — smaller = smoother curves "
+                    "but more computation."
+                ),
+            ),
+            BoolParam(
+                name="density_modulation",
+                label="Density Modulation",
+                default=True,
+                description=(
+                    "Thin streamlines in bright areas based on image brightness. "
+                    "Disable for uniform coverage regardless of image tone."
+                ),
+            ),
+            IntParam(
+                name="brightness_threshold",
+                label="Brightness Threshold",
+                min=0,
+                max=255,
+                step=1,
+                default=220,
+                description=(
+                    "Brightness above which streamlines are removed (0–255). "
+                    "Only active when Density Modulation is enabled."
+                ),
+                visible_when={"density_modulation": [True]},
+            ),
+            FloatParam(
+                name="etf_kernel_radius",
+                label="ETF Kernel Radius",
+                min=1.0,
+                max=10.0,
+                step=0.5,
+                default=5.0,
+                description="Spatial scale for ETF smoothing in pixels.",
+                visible_when={"vector_field": ["etf"]},
+            ),
+            IntParam(
+                name="etf_iterations",
+                label="ETF Iterations",
+                min=1,
+                max=10,
+                step=1,
+                default=3,
+                description="Number of ETF smoothing passes (more = smoother flow).",
+                visible_when={"vector_field": ["etf"]},
+            ),
+            # Standard image preprocessing params
+            FloatParam(
+                name="brightness",
+                label="Brightness",
+                min=-100.0,
+                max=100.0,
+                step=1.0,
+                default=0.0,
+                description="Adjust image brightness before processing (-100 to +100).",
+            ),
+            FloatParam(
+                name="contrast",
+                label="Contrast",
+                min=-100.0,
+                max=100.0,
+                step=1.0,
+                default=0.0,
+                description="Adjust image contrast before processing (-100 to +100).",
+            ),
+            FloatParam(
+                name="blur_radius",
+                label="Blur Radius",
+                min=0.0,
+                max=20.0,
+                step=0.5,
+                default=1.0,
+                description=(
+                    "Gaussian blur applied before vector field computation — "
+                    "reduces noise and smooths flow direction."
+                ),
+            ),
+            BoolParam(
+                name="invert",
+                label="Invert Image",
+                default=False,
+                description=(
+                    "Invert image tones before processing "
+                    "(swaps dense/sparse regions)."
+                ),
+            ),
+            # Offset params
+            FloatParam(
+                name="x_offset_mm",
+                label="X Offset (mm)",
+                min=-500.0,
+                max=500.0,
+                step=0.5,
+                default=0.0,
+                randomizable=False,
+                description="Horizontal offset applied to the output on the canvas page (mm).",
+            ),
+            FloatParam(
+                name="y_offset_mm",
+                label="Y Offset (mm)",
+                min=-500.0,
+                max=500.0,
+                step=0.5,
+                default=0.0,
+                randomizable=False,
+                description="Vertical offset applied to the output on the canvas page (mm).",
+            ),
+        ]
+
+    def get_presets(self) -> list[Preset]:
+        return [
+            Preset(
+                name="Default",
+                params={
+                    "vector_field": "etf",
+                    "kernel_length_mm": 15.0,
+                    "seed_spacing_mm": 2.0,
+                    "separation_distance_mm": 0.8,
+                    "step_size_mm": 0.5,
+                    "density_modulation": True,
+                    "brightness_threshold": 220,
+                    "etf_kernel_radius": 5.0,
+                    "etf_iterations": 3,
+                    "brightness": 0.0,
+                    "contrast": 0.0,
+                    "blur_radius": 1.0,
+                    "invert": False,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="Dense ETF Flow",
+                params={
+                    "vector_field": "etf",
+                    "kernel_length_mm": 20.0,
+                    "seed_spacing_mm": 1.0,
+                    "separation_distance_mm": 0.5,
+                    "step_size_mm": 0.3,
+                    "density_modulation": True,
+                    "brightness_threshold": 200,
+                    "etf_kernel_radius": 7.0,
+                    "etf_iterations": 5,
+                    "brightness": 0.0,
+                    "contrast": 20.0,
+                    "blur_radius": 1.5,
+                    "invert": False,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="Contour Lines",
+                params={
+                    "vector_field": "perpendicular_gradient",
+                    "kernel_length_mm": 25.0,
+                    "seed_spacing_mm": 2.5,
+                    "separation_distance_mm": 1.2,
+                    "step_size_mm": 0.5,
+                    "density_modulation": True,
+                    "brightness_threshold": 230,
+                    "etf_kernel_radius": 5.0,
+                    "etf_iterations": 3,
+                    "brightness": 0.0,
+                    "contrast": 15.0,
+                    "blur_radius": 2.0,
+                    "invert": False,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
+        ]
+
+    def generate(
+        self,
+        params: dict[str, Any],
+        canvas: Canvas,
+        progress_callback: Any = None,
+        cancelled_callback: Any = None,
+    ) -> list[Polyline]:
+        source: np.ndarray | None = params.get("_source_image")
+        if source is None:
+            return []
+
+        from plottter.io.image_import import (
+            adjust_brightness,
+            adjust_contrast,
+            apply_blur,
+            invert_image,
+        )
+
+        # ------------------------------------------------------------------
+        # 1. Image preprocessing
+        # ------------------------------------------------------------------
+        img = source.copy()
+        brightness_val = float(params.get("brightness", 0.0))
+        contrast_val = float(params.get("contrast", 0.0))
+        blur_radius = float(params.get("blur_radius", 1.0))
+        do_invert = bool(params.get("invert", False))
+
+        if brightness_val != 0.0:
+            img = adjust_brightness(img, brightness_val)
+        if contrast_val != 0.0:
+            img = adjust_contrast(img, contrast_val)
+        if blur_radius > 0.0:
+            img = apply_blur(img, blur_radius)
+        if do_invert:
+            img = invert_image(img)
+
+        img_gray = _to_float_gray_lic(img)
+
+        if progress_callback:
+            progress_callback(10)
+
+        # ------------------------------------------------------------------
+        # 2. Extract parameters
+        # ------------------------------------------------------------------
+        vf_mode = str(params.get("vector_field", "etf"))
+        kernel_length_mm = float(params.get("kernel_length_mm", 15.0))
+        seed_spacing_mm = float(params.get("seed_spacing_mm", 2.0))
+        separation_distance_mm = float(params.get("separation_distance_mm", 0.8))
+        step_size_mm = float(params.get("step_size_mm", 0.5))
+        density_modulation = bool(params.get("density_modulation", True))
+        brightness_threshold = int(params.get("brightness_threshold", 220))
+        etf_kernel_radius = float(params.get("etf_kernel_radius", 5.0))
+        etf_iterations = int(params.get("etf_iterations", 3))
+        x_off = float(params.get("x_offset_mm", 0.0))
+        y_off = float(params.get("y_offset_mm", 0.0))
+
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        canvas_w = draw_x2 - draw_x1
+        canvas_h = draw_y2 - draw_y1
+
+        if canvas_w <= 0 or canvas_h <= 0:
+            return []
+
+        # ------------------------------------------------------------------
+        # 3. Compute vector field
+        # ------------------------------------------------------------------
+        try:
+            import cv2
+        except ImportError:
+            return []
+
+        if vf_mode == "etf":
+            from plottter.generators._helpers import _compute_etf
+            tx, ty = _compute_etf(img_gray, etf_kernel_radius, etf_iterations)
+            vf = np.stack([tx, ty], axis=-1)
+        elif vf_mode == "gradient":
+            gx = cv2.Sobel(img_gray, cv2.CV_32F, 1, 0, ksize=5)
+            gy = cv2.Sobel(img_gray, cv2.CV_32F, 0, 1, ksize=5)
+            mag = np.sqrt(gx * gx + gy * gy) + 1e-8
+            vf = np.stack([gx / mag, gy / mag], axis=-1)
+        else:  # perpendicular_gradient — tangent to edges
+            gx = cv2.Sobel(img_gray, cv2.CV_32F, 1, 0, ksize=5)
+            gy = cv2.Sobel(img_gray, cv2.CV_32F, 0, 1, ksize=5)
+            mag = np.sqrt(gx * gx + gy * gy) + 1e-8
+            vf = np.stack([-gy / mag, gx / mag], axis=-1)
+
+        if progress_callback:
+            progress_callback(25)
+        if cancelled_callback and cancelled_callback():
+            return []
+
+        # ------------------------------------------------------------------
+        # 4. Seed grid
+        # ------------------------------------------------------------------
+        rng = np.random.default_rng(42)
+        seeds = _seed_grid(canvas_w, canvas_h, seed_spacing_mm, rng)
+
+        if progress_callback:
+            progress_callback(35)
+
+        # ------------------------------------------------------------------
+        # 5. Brightness filter (density modulation)
+        # ------------------------------------------------------------------
+        if density_modulation:
+            seeds = _brightness_filter(
+                seeds,
+                canvas_w,
+                canvas_h,
+                img_gray,
+                brightness_threshold / 255.0,
+            )
+
+        if progress_callback:
+            progress_callback(40)
+        if cancelled_callback and cancelled_callback():
+            return []
+
+        if not seeds:
+            return []
+
+        # ------------------------------------------------------------------
+        # 6. Trace streamlines
+        # ------------------------------------------------------------------
+        streamlines: list[list[tuple[float, float]]] = []
+        for seed in seeds:
+            sl = _trace_streamline(
+                seed, vf, canvas_w, canvas_h, kernel_length_mm, step_size_mm
+            )
+            streamlines.append(sl)
+
+        if progress_callback:
+            progress_callback(70)
+        if cancelled_callback and cancelled_callback():
+            return []
+
+        # ------------------------------------------------------------------
+        # 7. Compute seed brightnesses for separation filter priority
+        # ------------------------------------------------------------------
+        h_px, w_px = img_gray.shape
+        brightnesses: list[float] = [
+            _bilinear_sample(img_gray, x_mm, y_mm, canvas_w, canvas_h, w_px, h_px)
+            for x_mm, y_mm in seeds
+        ]
+
+        # ------------------------------------------------------------------
+        # 8. Separation filter
+        # ------------------------------------------------------------------
+        filtered = _filter_by_separation(streamlines, brightnesses, separation_distance_mm)
+
+        if progress_callback:
+            progress_callback(90)
+
+        # ------------------------------------------------------------------
+        # 9. Convert from local canvas coords → page mm coordinates
+        # ------------------------------------------------------------------
+        result: list[Polyline] = [
+            [(x + draw_x1 + x_off, y + draw_y1 + y_off) for x, y in sl]
+            for sl in filtered
+            if len(sl) >= 2
+        ]
+
+        if progress_callback:
+            progress_callback(100)
+
+        return result
