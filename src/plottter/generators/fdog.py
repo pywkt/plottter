@@ -29,7 +29,7 @@ from typing import Any
 import numpy as np
 
 from plottter.generators import register_generator
-from plottter.generators._helpers import _px_to_mm, compute_image_rect
+from plottter.generators._helpers import _compute_etf, _px_to_mm, compute_image_rect
 from plottter.generators.base import (
     BoolParam,
     FloatParam,
@@ -39,83 +39,6 @@ from plottter.generators.base import (
     Preset,
 )
 from plottter.models import Canvas, Polyline
-
-
-def _compute_etf(
-    gray_f: np.ndarray,
-    sigma_m: float,
-    iterations: int,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Compute the Edge Tangent Flow (ETF) field.
-
-    The ETF is a dense vector field where each pixel holds the unit tangent
-    direction of the nearest edge.  It is initialised from the normalised
-    Sobel gradient rotated 90° (tangent = perpendicular to gradient) and
-    then iteratively smoothed with a magnitude-weighted Gaussian kernel.
-    During each pass, tangent vectors at pixels with stronger gradients
-    exert more influence, pulling nearby vectors into alignment and
-    producing a smooth, coherent flow along edges.
-
-    Parameters
-    ----------
-    gray_f:     Float32 grayscale image, values in [0, 1].
-    sigma_m:    Spatial scale for ETF smoothing (pixels).  Controls how far
-                edge tangents influence their neighbourhood.
-    iterations: Number of smoothing passes (3–5 typical).
-
-    Returns
-    -------
-    (tx, ty): Pair of float32 arrays of shape (H, W) holding the x and y
-              components of the unit tangent at each pixel.
-    """
-    try:
-        import cv2
-    except ImportError as exc:
-        raise RuntimeError(
-            "opencv-python is required for FDoG/Coherent Line generation."
-        ) from exc
-
-    # Compute image gradient with a 5×5 Sobel kernel for stability
-    gx = cv2.Sobel(gray_f, cv2.CV_32F, 1, 0, ksize=5)
-    gy = cv2.Sobel(gray_f, cv2.CV_32F, 0, 1, ksize=5)
-
-    mag = np.sqrt(gx * gx + gy * gy)
-    mag_max = float(mag.max())
-    mag_norm = mag / (mag_max + 1e-8)
-
-    # Initial tangent: rotate gradient 90° — edges run perpendicular to ∇f
-    # gradient (gx, gy) → tangent (-gy, gx)
-    with np.errstate(divide="ignore", invalid="ignore"):
-        tx = np.where(mag > 1e-8, -gy / (mag + 1e-8), 0.0).astype(np.float32)
-        ty = np.where(mag > 1e-8,  gx / (mag + 1e-8), 0.0).astype(np.float32)
-
-    # Clamp sigma_m to avoid degenerate kernel sizes
-    sigma_m = max(float(sigma_m), 0.5)
-    r = max(2, int(round(2.5 * sigma_m)))
-    ksize = 2 * r + 1
-
-    for _ in range(max(1, iterations)):
-        # Magnitude-weighted smoothing: pixels with larger gradients pull
-        # nearby tangents into alignment.
-        smooth_tx = cv2.GaussianBlur(tx * mag_norm, (ksize, ksize), sigma_m)
-        smooth_ty = cv2.GaussianBlur(ty * mag_norm, (ksize, ksize), sigma_m)
-
-        # Re-normalise to keep unit vectors
-        new_mag = np.sqrt(smooth_tx * smooth_tx + smooth_ty * smooth_ty)
-        with np.errstate(divide="ignore", invalid="ignore"):
-            tx = np.where(
-                new_mag > 1e-8, smooth_tx / (new_mag + 1e-8), 0.0
-            ).astype(np.float32)
-            ty = np.where(
-                new_mag > 1e-8, smooth_ty / (new_mag + 1e-8), 0.0
-            ).astype(np.float32)
-
-        # Update the magnitude estimate used for the next pass
-        smooth_mag = cv2.GaussianBlur(mag_norm, (ksize, ksize), sigma_m)
-        smooth_max = float(smooth_mag.max())
-        mag_norm = smooth_mag / (smooth_max + 1e-8)
-
-    return tx, ty
 
 
 def _flow_smooth(
