@@ -293,3 +293,131 @@ class TestLayerPanelSelectionVisuals:
         if highlighted != window_text:
             assert highlighted not in ss
         assert window_text in ss
+
+
+# ---------------------------------------------------------------------------
+# Task 43.2 — Multi-layer selection for merge
+# ---------------------------------------------------------------------------
+
+
+def _make_controller_with_paths():
+    """Create a controller with 3 layers, each containing one path."""
+    from plottter.gui.project_controller import ProjectController
+    from plottter.models import Canvas, Layer, Project
+
+    canvas = Canvas.from_preset("A4")
+    proj = Project(name="Test", canvas=canvas)
+    layer1 = Layer(name="Layer 1", color="#ff0000", paths=[[(0.0, 0.0), (10.0, 0.0)]])
+    layer2 = Layer(name="Layer 2", color="#00ff00", paths=[[(20.0, 0.0), (30.0, 0.0)]])
+    layer3 = Layer(name="Layer 3", color="#0000ff", paths=[[(40.0, 0.0), (50.0, 0.0)]])
+    proj.add_layer(layer1)
+    proj.add_layer(layer2)
+    proj.add_layer(layer3)
+    return ProjectController(proj)
+
+
+class TestMultiLayerSelection:
+    """Tests for task 43.2 — multi-layer selection for merge."""
+
+    def _make_panel(self, ctrl):
+        from plottter.gui.layer_panel import LayerPanel
+        return LayerPanel(ctrl)
+
+    def test_selection_mode_is_extended(self, qapp):
+        """LayerPanel list uses ExtendedSelection mode."""
+        from PyQt6.QtWidgets import QAbstractItemView
+
+        ctrl = _make_controller()
+        panel = self._make_panel(ctrl)
+        assert panel._list.selectionMode() == QAbstractItemView.SelectionMode.ExtendedSelection
+
+    def test_single_click_selects_one_layer(self, qapp):
+        """Selecting a single row results in exactly one selected item."""
+        ctrl = _make_controller()
+        panel = self._make_panel(ctrl)
+        panel._list.clearSelection()
+        panel._list.setCurrentRow(0)
+        assert len(panel._list.selectedItems()) == 1
+
+    def test_multi_select_returns_multiple_ids(self, qapp):
+        """Programmatic multi-selection returns multiple layer IDs from _selected_layer_ids."""
+        ctrl = _make_controller()
+        panel = self._make_panel(ctrl)
+        # Select both items programmatically
+        panel._list.item(0).setSelected(True)
+        panel._list.item(1).setSelected(True)
+        ids = panel._selected_layer_ids()
+        assert len(ids) == 2
+
+    def test_current_item_changed_sets_active_layer(self, qapp):
+        """_on_current_item_changed sets the active layer to the most recently clicked one."""
+        ctrl = _make_controller_with_paths()
+        panel = self._make_panel(ctrl)
+        # Simulate clicking layer at row 1
+        panel._list.setCurrentRow(1)
+        expected_id = panel._list.item(1).data(0x0100)  # Qt.ItemDataRole.UserRole
+        assert ctrl.active_layer_id == expected_id
+
+    def test_merge_with_less_than_2_shows_message(self, qapp, monkeypatch):
+        """merge button shows info message when fewer than 2 layers are selected."""
+        from PyQt6.QtWidgets import QMessageBox
+
+        shown = []
+        monkeypatch.setattr(QMessageBox, "information", lambda *a, **kw: shown.append(True))
+        ctrl = _make_controller()
+        panel = self._make_panel(ctrl)
+        panel._list.clearSelection()
+        panel._list.setCurrentRow(0)
+        panel._on_merge()
+        assert shown, "Expected QMessageBox.information to be called"
+
+    def test_merge_with_2_selected_combines_paths(self, qapp):
+        """Merging 2 selected layers produces one layer with combined paths."""
+        ctrl = _make_controller_with_paths()
+        panel = self._make_panel(ctrl)
+
+        initial_count = len(ctrl.current_project.layers)
+
+        # Select first two layers
+        panel._list.setCurrentRow(0)
+        panel._list.item(0).setSelected(True)
+        panel._list.item(1).setSelected(True)
+        panel._on_merge()
+
+        # Two layers merged into one — total count drops by 1
+        assert len(ctrl.current_project.layers) == initial_count - 1
+        # Merged layer has 2 paths (one from each source layer)
+        merged = ctrl.current_project.layers[-1]
+        assert merged.path_count() == 2
+
+    def test_merge_with_3_selected_combines_all_paths(self, qapp):
+        """Merging all 3 layers produces one layer with all 3 paths."""
+        ctrl = _make_controller_with_paths()
+        panel = self._make_panel(ctrl)
+
+        panel._list.setCurrentRow(0)
+        panel._list.item(0).setSelected(True)
+        panel._list.item(1).setSelected(True)
+        panel._list.item(2).setSelected(True)
+        panel._on_merge()
+
+        assert len(ctrl.current_project.layers) == 1
+        assert ctrl.current_project.layers[0].path_count() == 3
+
+    def test_undo_after_merge_restores_layers(self, qapp):
+        """After merging, undo restores the original layers."""
+        ctrl = _make_controller_with_paths()
+        panel = self._make_panel(ctrl)
+
+        initial_count = len(ctrl.current_project.layers)
+
+        panel._list.setCurrentRow(0)
+        panel._list.item(0).setSelected(True)
+        panel._list.item(1).setSelected(True)
+        panel._on_merge()
+
+        assert len(ctrl.current_project.layers) == initial_count - 1
+
+        ctrl._undo_stack.undo()
+
+        assert len(ctrl.current_project.layers) == initial_count
