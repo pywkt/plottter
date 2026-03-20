@@ -340,23 +340,32 @@ class ReplicateClient:
             if progress_callback:
                 progress_callback(10)
 
-            # meta/sam-2-video requires a downloadable file URL (not a data URI)
-            img_url = _upload_file(self._api_key, image)
+            # meta/sam-2-video requires actual video input — convert image
+            # to a single-frame MP4 so its frame extractor can process it.
+            video_uri = _image_to_video_data_uri(image)
             all_points = list(positive_points) + list(neg)
             labels = [1] * len(positive_points) + [0] * len(neg)
 
             # meta/sam-2-video expects click_coordinates as "[x,y],[x,y],..."
             # and click_labels as "1,0,..." strings.
+            # click_frames assigns each click to frame 0 (our single frame).
+            # click_object_ids assigns ALL clicks to the same object (id "1")
+            # so the model treats negative points as exclusions from the same
+            # segmentation, not as separate object tracks.
             coords_str = ",".join(f"[{x},{y}]" for x, y in all_points)
             labels_str = ",".join(str(l) for l in labels)
+            frames_str = ",".join("0" for _ in all_points)
+            object_ids_str = ",".join("1" for _ in all_points)
 
             output = _replicate_run(
                 self._api_key,
                 MODEL_SAM2,
                 {
-                    "input_video": img_url,
+                    "input_video": video_uri,
                     "click_coordinates": coords_str,
                     "click_labels": labels_str,
+                    "click_frames": frames_str,
+                    "click_object_ids": object_ids_str,
                 },
             )
 
@@ -406,8 +415,9 @@ class ReplicateClient:
             if progress_callback:
                 progress_callback(10)
 
-            # meta/sam-2-video requires a downloadable file URL (not a data URI)
-            img_url = _upload_file(self._api_key, image)
+            # meta/sam-2-video requires actual video input — convert image
+            # to a single-frame MP4 so its frame extractor can process it.
+            video_uri = _image_to_video_data_uri(image)
             # meta/sam-2-video doesn't have a "box" param — approximate
             # by clicking the center as a foreground point.
             x1, y1, x2, y2 = box_xyxy
@@ -419,7 +429,7 @@ class ReplicateClient:
                 self._api_key,
                 MODEL_SAM2,
                 {
-                    "input_video": img_url,
+                    "input_video": video_uri,
                     "click_coordinates": coords_str,
                     "click_labels": labels_str,
                 },
@@ -506,58 +516,48 @@ class ReplicateClient:
 # REST API helpers
 # ---------------------------------------------------------------------------
 
-def _upload_file(api_key: str, image: np.ndarray) -> str:
-    """Upload an image to the Replicate file API and return the file URL.
+def _image_to_video_data_uri(image: np.ndarray) -> str:
+    """Encode an image as a single-frame MP4 video and return as a data URI.
 
-    Some models (e.g. ``meta/sam-2-video``) require a downloadable URL
-    rather than an inline data URI.  This uploads the image as a PNG and
-    returns the ``urls.get`` URL which can be used as a prediction input.
-
-    The uploaded file expires after 24 hours on Replicate's servers.
+    The ``meta/sam-2-video`` model expects video input — its frame extractor
+    cannot process a bare image file.  This creates a minimal one-frame MP4
+    using OpenCV's VideoWriter, then base64-encodes it as a data URI.
     """
     import base64
-    from PIL import Image as _PIL_Image
+    import tempfile
+
+    import cv2
 
     arr = image.astype(np.uint8)
     if arr.ndim == 2:
-        pil = _PIL_Image.fromarray(arr, mode="L").convert("RGB")
+        arr = cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
     elif arr.ndim == 3 and arr.shape[2] == 3:
-        pil = _PIL_Image.fromarray(arr, mode="RGB")
+        arr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
     elif arr.ndim == 3 and arr.shape[2] == 4:
-        pil = _PIL_Image.fromarray(arr, mode="RGBA").convert("RGB")
-    else:
-        pil = _PIL_Image.fromarray(arr).convert("RGB")
+        arr = cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
 
-    buf = io.BytesIO()
-    pil.save(buf, format="PNG")
-    file_bytes = buf.getvalue()
+    h, w = arr.shape[:2]
 
-    # Build multipart/form-data body
-    boundary = "----ReplicateUpload"
-    body = (
-        f"--{boundary}\r\n"
-        f'Content-Disposition: form-data; name="content"; filename="image.png"\r\n'
-        f"Content-Type: image/png\r\n\r\n"
-    ).encode() + file_bytes + f"\r\n--{boundary}--\r\n".encode()
-
-    req = urllib.request.Request(
-        "https://api.replicate.com/v1/files",
-        data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-        },
-        method="POST",
-    )
+    # Write a single-frame MP4 to a temp file
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+    tmp_path = tmp.name
+    tmp.close()
 
     try:
-        with urllib.request.urlopen(req) as resp:
-            result = json.loads(resp.read().decode())
-    except urllib.error.HTTPError as exc:
-        body_text = exc.read().decode(errors="replace")
-        raise ReplicateAPIError(f"File upload failed (HTTP {exc.code}): {body_text}") from exc
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(tmp_path, fourcc, 1.0, (w, h))
+        if not writer.isOpened():
+            raise ReplicateAPIError("Failed to create video writer for SAM-2 input")
+        writer.write(arr)
+        writer.release()
 
-    return result["urls"]["get"]
+        with open(tmp_path, "rb") as f:
+            video_bytes = f.read()
+    finally:
+        os.unlink(tmp_path)
+
+    b64 = base64.b64encode(video_bytes).decode("ascii")
+    return f"data:video/mp4;base64,{b64}"
 
 
 def _replicate_run(api_key: str, model: str, input_data: dict) -> object:

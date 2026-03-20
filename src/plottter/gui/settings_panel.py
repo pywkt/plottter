@@ -2047,12 +2047,19 @@ class SettingsPanel(QScrollArea):
                 )
                 return
 
-        # Prepare source image (ensure RGB)
-        source_img = self._raw_image
-        if source_img.ndim == 2:
-            source_img = np.stack([source_img] * 3, axis=-1)
-        elif source_img.ndim == 3 and source_img.shape[2] == 4:
-            source_img = source_img[:, :, :3]
+        # Use the preprocessed image (which matches what's displayed on canvas,
+        # including fill/fit stretching) rather than the raw image. This ensures
+        # the AI mask aligns with the visible image. The preprocessed image is
+        # grayscale, so convert to RGB for the AI model.
+        if self._preprocessed_image is not None:
+            gray = self._preprocessed_image
+            source_img = np.stack([gray, gray, gray], axis=-1)
+        else:
+            source_img = self._raw_image
+            if source_img.ndim == 2:
+                source_img = np.stack([source_img] * 3, axis=-1)
+            elif source_img.ndim == 3 and source_img.shape[2] == 4:
+                source_img = source_img[:, :, :3]
 
         canvas = self._controller.current_project.canvas
         pos_pts = self._canvas_ref.get_ai_mask_positive_points() if self._canvas_ref else []
@@ -2065,16 +2072,31 @@ class SettingsPanel(QScrollArea):
         self._ai_mask_progress.setVisible(True)
         self._ai_mask_status.setText("Generating AI mask…")
 
+        # Pass drawing area dimensions (not full canvas) for mm→pixel conversion,
+        # since the image fills the drawing area (inside margins).
+        margin = canvas.margin_mm
+        draw_w = canvas.width_mm - 2 * margin
+        draw_h = canvas.height_mm - 2 * margin
+
+        # Offset click coordinates from canvas-origin to drawing-area-origin
+        # (subtract margin so (margin, margin) maps to image pixel (0, 0))
+        offset_pos = [(x - margin, y - margin) for x, y in pos_pts]
+        offset_neg = [(x - margin, y - margin) for x, y in neg_pts]
+        offset_box = None
+        if box_mm is not None:
+            bx1, by1, bx2, by2 = box_mm
+            offset_box = (bx1 - margin, by1 - margin, bx2 - margin, by2 - margin)
+
         self._ai_mask_worker = _AiMaskWorker(
             api_key=api_key,
             image=source_img,
             mode=canvas_mode,
-            positive_points=pos_pts,
-            negative_points=neg_pts,
-            box_xyxy_mm=box_mm,
+            positive_points=offset_pos,
+            negative_points=offset_neg,
+            box_xyxy_mm=offset_box,
             text_prompt=self._ai_mask_text_input.text().strip(),
-            canvas_width_mm=canvas.width_mm,
-            canvas_height_mm=canvas.height_mm,
+            canvas_width_mm=draw_w,
+            canvas_height_mm=draw_h,
         )
         self._ai_mask_worker.progress.connect(self._ai_mask_progress.setValue)
         self._ai_mask_worker.finished.connect(self._on_ai_mask_result)
@@ -2095,26 +2117,53 @@ class SettingsPanel(QScrollArea):
         # Convert binary uint8 (0/255) → float32 (0.0/1.0)
         float_mask = mask.astype(np.float32) / 255.0
 
-        # Resize to canvas mask resolution (5 px/mm)
+        # The AI mask has the source image's dimensions/aspect ratio.
+        # It must be placed at the same position as the image overlay
+        # on the canvas, not stretched to fill the entire canvas.
         _PX_PER_MM = 5
         canvas = self._controller.current_project.canvas
         target_h = int(canvas.height_mm * _PX_PER_MM)
         target_w = int(canvas.width_mm * _PX_PER_MM)
 
-        if float_mask.shape != (target_h, target_w):
+        # Get the image overlay rect that the canvas widget is using.
+        # This is the authoritative rect — it's what the user sees.
+        img_rect = self._canvas_ref.get_image_overlay_rect_mm()
+        if img_rect is None:
+            # Fallback: use the drawing area (fill mode)
+            margin = canvas.margin_mm
+            img_rect = (margin, margin,
+                        canvas.width_mm - margin, canvas.height_mm - margin)
+
+        rx1, ry1, rx2, ry2 = img_rect
+
+        # Convert image rect from mm to mask-pixel coordinates
+        px_x1 = max(0, int(round(rx1 * _PX_PER_MM)))
+        px_y1 = max(0, int(round(ry1 * _PX_PER_MM)))
+        px_x2 = min(target_w, int(round(rx2 * _PX_PER_MM)))
+        px_y2 = min(target_h, int(round(ry2 * _PX_PER_MM)))
+        region_w = px_x2 - px_x1
+        region_h = px_y2 - px_y1
+
+        if region_w > 0 and region_h > 0:
+            # Resize mask to fit the image region, preserving its content
             from PIL import Image as _PIL_Image
             pil = _PIL_Image.fromarray((float_mask * 255).astype(np.uint8))
-            pil = pil.resize((target_w, target_h), _PIL_Image.NEAREST)
-            float_mask = np.array(pil).astype(np.float32) / 255.0
+            pil = pil.resize((region_w, region_h), _PIL_Image.NEAREST)
+            region_mask = np.array(pil).astype(np.float32) / 255.0
+
+            # Place into a canvas-sized mask of zeros
+            canvas_mask = np.zeros((target_h, target_w), dtype=np.float32)
+            canvas_mask[px_y1:px_y2, px_x1:px_x2] = region_mask
+            float_mask = canvas_mask
 
         self._canvas_ref.set_mask(float_mask)
         # Switch to manual brush mode so the mask overlay is visible
-        # (the overlay only renders when mask_paint_active is True)
-        self._canvas_ref.set_mask_paint_active(True)
-        self._canvas_ref.set_ai_mask_mode(None)
-        self._ai_mask_mode_combo.blockSignals(True)
+        # and brush controls are re-enabled for refinement.
         self._ai_mask_mode_combo.setCurrentText("Manual Brush")
-        self._ai_mask_mode_combo.blockSignals(False)
+        # _on_ai_mask_mode_changed fires via signal and handles:
+        # - set_mask_paint_active(True)
+        # - set_ai_mask_mode(None)
+        # - re-enabling brush size/hardness/erase controls
         self._ai_mask_status.setText(
             "AI mask applied. Use the brush to refine, or click Apply to Layer."
         )
