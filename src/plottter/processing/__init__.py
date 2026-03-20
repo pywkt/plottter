@@ -8,6 +8,7 @@ from plottter.processing.optimize import (
     reorder_paths,
     optimize_2opt,
     optimize_or_opt,
+    optimize_3opt,
     calculate_travel_distance,
 )
 from plottter.processing.weld import weld_overlapping_paths
@@ -27,6 +28,7 @@ __all__ = [
     "reorder_paths",
     "optimize_2opt",
     "optimize_or_opt",
+    "optimize_3opt",
     "calculate_travel_distance",
     "weld_overlapping_paths",
     "fit_curves",

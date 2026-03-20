@@ -856,3 +856,86 @@ def _build_3opt_neighbors(
         neighbors.append(nbrs[:k])
 
     return neighbors
+
+
+def optimize_3opt(
+    paths: list[Polyline],
+    max_iterations: int = 500,
+    progress_callback: Callable[[float], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> list[Polyline]:
+    """Apply 3-opt improvement to a path ordering.
+
+    For each triple of positions (i, j, k) with i < j < k, try all 5
+    non-identity reconnection moves and accept the first one that reduces
+    total 3-edge cost (greedy first-improvement).  Uses a spatial neighbor
+    list to restrict the inner loops to spatially nearby paths.
+
+    Iteration budget: ``max(max_iterations, len(paths))``.
+    Neighbor list is rebuilt every ~5% of iterations.
+
+    Args:
+        paths: Ordered list of polylines.
+        max_iterations: Minimum number of passes.
+        progress_callback: Optional callable receiving a float in [0.0, 1.0].
+        cancelled: Optional callable returning True when caller wants to abort.
+
+    Returns:
+        New list of polylines in improved order.
+    """
+    if len(paths) < 3:
+        return list(paths)
+
+    route = [list(p) for p in paths]
+    n = len(route)
+    max_iters = max(max_iterations, n)
+
+    k_neighbors = min(_3OPT_NEIGHBOR_K, n - 1)
+    neighbors = _build_3opt_neighbors(route, k_neighbors)
+
+    # Rebuild neighbor list every ~5% of iterations (at least every 10)
+    rebuild_interval = max(10, max_iters // 20)
+
+    for iteration in range(max_iters):
+        if cancelled and cancelled():
+            break
+        if progress_callback:
+            progress_callback(iteration / max_iters)
+
+        if iteration > 0 and iteration % rebuild_interval == 0:
+            neighbors = _build_3opt_neighbors(route, k_neighbors)
+
+        improved = False
+
+        for i in range(n - 2):
+            for j in neighbors[i]:
+                j = int(j)
+                if j <= i or j >= n - 1:
+                    continue
+
+                for k_idx in neighbors[j]:
+                    k_idx = int(k_idx)
+                    if k_idx <= j or k_idx >= n:
+                        continue
+
+                    current_cost = _3opt_cost(route, i, j, k_idx)
+
+                    for move_id in range(5):
+                        candidate = _3opt_reconnect(route, i, j, k_idx, move_id)
+                        new_cost = _3opt_cost(candidate, i, j, k_idx)
+                        if new_cost < current_cost - 1e-9:
+                            route = candidate
+                            improved = True
+                            break
+
+                    if improved:
+                        break
+                if improved:
+                    break
+            if improved:
+                break
+
+        if not improved:
+            break
+
+    return route
