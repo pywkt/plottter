@@ -2934,3 +2934,91 @@ class TestSurfaceTriangles:
         # All y values equal center.y
         ys = [float(v[1]) for v in all_verts]
         assert all(abs(y - 0.5) < 1e-9 for y in ys)
+
+
+# ---------------------------------------------------------------------------
+# Task 52.3: _compute_visible_faces — per-face visibility and shading
+# ---------------------------------------------------------------------------
+
+class TestComputeVisibleFaces:
+    """Tests for Scene._compute_visible_faces (task 52.3)."""
+
+    def _single_tri_mesh(self, v0, v1, v2):
+        """Return a single-triangle Mesh with the given CCW vertices."""
+        import numpy as np
+        from plottter.scene3d.shapes.mesh import Mesh
+        verts = np.array([v0, v1, v2], dtype=np.float64)
+        faces = np.array([[0, 1, 2]], dtype=np.int32)
+        return Mesh(vertices=verts, faces=faces)
+
+    def _scene_and_camera(self, *shapes):
+        """Compile a scene with the given shapes; camera at (0,0,5)→origin."""
+        from plottter.scene3d.scene import Scene
+        from plottter.scene3d.camera import Camera
+        scene = Scene()
+        for shape in shapes:
+            scene.add(shape)
+        scene.compile()
+        cam = Camera(projection="perspective", fov_deg=60.0, aspect=1.0)
+        cam.set_look_at([0, 0, 5], [0, 0, 0], [0, 1, 0])
+        return scene, cam
+
+    # (a) Front-facing triangle returns one result.
+    def test_front_facing_returns_one_result(self):
+        # CCW winding → normal +Z, toward camera at z=5.
+        mesh = self._single_tri_mesh([-1, -1, 0], [1, -1, 0], [0, 1, 0])
+        scene, cam = self._scene_and_camera(mesh)
+        result = scene._compute_visible_faces((0, 0, 1), cam, 100.0, 100.0)
+        assert len(result) == 1
+        verts, brightness = result[0]
+        assert len(verts) == 3
+        for pt in verts:
+            assert len(pt) == 2
+
+    # (b) Back-facing triangle returns nothing.
+    def test_back_facing_returns_nothing(self):
+        # Reversed winding → normal -Z, away from camera at z=5.
+        mesh = self._single_tri_mesh([0, 1, 0], [1, -1, 0], [-1, -1, 0])
+        scene, cam = self._scene_and_camera(mesh)
+        result = scene._compute_visible_faces((0, 0, 1), cam, 100.0, 100.0)
+        assert len(result) == 0
+
+    # (c) Occluded triangle returns nothing.
+    def test_occluded_returns_nothing(self):
+        from plottter.scene3d.shapes.triangle import Triangle
+        from plottter.scene3d.vector3 import vec3
+        # Target: front-facing mesh at z=-2.
+        target = self._single_tri_mesh([-1, -1, -2], [1, -1, -2], [0, 1, -2])
+        # Occluder: large Triangle at z=0 that blocks the ray from camera to
+        # the target's centroid.  Triangle has no surface_triangles(), so it
+        # contributes to BVH occlusion only.
+        occluder = Triangle(
+            v0=vec3(-5, -5, 0),
+            v1=vec3(5, -5, 0),
+            v2=vec3(0, 5, 0),
+        )
+        scene, cam = self._scene_and_camera(occluder, target)
+        result = scene._compute_visible_faces((0, 0, 1), cam, 100.0, 100.0)
+        assert len(result) == 0
+
+    # (d) Brightness matches dot(normal, light_dir).
+    def test_brightness_matches_light_direction(self):
+        import numpy as np
+        # Triangle with normal +Z.
+        mesh = self._single_tri_mesh([-1, -1, 0], [1, -1, 0], [0, 1, 0])
+        scene, cam = self._scene_and_camera(mesh)
+
+        # Light along +Z → brightness = 1.0.
+        r1 = scene._compute_visible_faces((0, 0, 1), cam, 100.0, 100.0)
+        assert len(r1) == 1
+        assert abs(r1[0][1] - 1.0) < 1e-6
+
+        # Light along -Z → brightness = max(0, -1) = 0.
+        r2 = scene._compute_visible_faces((0, 0, -1), cam, 100.0, 100.0)
+        assert len(r2) == 1
+        assert abs(r2[0][1] - 0.0) < 1e-6
+
+        # Light at 45° in YZ plane → brightness = 1/√2.
+        r3 = scene._compute_visible_faces((0, 1, 1), cam, 100.0, 100.0)
+        assert len(r3) == 1
+        assert abs(r3[0][1] - 1.0 / np.sqrt(2)) < 1e-6

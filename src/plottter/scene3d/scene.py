@@ -509,6 +509,132 @@ class Scene:
             lit_segments, vp_matrix, canvas_w_mm, canvas_h_mm, offset_mm
         )
 
+    def _compute_visible_faces(
+        self,
+        light_dir: "tuple[float, float, float]",
+        camera: "Camera",
+        canvas_w_mm: float,
+        canvas_h_mm: float,
+        progress_callback=None,
+    ) -> "list[tuple[list[tuple[float, float]], float]]":
+        """Compute visible, front-facing surface triangles with shading.
+
+        For each shape that implements ``surface_triangles()``:
+        - skip back-facing triangles (face normal points away from camera),
+        - skip occluded triangles (BVH ray cast from eye to centroid is blocked),
+        - compute diffuse brightness from the light direction,
+        - project the 3 vertices to 2D canvas coordinates (mm).
+
+        Parameters
+        ----------
+        light_dir:         (lx, ly, lz) directional light vector (need not be
+                           normalised — it is normalised internally).
+        camera:            Camera defining the viewpoint and projection.
+        canvas_w_mm:       Canvas width in millimetres.
+        canvas_h_mm:       Canvas height in millimetres.
+        progress_callback: Optional ``callable(progress: float)`` for 0..1
+                           progress reporting during face processing.
+
+        Returns
+        -------
+        List of ``(projected_vertices, brightness)`` tuples for every visible
+        face.  ``projected_vertices`` is a list of three ``(x_mm, y_mm)``
+        tuples (the projected triangle corners).  ``brightness`` is in [0, 1].
+        """
+        if not self._compiled:
+            self.compile()
+
+        # Normalise light direction.
+        ld_arr = np.asarray(light_dir, dtype=np.float64)
+        ld_len = float(np.linalg.norm(ld_arr))
+        if ld_len < EPSILON:
+            return []
+        light_dir_norm = ld_arr / ld_len
+
+        eye = np.asarray(camera.eye, dtype=np.float64)
+        vp_matrix = camera.view_proj_matrix()
+        bvh = self._bvh
+
+        # Collect all triangles from shapes that support surface_triangles().
+        all_triangles: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+        for shape in self.shapes:
+            tris = shape.surface_triangles()
+            if not tris:
+                continue
+            for tri in tris:
+                v0 = np.asarray(tri[0], dtype=np.float64)
+                v1 = np.asarray(tri[1], dtype=np.float64)
+                v2 = np.asarray(tri[2], dtype=np.float64)
+                all_triangles.append((v0, v1, v2))
+
+        n_tris = len(all_triangles)
+        if n_tris == 0:
+            return []
+
+        result: list[tuple[list[tuple[float, float]], float]] = []
+
+        for i, (v0, v1, v2) in enumerate(all_triangles):
+            if i % 100 == 0 and progress_callback is not None:
+                progress_callback(i / n_tris)
+
+            # 1. Compute face normal via cross product.
+            edge1 = v1 - v0
+            edge2 = v2 - v0
+            normal = np.cross(edge1, edge2)
+            normal_len = float(np.linalg.norm(normal))
+            if normal_len < EPSILON:
+                continue  # degenerate triangle
+            normal = normal / normal_len
+
+            # 2. View direction: from centroid toward the camera eye.
+            centroid = (v0 + v1 + v2) / 3.0
+            to_eye = eye - centroid
+            to_eye_len = float(np.linalg.norm(to_eye))
+            if to_eye_len < EPSILON:
+                continue  # eye is at the centroid
+            view_dir = to_eye / to_eye_len
+
+            # 3. Back-face cull: skip if face normal points away from camera.
+            if float(np.dot(normal, view_dir)) <= 0.0:
+                continue
+
+            # 4. Occlusion test: ray from eye toward centroid.
+            if bvh is not None:
+                ray_dir = -view_dir  # from eye toward centroid
+                ray = Ray(origin=eye, direction=ray_dir)
+                t_max = float(to_eye_len) - self.chop_step * 0.5
+                if t_max > EPSILON and bvh.intersect_any(ray, t_max=t_max):
+                    continue  # occluded by other geometry
+
+            # 5. Diffuse brightness.
+            brightness = float(max(0.0, np.dot(normal, light_dir_norm)))
+
+            # 6. Project 3 vertices to 2D mm.
+            projected: list[tuple[float, float]] = []
+            skip = False
+            for vert in (v0, v1, v2):
+                h = np.array([vert[0], vert[1], vert[2], 1.0], dtype=np.float64)
+                clip = h @ vp_matrix
+                w = clip[3]
+                if abs(w) < EPSILON:
+                    skip = True
+                    break
+                ndc_x = clip[0] / w
+                ndc_y = clip[1] / w
+                x_mm = (ndc_x + 1.0) * 0.5 * canvas_w_mm
+                y_mm = (1.0 - (ndc_y + 1.0) * 0.5) * canvas_h_mm
+                projected.append((float(x_mm), float(y_mm)))
+
+            if skip or len(projected) != 3:
+                continue
+
+            result.append((projected, brightness))
+
+        if progress_callback is not None:
+            progress_callback(1.0)
+
+        return result
+
     def _reassemble_polylines(
         self,
         segments: list[tuple[np.ndarray, np.ndarray]],
