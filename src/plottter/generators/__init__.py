@@ -45,6 +45,7 @@ def _import_builtin_generators() -> None:
     from plottter.generators import tam as _tam  # noqa: F401
     from plottter.generators import lic as _lic  # noqa: F401
     from plottter.generators import voronoi as _voronoi  # noqa: F401
+    from plottter.generators import penrose as _penrose  # noqa: F401
 
 
 def load_plugins(extra_dirs=None) -> list[str]:
