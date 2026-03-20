@@ -15,6 +15,7 @@ from plottter.generators.base import (
     FloatParam,
     Generator,
     ImageParam,
+    IntParam,
     Parameter,
     Preset,
 )
@@ -198,6 +199,89 @@ def _grid_diagonal(spacing: float, w: float, h: float) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Dot shape rendering
+# ---------------------------------------------------------------------------
+
+def _dot_circle(x: float, y: float, r: float, segments: int) -> Polyline:
+    """Single circle outline: *segments* points evenly spaced, closed (first point repeated)."""
+    pts: Polyline = []
+    for i in range(segments):
+        angle = 2.0 * math.pi * i / segments
+        pts.append((x + r * math.cos(angle), y + r * math.sin(angle)))
+    pts.append(pts[0])  # close
+    return pts
+
+
+def _dot_filled(x: float, y: float, r: float, pen_spacing: float, segments: int) -> list[Polyline]:
+    """Concentric circles from *r* down toward center.
+
+    Number of rings = ceil(r / pen_spacing).  Each ring is a closed circle
+    polyline produced by :func:`_dot_circle`.
+    """
+    n_rings = math.ceil(r / pen_spacing)
+    polylines: list[Polyline] = []
+    for i in range(n_rings):
+        ring_r = r - i * pen_spacing
+        if ring_r <= 0.0:
+            break
+        polylines.append(_dot_circle(x, y, ring_r, segments))
+    return polylines
+
+
+def _dot_spiral(
+    x: float,
+    y: float,
+    r: float,
+    pen_spacing: float,
+    segments_per_turn: int,
+) -> Polyline:
+    """Single continuous Archimedean spiral from outer radius inward to center.
+
+    total_turns = r / pen_spacing; each turn contributes *segments_per_turn*
+    points.  One polyline, no pen lifts.
+    """
+    total_turns = r / pen_spacing
+    n_segments = max(1, int(total_turns * segments_per_turn))
+    pts: Polyline = []
+    for i in range(n_segments + 1):
+        t = i / n_segments
+        current_r = r * (1.0 - t)
+        angle = 2.0 * math.pi * total_turns * t
+        pts.append((x + current_r * math.cos(angle), y + current_r * math.sin(angle)))
+    return pts
+
+
+def _dot_square(x: float, y: float, r: float) -> Polyline:
+    """Axis-aligned square outline centered at (x, y) with half-side *r*, closed (5 points)."""
+    return [
+        (x - r, y - r),
+        (x + r, y - r),
+        (x + r, y + r),
+        (x - r, y + r),
+        (x - r, y - r),
+    ]
+
+
+def _dot_diamond(x: float, y: float, r: float) -> Polyline:
+    """Square rotated 45°, closed (5 points)."""
+    return [
+        (x,     y - r),
+        (x + r, y    ),
+        (x,     y + r),
+        (x - r, y    ),
+        (x,     y - r),
+    ]
+
+
+def _dot_cross(x: float, y: float, r: float) -> list[Polyline]:
+    """Two perpendicular line segments through center, each of length 2r."""
+    return [
+        [(x - r, y), (x + r, y)],
+        [(x, y - r), (x, y + r)],
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Generator
 # ---------------------------------------------------------------------------
 
@@ -332,6 +416,33 @@ class HalftoneGenerator(Generator):
                 default=1.5,
                 description="Gamma — <1 emphasizes highlights, >1 emphasizes shadows.",
             ),
+            ChoiceParam(
+                name="dot_shape",
+                label="Dot Shape",
+                choices=["Circle", "Filled Circle", "Spiral Fill", "Square", "Diamond", "Cross"],
+                default="Circle",
+                description="Shape used to render each halftone dot.",
+            ),
+            IntParam(
+                name="circle_segments",
+                label="Circle Segments",
+                min=6,
+                max=64,
+                step=1,
+                default=16,
+                visible_when={"dot_shape": ["Circle", "Filled Circle", "Spiral Fill"]},
+                description="Number of line segments per circle — higher = smoother.",
+            ),
+            FloatParam(
+                name="fill_line_spacing_mm",
+                label="Fill Line Spacing (mm)",
+                min=0.1,
+                max=2.0,
+                step=0.05,
+                default=0.3,
+                visible_when={"dot_shape": ["Filled Circle", "Spiral Fill"]},
+                description="Spacing between fill rings/turns.",
+            ),
         ]
 
     def get_presets(self) -> list[Preset]:
@@ -462,10 +573,39 @@ class HalftoneGenerator(Generator):
             # No image: use max radius for all dots
             dots = [(float(x), float(y), max_radius) for x, y in pts]
 
+        # Extract dot rendering params
+        dot_shape = str(params.get("dot_shape", "Circle"))
+        segments = int(params.get("circle_segments", 16))
+        fill_spacing = float(params.get("fill_line_spacing_mm", 0.3))
+
+        # Render dots into polylines; report progress every ~10%
+        polylines: list[Polyline] = []
+        n_dots = len(dots)
+        report_every = max(1, n_dots // 10)
+
+        for i, (x, y, r) in enumerate(dots):
+            if cancelled_callback and cancelled_callback():
+                break
+
+            if dot_shape == "Filled Circle":
+                polylines.extend(_dot_filled(x, y, r, fill_spacing, segments))
+            elif dot_shape == "Spiral Fill":
+                polylines.append(_dot_spiral(x, y, r, fill_spacing, segments))
+            elif dot_shape == "Square":
+                polylines.append(_dot_square(x, y, r))
+            elif dot_shape == "Diamond":
+                polylines.append(_dot_diamond(x, y, r))
+            elif dot_shape == "Cross":
+                polylines.extend(_dot_cross(x, y, r))
+            else:  # "Circle" (default)
+                polylines.append(_dot_circle(x, y, r, segments))
+
+            if progress_callback and n_dots > 0 and (i + 1) % report_every == 0:
+                pct = int((i + 1) / n_dots * 100)
+                progress_callback(pct)
+
         if progress_callback:
             progress_callback(100)
 
-        # Store dots as layer attribute for next task (dot rendering)
-        # Return empty for now — rendering implemented in next task
         self._computed_dots = dots
-        return []
+        return polylines

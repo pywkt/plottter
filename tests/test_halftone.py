@@ -250,33 +250,36 @@ class TestHalftoneGenerator:
         assert sp.max == pytest.approx(20.0)
 
     # ------------------------------------------------------------------
-    # generate() scaffold — returns list (empty for now)
+    # generate() — returns polylines for all dot shapes
     # ------------------------------------------------------------------
 
     def test_generate_returns_list(self):
         result = self.gen.generate({}, self.canvas)
         assert isinstance(result, list)
 
-    def test_generate_square_returns_empty(self):
+    def test_generate_square_grid_returns_polylines(self):
         result = self.gen.generate(
-            {"grid_type": "Square", "grid_spacing_mm": 5.0},
+            {"grid_type": "Square", "grid_spacing_mm": 5.0, "dot_shape": "Circle"},
             self.canvas,
         )
-        assert result == []
+        assert isinstance(result, list)
+        assert len(result) > 0
 
-    def test_generate_hexagonal_returns_empty(self):
+    def test_generate_hexagonal_grid_returns_polylines(self):
         result = self.gen.generate(
-            {"grid_type": "Hexagonal", "grid_spacing_mm": 5.0},
+            {"grid_type": "Hexagonal", "grid_spacing_mm": 5.0, "dot_shape": "Circle"},
             self.canvas,
         )
-        assert result == []
+        assert isinstance(result, list)
+        assert len(result) > 0
 
-    def test_generate_diagonal_returns_empty(self):
+    def test_generate_diagonal_grid_returns_polylines(self):
         result = self.gen.generate(
-            {"grid_type": "Diagonal", "grid_spacing_mm": 5.0},
+            {"grid_type": "Diagonal", "grid_spacing_mm": 5.0, "dot_shape": "Circle"},
             self.canvas,
         )
-        assert result == []
+        assert isinstance(result, list)
+        assert len(result) > 0
 
     def test_generate_accepts_progress_callback(self):
         progress_values = []
@@ -566,3 +569,316 @@ class TestHalftoneImageSampling:
         assert isinstance(sc, ChoiceParam)
         assert set(sc.choices) == {"Area-Proportional", "Linear", "Logarithmic"}
         assert sc.default == "Area-Proportional"
+
+
+# ---------------------------------------------------------------------------
+# Task 47.3 — dot shape rendering
+# ---------------------------------------------------------------------------
+
+class TestDotRenderingFunctions:
+    """Unit tests for standalone dot-shape helper functions."""
+
+    def test_dot_circle_point_count(self):
+        """_dot_circle with N segments should produce N+1 points (closed)."""
+        from plottter.generators.halftone import _dot_circle
+        for seg in (6, 8, 16, 32):
+            poly = _dot_circle(0.0, 0.0, 1.0, seg)
+            assert len(poly) == seg + 1, f"segments={seg}: expected {seg+1} pts, got {len(poly)}"
+
+    def test_dot_circle_is_closed(self):
+        """First and last point of _dot_circle must be identical (closed polyline)."""
+        from plottter.generators.halftone import _dot_circle
+        poly = _dot_circle(5.0, 3.0, 2.0, 16)
+        assert poly[0] == poly[-1], "Circle polyline should be closed (first == last)"
+
+    def test_dot_circle_radius(self):
+        """All points of _dot_circle should lie on the circle of given radius."""
+        from plottter.generators.halftone import _dot_circle
+        cx, cy, r = 10.0, 20.0, 3.5
+        poly = _dot_circle(cx, cy, r, 32)
+        for x, y in poly:
+            dist = math.hypot(x - cx, y - cy)
+            assert abs(dist - r) < 1e-9, f"Point ({x:.4f},{y:.4f}) not on circle of r={r}"
+
+    def test_dot_filled_ring_count(self):
+        """_dot_filled should produce ceil(r / pen_spacing) concentric rings."""
+        from plottter.generators.halftone import _dot_filled
+        r, spacing = 1.4, 0.3
+        expected_rings = math.ceil(r / spacing)
+        polys = _dot_filled(0.0, 0.0, r, spacing, 16)
+        assert len(polys) == expected_rings, (
+            f"Expected {expected_rings} rings, got {len(polys)}"
+        )
+
+    def test_dot_filled_multiple_polylines(self):
+        """_dot_filled must return more than one polyline for r > pen_spacing."""
+        from plottter.generators.halftone import _dot_filled
+        polys = _dot_filled(0.0, 0.0, 2.0, 0.5, 16)
+        assert len(polys) > 1, "Filled circle should produce multiple concentric rings"
+
+    def test_dot_filled_rings_are_closed(self):
+        """Every ring polyline from _dot_filled should be closed."""
+        from plottter.generators.halftone import _dot_filled
+        for poly in _dot_filled(0.0, 0.0, 1.5, 0.4, 12):
+            assert poly[0] == poly[-1], "Each concentric ring should be closed"
+
+    def test_dot_filled_rings_decreasing_radius(self):
+        """Successive rings from _dot_filled should have strictly decreasing radii."""
+        from plottter.generators.halftone import _dot_filled
+        cx, cy = 5.0, 5.0
+        polys = _dot_filled(cx, cy, 2.0, 0.5, 32)
+        radii = [math.hypot(p[0][0] - cx, p[0][1] - cy) for p in polys]
+        for a, b in zip(radii, radii[1:]):
+            assert a > b - 1e-9, f"Ring radii not decreasing: {a:.4f} then {b:.4f}"
+
+    def test_dot_spiral_single_polyline(self):
+        """_dot_spiral should return a single polyline (list of points, not list of lists)."""
+        from plottter.generators.halftone import _dot_spiral
+        poly = _dot_spiral(0.0, 0.0, 1.5, 0.3, 16)
+        assert isinstance(poly, list), "Spiral should be a list"
+        assert len(poly) > 0
+        # Each element should be a (float, float) tuple, not a list
+        assert isinstance(poly[0], tuple), "Each element should be a (x,y) point tuple"
+
+    def test_dot_spiral_reaches_center(self):
+        """Last point of _dot_spiral should be close to (x, y)."""
+        from plottter.generators.halftone import _dot_spiral
+        cx, cy = 10.0, 15.0
+        poly = _dot_spiral(cx, cy, 1.2, 0.3, 16)
+        lx, ly = poly[-1]
+        assert math.hypot(lx - cx, ly - cy) < 1e-9, (
+            f"Spiral end ({lx:.4f},{ly:.4f}) not at center ({cx},{cy})"
+        )
+
+    def test_dot_spiral_starts_at_outer_radius(self):
+        """First point of _dot_spiral should lie on the outer radius."""
+        from plottter.generators.halftone import _dot_spiral
+        cx, cy, r = 5.0, 5.0, 1.5
+        poly = _dot_spiral(cx, cy, r, 0.3, 16)
+        dist = math.hypot(poly[0][0] - cx, poly[0][1] - cy)
+        assert abs(dist - r) < 1e-9, f"Spiral start dist={dist:.6f} != outer radius={r}"
+
+    def test_dot_square_point_count(self):
+        """_dot_square should return exactly 5 points (closed rectangle)."""
+        from plottter.generators.halftone import _dot_square
+        poly = _dot_square(0.0, 0.0, 1.0)
+        assert len(poly) == 5, f"Square should have 5 points, got {len(poly)}"
+
+    def test_dot_square_is_closed(self):
+        """First and last point of _dot_square must be identical."""
+        from plottter.generators.halftone import _dot_square
+        poly = _dot_square(3.0, 4.0, 2.0)
+        assert poly[0] == poly[-1], "Square polyline should be closed"
+
+    def test_dot_square_correct_corners(self):
+        """_dot_square corners should be at (x±r, y±r)."""
+        from plottter.generators.halftone import _dot_square
+        cx, cy, r = 5.0, 5.0, 2.0
+        poly = _dot_square(cx, cy, r)
+        corners = set(poly[:4])
+        expected = {
+            (cx - r, cy - r),
+            (cx + r, cy - r),
+            (cx + r, cy + r),
+            (cx - r, cy + r),
+        }
+        assert corners == expected, f"Square corners {corners} != expected {expected}"
+
+    def test_dot_diamond_point_count(self):
+        """_dot_diamond should return exactly 5 points (closed diamond)."""
+        from plottter.generators.halftone import _dot_diamond
+        poly = _dot_diamond(0.0, 0.0, 1.0)
+        assert len(poly) == 5
+
+    def test_dot_diamond_is_closed(self):
+        """First and last point of _dot_diamond must be identical."""
+        from plottter.generators.halftone import _dot_diamond
+        poly = _dot_diamond(0.0, 0.0, 1.0)
+        assert poly[0] == poly[-1]
+
+    def test_dot_diamond_cardinal_points(self):
+        """_dot_diamond corners should be at cardinal positions (top/right/bottom/left)."""
+        from plottter.generators.halftone import _dot_diamond
+        cx, cy, r = 5.0, 5.0, 2.0
+        poly = _dot_diamond(cx, cy, r)
+        corners = set(poly[:4])
+        expected = {
+            (cx,     cy - r),
+            (cx + r, cy    ),
+            (cx,     cy + r),
+            (cx - r, cy    ),
+        }
+        assert corners == expected
+
+    def test_dot_cross_two_polylines(self):
+        """_dot_cross should return exactly 2 polylines."""
+        from plottter.generators.halftone import _dot_cross
+        result = _dot_cross(0.0, 0.0, 1.0)
+        assert len(result) == 2
+
+    def test_dot_cross_segment_length(self):
+        """Each arm of _dot_cross should span 2r (from -r to +r through center)."""
+        from plottter.generators.halftone import _dot_cross
+        cx, cy, r = 5.0, 5.0, 3.0
+        h_seg, v_seg = _dot_cross(cx, cy, r)
+        # Horizontal: y constant, x from cx-r to cx+r
+        assert h_seg[0] == (cx - r, cy)
+        assert h_seg[1] == (cx + r, cy)
+        # Vertical: x constant, y from cy-r to cy+r
+        assert v_seg[0] == (cx, cy - r)
+        assert v_seg[1] == (cx, cy + r)
+
+
+class TestDotShapeParameters:
+    """Tests for the new dot shape parameters on HalftoneGenerator."""
+
+    def setup_method(self):
+        from plottter.generators.halftone import HalftoneGenerator
+        self.gen = HalftoneGenerator()
+
+    def test_has_dot_shape_param(self):
+        from plottter.generators.base import ChoiceParam
+        params = {p.name: p for p in self.gen.get_parameters()}
+        assert "dot_shape" in params
+        assert isinstance(params["dot_shape"], ChoiceParam)
+
+    def test_dot_shape_choices(self):
+        from plottter.generators.base import ChoiceParam
+        params = {p.name: p for p in self.gen.get_parameters()}
+        choices = set(params["dot_shape"].choices)
+        assert choices == {"Circle", "Filled Circle", "Spiral Fill", "Square", "Diamond", "Cross"}
+
+    def test_dot_shape_default(self):
+        params = {p.name: p for p in self.gen.get_parameters()}
+        assert params["dot_shape"].default == "Circle"
+
+    def test_has_circle_segments_param(self):
+        from plottter.generators.base import IntParam
+        params = {p.name: p for p in self.gen.get_parameters()}
+        assert "circle_segments" in params
+        assert isinstance(params["circle_segments"], IntParam)
+
+    def test_circle_segments_range(self):
+        params = {p.name: p for p in self.gen.get_parameters()}
+        cs = params["circle_segments"]
+        assert cs.min == 6
+        assert cs.max == 64
+        assert cs.default == 16
+
+    def test_circle_segments_visible_when(self):
+        params = {p.name: p for p in self.gen.get_parameters()}
+        vw = params["circle_segments"].visible_when
+        assert vw is not None
+        assert "dot_shape" in vw
+        shapes = set(vw["dot_shape"])
+        assert shapes == {"Circle", "Filled Circle", "Spiral Fill"}
+
+    def test_has_fill_line_spacing_param(self):
+        from plottter.generators.base import FloatParam
+        params = {p.name: p for p in self.gen.get_parameters()}
+        assert "fill_line_spacing_mm" in params
+        assert isinstance(params["fill_line_spacing_mm"], FloatParam)
+
+    def test_fill_line_spacing_range(self):
+        params = {p.name: p for p in self.gen.get_parameters()}
+        fls = params["fill_line_spacing_mm"]
+        assert fls.min == pytest.approx(0.1)
+        assert fls.max == pytest.approx(2.0)
+        assert fls.default == pytest.approx(0.3)
+
+    def test_fill_line_spacing_visible_when(self):
+        params = {p.name: p for p in self.gen.get_parameters()}
+        vw = params["fill_line_spacing_mm"].visible_when
+        assert vw is not None
+        assert "dot_shape" in vw
+        shapes = set(vw["dot_shape"])
+        assert shapes == {"Filled Circle", "Spiral Fill"}
+
+
+class TestDotShapeGenerate:
+    """Integration tests for dot shape rendering in HalftoneGenerator.generate()."""
+
+    def setup_method(self):
+        from plottter.generators.halftone import HalftoneGenerator
+        self.gen = HalftoneGenerator()
+        self.canvas = make_canvas()
+
+    def _params(self, dot_shape: str, **kw) -> dict:
+        base = {
+            "grid_spacing_mm": 20.0,   # coarse grid → few dots for fast tests
+            "max_dot_radius_mm": 2.0,
+            "min_dot_radius_mm": 0.1,
+            "dot_shape": dot_shape,
+            "circle_segments": 16,
+            "fill_line_spacing_mm": 0.5,
+        }
+        base.update(kw)
+        return base
+
+    def test_circle_dots_are_closed(self):
+        """Circle dot polylines must be closed (first == last point)."""
+        result = self.gen.generate(self._params("Circle"), self.canvas)
+        assert len(result) > 0
+        for poly in result:
+            assert poly[0] == poly[-1], "Circle polyline not closed"
+
+    def test_circle_dots_segment_count(self):
+        """Circle dot polylines must have circle_segments + 1 points."""
+        seg = 12
+        result = self.gen.generate(self._params("Circle", circle_segments=seg), self.canvas)
+        assert len(result) > 0
+        for poly in result:
+            assert len(poly) == seg + 1, f"Expected {seg+1} pts, got {len(poly)}"
+
+    def test_filled_circle_multiple_polylines_per_dot(self):
+        """Filled Circle mode should produce more polylines than dot count (multiple rings)."""
+        result = self.gen.generate(self._params("Filled Circle"), self.canvas)
+        dot_count = len(self.gen._computed_dots)
+        assert len(result) > dot_count, (
+            f"Filled Circle ({len(result)} polys) should exceed dot count ({dot_count})"
+        )
+
+    def test_spiral_fill_one_polyline_per_dot(self):
+        """Spiral Fill mode should produce exactly one polyline per dot."""
+        result = self.gen.generate(self._params("Spiral Fill"), self.canvas)
+        dot_count = len(self.gen._computed_dots)
+        assert len(result) == dot_count, (
+            f"Spiral Fill should give 1 polyline per dot: {len(result)} polys, {dot_count} dots"
+        )
+
+    def test_square_dots_five_points(self):
+        """Square dot polylines must have exactly 5 points (closed rectangle)."""
+        result = self.gen.generate(self._params("Square"), self.canvas)
+        assert len(result) > 0
+        for poly in result:
+            assert len(poly) == 5, f"Square polyline should have 5 pts, got {len(poly)}"
+
+    def test_diamond_dots_five_points(self):
+        """Diamond dot polylines must have exactly 5 points (closed)."""
+        result = self.gen.generate(self._params("Diamond"), self.canvas)
+        assert len(result) > 0
+        for poly in result:
+            assert len(poly) == 5, f"Diamond polyline should have 5 pts, got {len(poly)}"
+
+    def test_cross_dots_two_polylines_per_dot(self):
+        """Cross mode should produce exactly 2 polylines per dot."""
+        result = self.gen.generate(self._params("Cross"), self.canvas)
+        dot_count = len(self.gen._computed_dots)
+        assert len(result) == 2 * dot_count, (
+            f"Cross should give 2 polylines per dot: {len(result)} polys, {dot_count} dots"
+        )
+
+    def test_all_shapes_within_canvas_bounds(self):
+        """All dot shape polylines should lie within the canvas bounds."""
+        cw = self.canvas.width_mm
+        ch = self.canvas.height_mm
+        for shape in ("Circle", "Filled Circle", "Spiral Fill", "Square", "Diamond", "Cross"):
+            result = self.gen.generate(self._params(shape), self.canvas)
+            for poly in result:
+                for x, y in poly:
+                    assert -1e-6 <= x <= cw + 1e-6, (
+                        f"shape={shape}: x={x:.4f} out of canvas [0, {cw}]"
+                    )
+                    assert -1e-6 <= y <= ch + 1e-6, (
+                        f"shape={shape}: y={y:.4f} out of canvas [0, {ch}]"
+                    )
