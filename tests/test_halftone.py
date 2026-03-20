@@ -882,3 +882,248 @@ class TestDotShapeGenerate:
                     assert -1e-6 <= y <= ch + 1e-6, (
                         f"shape={shape}: y={y:.4f} out of canvas [0, {ch}]"
                     )
+
+
+# ---------------------------------------------------------------------------
+# Task 47.4 — Presets, registration, and integration tests
+# ---------------------------------------------------------------------------
+
+_EXPECTED_PRESET_NAMES = {
+    "Classic Halftone",
+    "Newspaper",
+    "Pop Art Dots",
+    "Fine Detail",
+    "Cross Halftone",
+    "Diamond Grid",
+}
+
+
+def _small_canvas() -> Canvas:
+    """50×50 mm canvas with 5mm margin for fast preset tests."""
+    return Canvas(width_mm=50.0, height_mm=50.0, margin_mm=5.0)
+
+
+class TestTask474Presets:
+    """Task 47.4: preset definitions and parameter correctness."""
+
+    def setup_method(self):
+        from plottter.generators.halftone import HalftoneGenerator
+        self.gen = HalftoneGenerator()
+        self.canvas = _small_canvas()
+
+    # --- preset inventory ---
+
+    def test_exactly_six_presets(self):
+        presets = self.gen.get_presets()
+        assert len(presets) == 6, f"Expected 6 presets, got {len(presets)}"
+
+    def test_all_expected_preset_names_present(self):
+        names = {p.name for p in self.gen.get_presets()}
+        for name in _EXPECTED_PRESET_NAMES:
+            assert name in names, f"Preset {name!r} is missing"
+
+    # --- preset parameter correctness ---
+
+    def test_classic_halftone_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Classic Halftone"]
+        assert p.params["grid_spacing_mm"] == pytest.approx(3.0)
+        assert p.params["grid_type"] == "Square"
+        assert p.params["dot_shape"] == "Circle"
+        assert p.params["grid_angle_deg"] == pytest.approx(45.0)
+
+    def test_newspaper_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Newspaper"]
+        assert p.params["grid_spacing_mm"] == pytest.approx(2.0)
+        assert p.params["grid_type"] == "Diagonal"
+        assert p.params["dot_shape"] == "Filled Circle"
+        assert p.params["fill_line_spacing_mm"] == pytest.approx(0.3)
+
+    def test_pop_art_dots_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Pop Art Dots"]
+        assert p.params["grid_spacing_mm"] == pytest.approx(5.0)
+        assert p.params["grid_type"] == "Hexagonal"
+        assert p.params["dot_shape"] == "Filled Circle"
+        assert p.params["fill_line_spacing_mm"] == pytest.approx(0.4)
+
+    def test_fine_detail_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Fine Detail"]
+        assert p.params["grid_spacing_mm"] == pytest.approx(1.5)
+        assert p.params["grid_type"] == "Square"
+        assert p.params["dot_shape"] == "Circle"
+        assert p.params["grid_angle_deg"] == pytest.approx(0.0)
+        assert p.params["circle_segments"] == 24
+
+    def test_cross_halftone_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Cross Halftone"]
+        assert p.params["grid_spacing_mm"] == pytest.approx(4.0)
+        assert p.params["grid_type"] == "Hexagonal"
+        assert p.params["dot_shape"] == "Cross"
+
+    def test_diamond_grid_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Diamond Grid"]
+        assert p.params["grid_spacing_mm"] == pytest.approx(3.0)
+        assert p.params["grid_type"] == "Square"
+        assert p.params["dot_shape"] == "Diamond"
+        assert p.params["grid_angle_deg"] == pytest.approx(0.0)
+
+    # (g) all presets generate valid output
+
+    def test_all_presets_generate_nonempty_output(self):
+        """(g) Every preset must return a non-empty list of polylines."""
+        for preset in self.gen.get_presets():
+            result = self.gen.generate(preset.params, self.canvas)
+            assert isinstance(result, list), (
+                f"Preset {preset.name!r}: expected list, got {type(result)}"
+            )
+            assert len(result) > 0, (
+                f"Preset {preset.name!r}: expected non-empty output"
+            )
+
+    def test_all_preset_polylines_have_at_least_two_points(self):
+        """Every polyline from every preset must have >= 2 points."""
+        for preset in self.gen.get_presets():
+            result = self.gen.generate(preset.params, self.canvas)
+            for pl in result:
+                assert len(pl) >= 2, (
+                    f"Preset {preset.name!r}: polyline has fewer than 2 points"
+                )
+
+    def test_all_preset_polylines_coords_finite(self):
+        """All coordinates produced by presets must be finite numbers."""
+        for preset in self.gen.get_presets():
+            result = self.gen.generate(preset.params, self.canvas)
+            for pl in result:
+                for x, y in pl:
+                    assert math.isfinite(x) and math.isfinite(y), (
+                        f"Preset {preset.name!r}: non-finite coord ({x}, {y})"
+                    )
+
+    # (h) generator is registered and accessible
+
+    def test_generator_registered_and_accessible(self):
+        """(h) 'Dot Grid Halftone' must be in GENERATORS and return a usable instance."""
+        from plottter.generators import GENERATORS
+        assert "Dot Grid Halftone" in GENERATORS
+        cls = GENERATORS["Dot Grid Halftone"]
+        instance = cls()
+        assert len(instance.get_parameters()) > 0
+
+    # Additional integration: verify the key behaviours required by task spec
+
+    def test_black_image_produces_dots_at_all_grid_points(self):
+        """(a) Black image → brightness=0 → max radius → dot at every grid point."""
+        from plottter.generators.halftone import HalftoneGenerator
+        gen = HalftoneGenerator()
+        canvas = _small_canvas()
+        img_black = np.zeros((32, 32), dtype=np.uint8)
+        params_no_img = {
+            "grid_spacing_mm": 5.0,
+            "grid_type": "Square",
+            "grid_angle_deg": 0.0,
+            "max_dot_radius_mm": 1.5,
+            "min_dot_radius_mm": 0.1,
+            "dot_shape": "Circle",
+            "circle_segments": 8,
+        }
+        params_black = dict(params_no_img, _source_image=img_black)
+        result_no_img = gen.generate(params_no_img, canvas)
+        result_black = gen.generate(params_black, canvas)
+        # Black image → max radius everywhere → same number of dots as no-image mode
+        assert len(result_black) == len(result_no_img)
+        assert len(result_black) > 0
+
+    def test_white_image_min_radius_zero_no_dots(self):
+        """(b) White image + min_radius=0 → no dots produced."""
+        from plottter.generators.halftone import HalftoneGenerator
+        gen = HalftoneGenerator()
+        canvas = _small_canvas()
+        img_white = np.full((32, 32), 255, dtype=np.uint8)
+        params = {
+            "grid_spacing_mm": 5.0,
+            "grid_type": "Square",
+            "max_dot_radius_mm": 1.5,
+            "min_dot_radius_mm": 0.0,
+            "size_curve": "Linear",
+            "size_gamma": 1.0,
+            "_source_image": img_white,
+            "dot_shape": "Circle",
+        }
+        result = gen.generate(params, canvas)
+        assert len(result) == 0
+
+    def test_hex_grid_more_dots_than_square(self):
+        """(c) Hexagonal grid produces more dots than square at same spacing."""
+        from plottter.generators.halftone import _grid_hexagonal, _grid_square
+        # Use A4 drawing area (large enough to overcome edge-clipping variance)
+        a4 = Canvas.from_preset("A4", margin=10.0)
+        x1, y1, x2, y2 = a4.drawing_area()
+        w, h = x2 - x1, y2 - y1
+        spacing = 4.0
+        n_sq = len(_grid_square(spacing, 0.0, w, h))
+        n_hex = len(_grid_hexagonal(spacing, 0.0, w, h))
+        assert n_hex > n_sq, f"Hex ({n_hex}) should produce more dots than square ({n_sq})"
+
+    def test_filled_circle_more_polylines_than_outline(self):
+        """(d) Filled Circle produces more polylines than outline Circle."""
+        from plottter.generators.halftone import HalftoneGenerator
+        gen = HalftoneGenerator()
+        canvas = _small_canvas()
+        base = {
+            "grid_spacing_mm": 5.0,
+            "max_dot_radius_mm": 2.0,
+            "min_dot_radius_mm": 0.1,
+            "fill_line_spacing_mm": 0.4,
+            "circle_segments": 12,
+        }
+        n_circle = len(gen.generate(dict(base, dot_shape="Circle"), canvas))
+        n_filled = len(gen.generate(dict(base, dot_shape="Filled Circle"), canvas))
+        assert n_filled > n_circle, (
+            f"Filled ({n_filled}) should produce more polylines than circle ({n_circle})"
+        )
+
+    @pytest.mark.parametrize("shape", [
+        "Circle", "Filled Circle", "Spiral Fill", "Square", "Diamond", "Cross"
+    ])
+    def test_all_dot_shapes_produce_valid_polylines(self, shape: str):
+        """(e) All dot shapes produce valid polylines with >= 2 points."""
+        from plottter.generators.halftone import HalftoneGenerator
+        gen = HalftoneGenerator()
+        canvas = _small_canvas()
+        params = {
+            "grid_spacing_mm": 6.0,
+            "max_dot_radius_mm": 2.0,
+            "min_dot_radius_mm": 0.1,
+            "dot_shape": shape,
+            "circle_segments": 10,
+            "fill_line_spacing_mm": 0.5,
+        }
+        result = gen.generate(params, canvas)
+        assert len(result) > 0, f"Shape {shape!r} produced no output"
+        for pl in result:
+            assert len(pl) >= 2, f"Shape {shape!r}: polyline has < 2 points"
+
+    def test_grid_angle_rotates_pattern(self):
+        """(f) grid_angle_deg changes the dot positions."""
+        from plottter.generators.halftone import HalftoneGenerator
+        gen = HalftoneGenerator()
+        canvas = _small_canvas()
+        base = {
+            "grid_spacing_mm": 5.0,
+            "grid_type": "Square",
+            "max_dot_radius_mm": 0.5,
+            "min_dot_radius_mm": 0.5,
+            "dot_shape": "Circle",
+            "circle_segments": 6,
+        }
+        r0 = gen.generate(dict(base, grid_angle_deg=0.0), canvas)
+        r45 = gen.generate(dict(base, grid_angle_deg=45.0), canvas)
+        # Extract dot centres (first point of each circle)
+        centres0 = {(round(pl[0][0], 3), round(pl[0][1], 3)) for pl in r0}
+        centres45 = {(round(pl[0][0], 3), round(pl[0][1], 3)) for pl in r45}
+        assert centres0 != centres45, "0° and 45° grids must yield different dot positions"

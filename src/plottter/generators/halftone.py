@@ -452,22 +452,52 @@ class HalftoneGenerator(Generator):
                 params={
                     "grid_spacing_mm": 3.0,
                     "grid_type": "Square",
+                    "dot_shape": "Circle",
                     "grid_angle_deg": 45.0,
                 },
             ),
             Preset(
-                name="Hex Halftone",
+                name="Newspaper",
                 params={
-                    "grid_spacing_mm": 3.0,
-                    "grid_type": "Hexagonal",
-                    "grid_angle_deg": 0.0,
+                    "grid_spacing_mm": 2.0,
+                    "grid_type": "Diagonal",
+                    "dot_shape": "Filled Circle",
+                    "fill_line_spacing_mm": 0.3,
                 },
             ),
             Preset(
-                name="Fine Diagonal",
+                name="Pop Art Dots",
+                params={
+                    "grid_spacing_mm": 5.0,
+                    "grid_type": "Hexagonal",
+                    "dot_shape": "Filled Circle",
+                    "fill_line_spacing_mm": 0.4,
+                },
+            ),
+            Preset(
+                name="Fine Detail",
                 params={
                     "grid_spacing_mm": 1.5,
-                    "grid_type": "Diagonal",
+                    "grid_type": "Square",
+                    "dot_shape": "Circle",
+                    "grid_angle_deg": 0.0,
+                    "circle_segments": 24,
+                },
+            ),
+            Preset(
+                name="Cross Halftone",
+                params={
+                    "grid_spacing_mm": 4.0,
+                    "grid_type": "Hexagonal",
+                    "dot_shape": "Cross",
+                },
+            ),
+            Preset(
+                name="Diamond Grid",
+                params={
+                    "grid_spacing_mm": 3.0,
+                    "grid_type": "Square",
+                    "dot_shape": "Diamond",
                     "grid_angle_deg": 0.0,
                 },
             ),
