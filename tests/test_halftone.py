@@ -364,3 +364,205 @@ class TestHalftoneGenerator:
         assert len(common) < 0.2 * min(len(s0), len(s15)), (
             "15°-rotated grid should differ substantially from 0° grid"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 47.2 — brightness sampling and dot size mapping
+# ---------------------------------------------------------------------------
+
+class TestBrightnessToRadius:
+    """Unit tests for _brightness_to_radius mapping function."""
+
+    def setup_method(self):
+        from plottter.generators.halftone import _brightness_to_radius
+        self.fn = _brightness_to_radius
+
+    def test_black_gives_max_radius(self):
+        """Brightness=0 (black) should produce max_radius for all curves."""
+        for curve in ("Area-Proportional", "Linear", "Logarithmic"):
+            r = self.fn(0.0, max_radius=2.0, min_radius=0.1, curve=curve, gamma=1.0)
+            assert r == pytest.approx(2.0, abs=1e-6), f"curve={curve}: expected 2.0, got {r}"
+
+    def test_white_with_min_zero_gives_skip(self):
+        """Brightness=255, min_radius=0 → dot should be skipped (radius < 0)."""
+        for curve in ("Area-Proportional", "Linear", "Logarithmic"):
+            r = self.fn(255.0, max_radius=2.0, min_radius=0.0, curve=curve, gamma=1.0)
+            assert r < 0.0, f"curve={curve}: expected skip (<0), got {r}"
+
+    def test_area_proportional_50pct_gray(self):
+        """50% gray with area-proportional and gamma=1 → dot area ≈ 50% of max area.
+
+        area = π*r² vs π*max_r²; ratio should be ≈0.5.
+        """
+        r = self.fn(128.0, max_radius=2.0, min_radius=0.0, curve="Area-Proportional", gamma=1.0)
+        area_ratio = (r / 2.0) ** 2
+        assert abs(area_ratio - 0.5) < 0.01, f"area ratio {area_ratio:.4f} not near 0.5"
+
+    def test_gamma_gt1_larger_midtone_dots(self):
+        """gamma > 1 emphasizes shadows: midtone dots are larger (more ink) than gamma=1.
+
+        With formula r = max_r*(1 - t^gamma), for 0 < t < 1, t^gamma < t when gamma > 1,
+        so (1-t^gamma) > (1-t), giving a larger radius.
+        """
+        r_g1 = self.fn(128.0, max_radius=2.0, min_radius=0.0, curve="Linear", gamma=1.0)
+        r_g2 = self.fn(128.0, max_radius=2.0, min_radius=0.0, curve="Linear", gamma=2.0)
+        assert r_g2 > r_g1, f"gamma=2 should give larger radius ({r_g2:.4f}) than gamma=1 ({r_g1:.4f})"
+
+    def test_monotone_decreasing(self):
+        """Radius should decrease monotonically as brightness increases."""
+        for curve in ("Area-Proportional", "Linear", "Logarithmic"):
+            prev = None
+            for b in (0, 64, 128, 192, 255):
+                r = self.fn(float(b), max_radius=2.0, min_radius=0.0, curve=curve, gamma=1.0)
+                if prev is not None:
+                    assert r <= prev + 1e-9, f"curve={curve}: r({b})={r:.4f} > r({b-64})={prev:.4f}"
+                prev = r
+
+    def test_min_radius_clamps_output(self):
+        """Output should never be below min_radius (for dots that aren't skipped)."""
+        r = self.fn(200.0, max_radius=2.0, min_radius=0.5, curve="Linear", gamma=1.0)
+        assert r >= 0.5 - 1e-9
+
+
+class TestHalftoneImageSampling:
+    """Integration tests for image sampling inside HalftoneGenerator.generate()."""
+
+    def setup_method(self):
+        from plottter.generators.halftone import HalftoneGenerator
+        self.gen = HalftoneGenerator()
+        self.canvas = make_canvas()
+
+    def _make_uniform_image(self, value: int) -> np.ndarray:
+        """Create a small uniform grayscale image."""
+        return np.full((50, 50), value, dtype=np.uint8)
+
+    def test_pure_black_image_all_dots_at_max(self):
+        """Black image → all dots at max_radius (after generate populates _computed_dots)."""
+        img = self._make_uniform_image(0)
+        max_r = 1.4
+        self.gen.generate(
+            {
+                "_source_image": img,
+                "grid_spacing_mm": 10.0,
+                "max_dot_radius_mm": max_r,
+                "min_dot_radius_mm": 0.1,
+                "size_curve": "Area-Proportional",
+                "size_gamma": 1.0,
+            },
+            self.canvas,
+        )
+        dots = self.gen._computed_dots
+        assert len(dots) > 0, "Expected dots for black image"
+        for x, y, r in dots:
+            assert r == pytest.approx(max_r, abs=1e-6), f"Expected max_r={max_r}, got {r}"
+
+    def test_pure_white_image_min_zero_no_dots(self):
+        """White image with min_radius=0 → no dots generated."""
+        img = self._make_uniform_image(255)
+        self.gen.generate(
+            {
+                "_source_image": img,
+                "grid_spacing_mm": 10.0,
+                "max_dot_radius_mm": 1.4,
+                "min_dot_radius_mm": 0.0,
+                "size_curve": "Area-Proportional",
+                "size_gamma": 1.0,
+            },
+            self.canvas,
+        )
+        assert self.gen._computed_dots == [], "Expected no dots for pure white image with min_radius=0"
+
+    def test_50pct_gray_area_proportional(self):
+        """50% gray with area-proportional → dot area ≈ 50% of max area."""
+        img = self._make_uniform_image(128)
+        max_r = 2.0
+        self.gen.generate(
+            {
+                "_source_image": img,
+                "grid_spacing_mm": 10.0,
+                "max_dot_radius_mm": max_r,
+                "min_dot_radius_mm": 0.0,
+                "size_curve": "Area-Proportional",
+                "size_gamma": 1.0,
+            },
+            self.canvas,
+        )
+        dots = self.gen._computed_dots
+        assert len(dots) > 0, "Expected dots for 50% gray image"
+        for x, y, r in dots:
+            area_ratio = (r / max_r) ** 2
+            assert abs(area_ratio - 0.5) < 0.02, f"area ratio {area_ratio:.4f} not near 0.5"
+
+    def test_gamma_gt1_larger_dots_than_gamma1(self):
+        """gamma > 1 emphasizes shadows: midtone dots are larger (more ink) than gamma=1.
+
+        With formula r = max_r*(1-t^gamma), gamma>1 compresses t^gamma downward for
+        0 < t < 1, so midtone dots have larger radii than with gamma=1.
+        """
+        img = self._make_uniform_image(128)
+        max_r = 2.0
+
+        self.gen.generate(
+            {
+                "_source_image": img,
+                "grid_spacing_mm": 10.0,
+                "max_dot_radius_mm": max_r,
+                "min_dot_radius_mm": 0.0,
+                "size_curve": "Linear",
+                "size_gamma": 1.0,
+            },
+            self.canvas,
+        )
+        radii_g1 = [r for _, _, r in self.gen._computed_dots]
+
+        self.gen.generate(
+            {
+                "_source_image": img,
+                "grid_spacing_mm": 10.0,
+                "max_dot_radius_mm": max_r,
+                "min_dot_radius_mm": 0.0,
+                "size_curve": "Linear",
+                "size_gamma": 2.0,
+            },
+            self.canvas,
+        )
+        radii_g2 = [r for _, _, r in self.gen._computed_dots]
+
+        assert len(radii_g1) > 0
+        assert len(radii_g2) > 0
+        avg_g1 = sum(radii_g1) / len(radii_g1)
+        avg_g2 = sum(radii_g2) / len(radii_g2)
+        assert avg_g2 > avg_g1, f"gamma=2 avg radius {avg_g2:.4f} should be > gamma=1 {avg_g1:.4f}"
+
+    def test_no_image_uses_max_radius(self):
+        """When no source image is provided, all dots should use max_radius."""
+        max_r = 1.8
+        self.gen.generate(
+            {
+                "grid_spacing_mm": 10.0,
+                "max_dot_radius_mm": max_r,
+                "min_dot_radius_mm": 0.1,
+            },
+            self.canvas,
+        )
+        dots = self.gen._computed_dots
+        assert len(dots) > 0
+        for x, y, r in dots:
+            assert r == pytest.approx(max_r, abs=1e-6)
+
+    def test_new_dot_size_params_in_parameters(self):
+        """All new dot size parameters must be present in get_parameters()."""
+        names = {p.name for p in self.gen.get_parameters()}
+        assert "max_dot_radius_mm" in names
+        assert "min_dot_radius_mm" in names
+        assert "size_curve" in names
+        assert "size_gamma" in names
+
+    def test_size_curve_choices(self):
+        """size_curve must offer Area-Proportional, Linear, and Logarithmic."""
+        from plottter.generators.base import ChoiceParam
+        params = {p.name: p for p in self.gen.get_parameters()}
+        sc = params["size_curve"]
+        assert isinstance(sc, ChoiceParam)
+        assert set(sc.choices) == {"Area-Proportional", "Linear", "Logarithmic"}
+        assert sc.default == "Area-Proportional"
