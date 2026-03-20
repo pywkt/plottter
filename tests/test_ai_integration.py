@@ -381,9 +381,10 @@ class TestSegmentByPoint:
         expected_mask = np.full((h, w), 255, dtype=np.uint8)
         expected_mask[:h // 2] = 0  # top half background, bottom half foreground
 
-        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
-            with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=expected_mask):
-                result = client.segment_by_point(input_image, positive_points=[(4, 6)])
+        with patch.object(rc_mod, "_upload_file", return_value="https://fake/uploaded.png"):
+            with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
+                with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=expected_mask):
+                    result = client.segment_by_point(input_image, positive_points=[(4, 6)])
 
         assert result.shape == (h, w)
         assert result.dtype == np.uint8
@@ -417,9 +418,10 @@ class TestSegmentByBox:
         expected_mask = np.zeros((h, w), dtype=np.uint8)
         expected_mask[2:6, 2:6] = 255  # foreground in the box region
 
-        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
-            with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=expected_mask):
-                result = client.segment_by_box(input_image, box_xyxy=(2, 2, 6, 6))
+        with patch.object(rc_mod, "_upload_file", return_value="https://fake/uploaded.png"):
+            with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
+                with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=expected_mask):
+                    result = client.segment_by_box(input_image, box_xyxy=(2, 2, 6, 6))
 
         assert result.shape == (h, w)
         assert result.dtype == np.uint8

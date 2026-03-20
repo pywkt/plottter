@@ -340,7 +340,8 @@ class ReplicateClient:
             if progress_callback:
                 progress_callback(10)
 
-            img_b64 = _image_to_data_uri(image)
+            # meta/sam-2-video requires a downloadable file URL (not a data URI)
+            img_url = _upload_file(self._api_key, image)
             all_points = list(positive_points) + list(neg)
             labels = [1] * len(positive_points) + [0] * len(neg)
 
@@ -353,7 +354,7 @@ class ReplicateClient:
                 self._api_key,
                 MODEL_SAM2,
                 {
-                    "input_video": img_b64,
+                    "input_video": img_url,
                     "click_coordinates": coords_str,
                     "click_labels": labels_str,
                 },
@@ -405,7 +406,8 @@ class ReplicateClient:
             if progress_callback:
                 progress_callback(10)
 
-            img_b64 = _image_to_data_uri(image)
+            # meta/sam-2-video requires a downloadable file URL (not a data URI)
+            img_url = _upload_file(self._api_key, image)
             # meta/sam-2-video doesn't have a "box" param — approximate
             # by clicking the center as a foreground point.
             x1, y1, x2, y2 = box_xyxy
@@ -417,7 +419,7 @@ class ReplicateClient:
                 self._api_key,
                 MODEL_SAM2,
                 {
-                    "input_video": img_b64,
+                    "input_video": img_url,
                     "click_coordinates": coords_str,
                     "click_labels": labels_str,
                 },
@@ -501,8 +503,62 @@ class ReplicateClient:
 
 
 # ---------------------------------------------------------------------------
-# REST API helper
+# REST API helpers
 # ---------------------------------------------------------------------------
+
+def _upload_file(api_key: str, image: np.ndarray) -> str:
+    """Upload an image to the Replicate file API and return the file URL.
+
+    Some models (e.g. ``meta/sam-2-video``) require a downloadable URL
+    rather than an inline data URI.  This uploads the image as a PNG and
+    returns the ``urls.get`` URL which can be used as a prediction input.
+
+    The uploaded file expires after 24 hours on Replicate's servers.
+    """
+    import base64
+    from PIL import Image as _PIL_Image
+
+    arr = image.astype(np.uint8)
+    if arr.ndim == 2:
+        pil = _PIL_Image.fromarray(arr, mode="L").convert("RGB")
+    elif arr.ndim == 3 and arr.shape[2] == 3:
+        pil = _PIL_Image.fromarray(arr, mode="RGB")
+    elif arr.ndim == 3 and arr.shape[2] == 4:
+        pil = _PIL_Image.fromarray(arr, mode="RGBA").convert("RGB")
+    else:
+        pil = _PIL_Image.fromarray(arr).convert("RGB")
+
+    buf = io.BytesIO()
+    pil.save(buf, format="PNG")
+    file_bytes = buf.getvalue()
+
+    # Build multipart/form-data body
+    boundary = "----ReplicateUpload"
+    body = (
+        f"--{boundary}\r\n"
+        f'Content-Disposition: form-data; name="content"; filename="image.png"\r\n'
+        f"Content-Type: image/png\r\n\r\n"
+    ).encode() + file_bytes + f"\r\n--{boundary}--\r\n".encode()
+
+    req = urllib.request.Request(
+        "https://api.replicate.com/v1/files",
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+        },
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(req) as resp:
+            result = json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        body_text = exc.read().decode(errors="replace")
+        raise ReplicateAPIError(f"File upload failed (HTTP {exc.code}): {body_text}") from exc
+
+    return result["urls"]["get"]
+
 
 def _replicate_run(api_key: str, model: str, input_data: dict) -> object:
     """Call the Replicate REST API, poll for completion, and return the output.

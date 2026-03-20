@@ -2108,6 +2108,13 @@ class SettingsPanel(QScrollArea):
             float_mask = np.array(pil).astype(np.float32) / 255.0
 
         self._canvas_ref.set_mask(float_mask)
+        # Switch to manual brush mode so the mask overlay is visible
+        # (the overlay only renders when mask_paint_active is True)
+        self._canvas_ref.set_mask_paint_active(True)
+        self._canvas_ref.set_ai_mask_mode(None)
+        self._ai_mask_mode_combo.blockSignals(True)
+        self._ai_mask_mode_combo.setCurrentText("Manual Brush")
+        self._ai_mask_mode_combo.blockSignals(False)
         self._ai_mask_status.setText(
             "AI mask applied. Use the brush to refine, or click Apply to Layer."
         )
