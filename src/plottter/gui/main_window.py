@@ -93,6 +93,7 @@ class _OptimizeWorker(QThread):
         run_merge: bool = True,
         merge_threshold: float = 0.5,
         run_2opt: bool = True,
+        run_3opt: bool = False,
         run_or_opt: bool = True,
         num_starts: int = 5,
         parent=None,
@@ -110,6 +111,7 @@ class _OptimizeWorker(QThread):
         self._run_merge = run_merge
         self._merge_threshold = merge_threshold
         self._run_2opt = run_2opt
+        self._run_3opt = run_3opt
         self._run_or_opt = run_or_opt
         self._num_starts = num_starts
         self._cancelled = False
@@ -128,6 +130,7 @@ class _OptimizeWorker(QThread):
                 merge_nearby_paths,
                 reorder_paths,
                 optimize_2opt,
+                optimize_3opt,
                 optimize_or_opt,
                 calculate_travel_distance,
             )
@@ -155,9 +158,9 @@ class _OptimizeWorker(QThread):
                 self.finished.emit(paths, before_travel, after_travel, before_lifts, len(paths))
                 return
 
-            # --- Nearest-neighbour reordering (10-40%) ---
+            # --- Nearest-neighbour reordering (10-35%) ---
             def _nn_progress(f: float) -> None:
-                self.progress.emit(10 + int(f * 30))
+                self.progress.emit(10 + int(f * 25))
 
             paths = reorder_paths(
                 paths,
@@ -165,24 +168,36 @@ class _OptimizeWorker(QThread):
                 progress_callback=_nn_progress,
                 cancelled=lambda: self._cancelled,
             )
-            self.progress.emit(40)
+            self.progress.emit(35)
 
             if self._run_2opt and not self._cancelled:
-                # --- 2-opt improvement (40-70%) ---
+                # --- 2-opt improvement (35-55%) ---
                 def _2opt_progress(f: float) -> None:
-                    self.progress.emit(40 + int(f * 30))
+                    self.progress.emit(35 + int(f * 20))
 
                 paths = optimize_2opt(
                     paths,
                     progress_callback=_2opt_progress,
                     cancelled=lambda: self._cancelled,
                 )
-                self.progress.emit(70)
+                self.progress.emit(55)
+
+            if self._run_3opt and not self._cancelled:
+                # --- 3-opt improvement (55-75%) ---
+                def _3opt_progress(f: float) -> None:
+                    self.progress.emit(55 + int(f * 20))
+
+                paths = optimize_3opt(
+                    paths,
+                    progress_callback=_3opt_progress,
+                    cancelled=lambda: self._cancelled,
+                )
+                self.progress.emit(75)
 
             if self._run_or_opt and not self._cancelled:
-                # --- Or-opt improvement (70-100%) ---
+                # --- Or-opt improvement (75-100%) ---
                 def _oropt_progress(f: float) -> None:
-                    self.progress.emit(70 + int(f * 30))
+                    self.progress.emit(75 + int(f * 25))
 
                 paths = optimize_or_opt(
                     paths,
@@ -1675,6 +1690,7 @@ class MainWindow(QMainWindow):
             run_merge=s.get("run_merge", True),
             merge_threshold=s.get("merge_threshold", 0.5),
             run_2opt=s.get("run_2opt", True),
+            run_3opt=s.get("run_3opt", False),
             run_or_opt=s.get("run_or_opt", True),
             num_starts=5,
             parent=self,
@@ -1684,10 +1700,12 @@ class MainWindow(QMainWindow):
             self._opt_progress.setValue(base_progress + value)
             if value < 10:
                 step = "Preprocessing"
-            elif value < 40:
+            elif value < 35:
                 step = "Reordering paths"
-            elif value < 70:
+            elif value < 55:
                 step = "Running 2-opt"
+            elif value < 75:
+                step = "Running 3-opt"
             else:
                 step = "Running Or-opt"
             self._opt_progress.setLabelText(

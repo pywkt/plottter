@@ -31,6 +31,7 @@ _DEFAULTS = {
     "run_merge": True,
     "merge_threshold": 0.5,
     "run_2opt": True,
+    "run_3opt": False,
     "run_or_opt": True,
 }
 
@@ -99,9 +100,15 @@ class OptimizeSettingsDialog(QDialog):
 
         self._opt2_check = QCheckBox("2-opt improvement")
         self._opt2_check.setToolTip("Run 2-opt pass to reduce total travel distance.")
+        self._opt3_check = QCheckBox("3-opt improvement")
+        self._opt3_check.setToolTip(
+            "3-opt — finds improvements 2-opt misses, slower. "
+            "For stipple/dot art with 1000+ paths."
+        )
         self._oropt_check = QCheckBox("Or-opt improvement")
         self._oropt_check.setToolTip("Run Or-opt pass to further reduce travel distance.")
         reorder_layout.addWidget(self._opt2_check)
+        reorder_layout.addWidget(self._opt3_check)
         reorder_layout.addWidget(self._oropt_check)
 
         layout.addWidget(reorder_group)
@@ -188,6 +195,7 @@ class OptimizeSettingsDialog(QDialog):
         self._merge_thresh_spin.setValue(s.value("merge_threshold", d["merge_threshold"], type=float))
 
         self._opt2_check.setChecked(s.value("run_2opt", d["run_2opt"], type=bool))
+        self._opt3_check.setChecked(s.value("run_3opt", d["run_3opt"], type=bool))
         self._oropt_check.setChecked(s.value("run_or_opt", d["run_or_opt"], type=bool))
 
         s.endGroup()
@@ -211,6 +219,7 @@ class OptimizeSettingsDialog(QDialog):
         s.setValue("run_merge", self._merge_check.isChecked())
         s.setValue("merge_threshold", self._merge_thresh_spin.value())
         s.setValue("run_2opt", self._opt2_check.isChecked())
+        s.setValue("run_3opt", self._opt3_check.isChecked())
         s.setValue("run_or_opt", self._oropt_check.isChecked())
         s.endGroup()
 
@@ -226,6 +235,7 @@ class OptimizeSettingsDialog(QDialog):
         self._merge_check.setChecked(d["run_merge"])
         self._merge_thresh_spin.setValue(d["merge_threshold"])
         self._opt2_check.setChecked(d["run_2opt"])
+        self._opt3_check.setChecked(d["run_3opt"])
         self._oropt_check.setChecked(d["run_or_opt"])
 
     def _on_accept(self) -> None:
@@ -249,5 +259,6 @@ class OptimizeSettingsDialog(QDialog):
             "run_merge": self._merge_check.isChecked(),
             "merge_threshold": self._merge_thresh_spin.value(),
             "run_2opt": self._opt2_check.isChecked(),
+            "run_3opt": self._opt3_check.isChecked(),
             "run_or_opt": self._oropt_check.isChecked(),
         }
