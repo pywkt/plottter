@@ -291,6 +291,73 @@ def _render_delaunay(
     return polylines
 
 
+def _polygon_centroid(vertices: np.ndarray) -> tuple[float, float]:
+    """Compute the centroid of a polygon via the shoelace formula."""
+    x = vertices[:, 0]
+    y = vertices[:, 1]
+    x_next = np.roll(x, -1)
+    y_next = np.roll(y, -1)
+    cross = x * y_next - x_next * y
+    area = 0.5 * np.sum(cross)
+    if abs(area) < 1e-12:
+        return float(x.mean()), float(y.mean())
+    cx = float(np.sum((x + x_next) * cross) / (6.0 * area))
+    cy = float(np.sum((y + y_next) * cross) / (6.0 * area))
+    return cx, cy
+
+
+def _lloyd_relax(
+    seeds: np.ndarray,
+    bbox: tuple[float, float, float, float],
+    iterations: int,
+) -> np.ndarray:
+    """Lloyd's relaxation: move each seed to its Voronoi cell centroid.
+
+    Uses the mirror-point technique so all cells are finite (no infinite rays).
+    The seeds are clipped back to *bbox* after each iteration.
+    """
+    from scipy.spatial import Voronoi  # lazy import
+
+    if iterations <= 0 or len(seeds) < 4:
+        return seeds
+
+    x_min, y_min, x_max, y_max = bbox
+    n = len(seeds)
+    pts = seeds.copy()
+
+    for _ in range(iterations):
+        # Mirror-point approach: reflect across all 4 boundaries
+        reflected = np.vstack(
+            [
+                pts,  # original: indices 0 … n-1
+                np.column_stack([2.0 * x_min - pts[:, 0], pts[:, 1]]),  # left
+                np.column_stack([2.0 * x_max - pts[:, 0], pts[:, 1]]),  # right
+                np.column_stack([pts[:, 0], 2.0 * y_min - pts[:, 1]]),  # top
+                np.column_stack([pts[:, 0], 2.0 * y_max - pts[:, 1]]),  # bottom
+            ]
+        )
+
+        vor = Voronoi(reflected)
+        new_pts = pts.copy()
+
+        for i in range(n):
+            region_idx = vor.point_region[i]
+            region = vor.regions[region_idx]
+            # Degenerate region — skip (should not occur with mirror approach)
+            if not region or -1 in region or len(region) < 3:
+                continue
+            vertices = vor.vertices[region]
+            cx, cy = _polygon_centroid(vertices)
+            # Clip centroid to bbox
+            cx = max(x_min, min(x_max, cx))
+            cy = max(y_min, min(y_max, cy))
+            new_pts[i] = (cx, cy)
+
+        pts = new_pts
+
+    return pts
+
+
 def _render_centroids(seeds: np.ndarray, radius: float) -> list[Polyline]:
     """Render a small circle at each seed location to mark Voronoi centroids."""
     n_pts = 12
@@ -403,6 +470,18 @@ class VoronoiGenerator(Generator):
                 ),
             ),
             IntParam(
+                name="lloyd_iterations",
+                label="Lloyd Iterations",
+                min=0,
+                max=50,
+                step=1,
+                default=0,
+                description=(
+                    "Iterations of Lloyd relaxation — 0 = no relaxation, "
+                    "higher = more regular cells."
+                ),
+            ),
+            IntParam(
                 name="random_seed",
                 label="Random Seed",
                 min=0,
@@ -477,6 +556,7 @@ class VoronoiGenerator(Generator):
         random_seed = int(params.get("random_seed", 42))
         render_mode = str(params.get("render_mode", "Voronoi Edges"))
         centroid_radius = float(params.get("centroid_radius_mm", 0.5))
+        lloyd_iterations = int(params.get("lloyd_iterations", 0))
 
         draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
         draw_w = draw_x2 - draw_x1
@@ -499,10 +579,15 @@ class VoronoiGenerator(Generator):
         seeds = seeds + np.array([draw_x1 + x_off, draw_y1 + y_off])
 
         if progress_callback:
-            progress_callback(20)
+            progress_callback(10)
 
-        # Canvas drawing-area bounds used for Voronoi mirroring and clipping
+        # Apply Lloyd's relaxation before rendering
         bbox = (draw_x1, draw_y1, draw_x2, draw_y2)
+        if lloyd_iterations > 0:
+            seeds = _lloyd_relax(seeds, bbox, lloyd_iterations)
+
+        if progress_callback:
+            progress_callback(20)
 
         polylines: list[Polyline] = []
 

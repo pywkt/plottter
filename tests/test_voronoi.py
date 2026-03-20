@@ -456,3 +456,232 @@ class TestRenderVoronoi:
         assert "Both" in rp.choices
         assert "Voronoi + Centroids" in rp.choices
         assert rp.default == "Voronoi Edges"
+
+
+# ---------------------------------------------------------------------------
+# _render_delaunay — Task 45.3 (a) and (b)
+# ---------------------------------------------------------------------------
+
+
+class TestRenderDelaunay:
+    """Tests for _render_delaunay: triangle coverage and no duplicate edges."""
+
+    def setup_method(self):
+        from plottter.generators.voronoi import _render_delaunay
+        self._fn = _render_delaunay
+        self.canvas = make_canvas()
+        self.x1, self.y1, self.x2, self.y2 = self.canvas.drawing_area()
+        self.bbox = (self.x1, self.y1, self.x2, self.y2)
+
+    def _make_seeds(self, n: int, seed: int = 42) -> np.ndarray:
+        rng = np.random.default_rng(seed)
+        seeds = rng.random((n, 2))
+        seeds[:, 0] = self.x1 + seeds[:, 0] * (self.x2 - self.x1)
+        seeds[:, 1] = self.y1 + seeds[:, 1] * (self.y2 - self.y1)
+        return seeds
+
+    # (a) Delaunay produces triangles covering the point set
+    def test_produces_edges_for_point_set(self):
+        seeds = self._make_seeds(50)
+        result = self._fn(seeds, self.bbox)
+        # 50 points → Delaunay has ~2n - 2 - h triangles → expect many edges
+        assert len(result) >= 30, f"Expected ≥ 30 Delaunay edges, got {len(result)}"
+
+    def test_returns_valid_polylines(self):
+        seeds = self._make_seeds(30)
+        result = self._fn(seeds, self.bbox)
+        assert isinstance(result, list)
+        for pl in result:
+            assert isinstance(pl, list)
+            assert len(pl) >= 2
+            for pt in pl:
+                assert len(pt) == 2
+                assert isinstance(pt[0], float)
+                assert isinstance(pt[1], float)
+
+    def test_edges_within_canvas_bounds(self):
+        seeds = self._make_seeds(80)
+        result = self._fn(seeds, self.bbox)
+        tol = 1e-6
+        for pl in result:
+            for x, y in pl:
+                assert x >= self.x1 - tol
+                assert x <= self.x2 + tol
+                assert y >= self.y1 - tol
+                assert y <= self.y2 + tol
+
+    # (b) no duplicate edges
+    def test_no_duplicate_edges(self):
+        """Each edge (a, b) should appear at most once in the output."""
+        seeds = self._make_seeds(60)
+        result = self._fn(seeds, self.bbox)
+        # Encode each 2-point polyline as a frozenset of rounded endpoints
+        seen: set[frozenset] = set()
+        for pl in result:
+            if len(pl) == 2:
+                key = frozenset(
+                    (round(x, 6), round(y, 6)) for x, y in pl
+                )
+                assert key not in seen, f"Duplicate edge found: {pl}"
+                seen.add(key)
+
+    def test_returns_empty_for_too_few_seeds(self):
+        seeds = self._make_seeds(2)
+        result = self._fn(seeds, self.bbox)
+        assert result == []
+
+    def test_edge_count_matches_delaunay_formula(self):
+        """For n interior points the number of Delaunay edges is roughly 3n."""
+        seeds = self._make_seeds(100)
+        result = self._fn(seeds, self.bbox)
+        # Very loose bound: at least n edges expected
+        assert len(result) >= len(seeds), (
+            f"Expected at least {len(seeds)} edges, got {len(result)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# _lloyd_relax — Task 45.3 (c)
+# ---------------------------------------------------------------------------
+
+
+class TestLloydRelax:
+    """Tests for _lloyd_relax: convergence to more regular cell layout."""
+
+    def setup_method(self):
+        from plottter.generators.voronoi import _lloyd_relax
+        self._fn = _lloyd_relax
+        self.canvas = make_canvas()
+        self.x1, self.y1, self.x2, self.y2 = self.canvas.drawing_area()
+        self.bbox = (self.x1, self.y1, self.x2, self.y2)
+
+    def _make_seeds(self, n: int, seed: int = 0) -> np.ndarray:
+        rng = np.random.default_rng(seed)
+        seeds = rng.random((n, 2))
+        seeds[:, 0] = self.x1 + seeds[:, 0] * (self.x2 - self.x1)
+        seeds[:, 1] = self.y1 + seeds[:, 1] * (self.y2 - self.y1)
+        return seeds
+
+    def test_zero_iterations_returns_same_seeds(self):
+        seeds = self._make_seeds(50)
+        result = self._fn(seeds, self.bbox, iterations=0)
+        np.testing.assert_array_equal(result, seeds)
+
+    def test_returns_same_count(self):
+        seeds = self._make_seeds(80)
+        result = self._fn(seeds, self.bbox, iterations=5)
+        assert result.shape == seeds.shape
+
+    def test_stays_within_bbox(self):
+        seeds = self._make_seeds(100)
+        result = self._fn(seeds, self.bbox, iterations=10)
+        tol = 1e-6
+        assert np.all(result[:, 0] >= self.x1 - tol)
+        assert np.all(result[:, 0] <= self.x2 + tol)
+        assert np.all(result[:, 1] >= self.y1 - tol)
+        assert np.all(result[:, 1] <= self.y2 + tol)
+
+    def test_relaxation_moves_seeds(self):
+        """At least some seeds must move after relaxation."""
+        seeds = self._make_seeds(80)
+        result = self._fn(seeds, self.bbox, iterations=3)
+        assert not np.allclose(result, seeds), "Lloyd relaxation should move seeds"
+
+    # (c) high iterations → more regular (lower variance in nearest-neighbour distances)
+    def test_high_iterations_more_regular(self):
+        """After many iterations the NN-distance variance should decrease."""
+        from scipy.spatial import KDTree
+
+        seeds = self._make_seeds(200)
+        relaxed = self._fn(seeds, self.bbox, iterations=20)
+
+        tree_orig = KDTree(seeds)
+        dists_orig, _ = tree_orig.query(seeds, k=2)
+        nn_orig = dists_orig[:, 1]
+
+        tree_rel = KDTree(relaxed)
+        dists_rel, _ = tree_rel.query(relaxed, k=2)
+        nn_rel = dists_rel[:, 1]
+
+        var_orig = float(np.var(nn_orig))
+        var_rel = float(np.var(nn_rel))
+        assert var_rel < var_orig, (
+            f"Relaxed variance {var_rel:.4f} should be < original variance {var_orig:.4f}"
+        )
+
+    def test_too_few_seeds_returns_unchanged(self):
+        seeds = self._make_seeds(3)
+        result = self._fn(seeds, self.bbox, iterations=5)
+        np.testing.assert_array_equal(result, seeds)
+
+
+# ---------------------------------------------------------------------------
+# Integration: "Both" mode and "Voronoi + Centroids" — Task 45.3 (d) and (e)
+# ---------------------------------------------------------------------------
+
+
+class TestRenderModesBothAndCentroids:
+    """Integration tests for 'Both' and 'Voronoi + Centroids' render modes."""
+
+    def setup_method(self):
+        from plottter.generators.voronoi import VoronoiGenerator
+        self.gen = VoronoiGenerator()
+        self.canvas = make_canvas()
+
+    # (d) "Both" mode overlays Voronoi and Delaunay
+    def test_both_mode_more_edges_than_voronoi_alone(self):
+        common = {"num_points": 80, "seed_method": "Random", "random_seed": 3}
+        vor_only = self.gen.generate({**common, "render_mode": "Voronoi Edges"}, self.canvas)
+        del_only = self.gen.generate({**common, "render_mode": "Delaunay Edges"}, self.canvas)
+        both = self.gen.generate({**common, "render_mode": "Both"}, self.canvas)
+        assert len(both) == len(vor_only) + len(del_only), (
+            "'Both' output should equal sum of Voronoi + Delaunay edge counts"
+        )
+
+    # (e) centroid mode draws dots (circles) at each seed
+    def test_centroids_mode_produces_circles(self):
+        n = 60
+        result = self.gen.generate(
+            {
+                "render_mode": "Voronoi + Centroids",
+                "num_points": n,
+                "seed_method": "Random",
+                "random_seed": 5,
+                "centroid_radius_mm": 1.0,
+            },
+            self.canvas,
+        )
+        assert len(result) > 0
+        # Each circle polyline should be closed (first == last point)
+        closed = [pl for pl in result if pl[0] == pl[-1]]
+        assert len(closed) >= n, (
+            f"Expected at least {n} closed circle polylines, got {len(closed)}"
+        )
+
+    def test_lloyd_iterations_param_present(self):
+        from plottter.generators.voronoi import VoronoiGenerator
+        from plottter.generators.base import IntParam
+        gen = VoronoiGenerator()
+        params = gen.get_parameters()
+        lloyd_params = [p for p in params if p.name == "lloyd_iterations"]
+        assert len(lloyd_params) == 1
+        lp = lloyd_params[0]
+        assert isinstance(lp, IntParam)
+        assert lp.min == 0
+        assert lp.max == 50
+        assert lp.default == 0
+
+    def test_lloyd_relaxation_wired_into_generate(self):
+        """generate() with lloyd_iterations > 0 should still return valid polylines."""
+        result = self.gen.generate(
+            {
+                "render_mode": "Voronoi Edges",
+                "num_points": 80,
+                "seed_method": "Random",
+                "random_seed": 0,
+                "lloyd_iterations": 5,
+            },
+            self.canvas,
+        )
+        assert isinstance(result, list)
+        assert len(result) > 0
