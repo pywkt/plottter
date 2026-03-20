@@ -228,6 +228,34 @@ class _BrushWorker(QThread):
             self.error.emit(str(exc))
 
 
+class _TaperWorker(QThread):
+    """QThread that runs taper_paths on a layer's paths."""
+
+    finished = pyqtSignal(list)  # (new_paths,)
+    error = pyqtSignal(str)
+    progress = pyqtSignal(int)  # 0-100
+
+    def __init__(
+        self,
+        paths: list[Polyline],
+        params: dict,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._paths = paths
+        self._params = params
+
+    def run(self) -> None:
+        try:
+            from plottter.processing.taper import taper_paths
+            self.progress.emit(10)
+            result = taper_paths(self._paths, **self._params)
+            self.progress.emit(100)
+            self.finished.emit(result)
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))
+
+
 class _BrushDialog:
     """Factory that builds and shows the Apply Brush dialog.
 
@@ -744,6 +772,11 @@ class MainWindow(QMainWindow):
         self._act_apply_brush.setToolTip("Replace paths with a stylized brush effect (stippled dots, multi-stroke, calligraphic)")
         self._act_apply_brush.triggered.connect(self._on_apply_brush_layer)
         tools_menu.addAction(self._act_apply_brush)
+
+        self._act_taper = QAction("Taper Paths…", self)
+        self._act_taper.setToolTip("Replace paths with tapered stroke outlines that fade in and out")
+        self._act_taper.triggered.connect(self._on_taper_layer)
+        tools_menu.addAction(self._act_taper)
 
         tools_menu.addSeparator()
 
@@ -1406,6 +1439,55 @@ class MainWindow(QMainWindow):
         worker.finished.connect(on_finished)
         worker.error.connect(on_error)
         self._brush_worker = worker
+        worker.start()
+
+    def _on_taper_layer(self) -> None:
+        """Show the Taper Paths dialog and replace the selected layer's paths."""
+        layer_id = self._controller.active_layer_id
+        layer = self._controller.get_layer(layer_id) if layer_id else None
+        if layer is None:
+            QMessageBox.warning(self, "Taper Paths", "No selected layer to apply taper to.")
+            return
+        if not layer.paths:
+            QMessageBox.information(self, "Taper Paths", "Selected layer has no paths.")
+            return
+
+        from plottter.gui.dialogs.taper_dialog import TaperSettingsDialog
+
+        dlg = TaperSettingsDialog(list(layer.paths), parent=self)
+        if dlg.exec() != TaperSettingsDialog.DialogCode.Accepted:
+            return
+
+        params = dlg.get_params()
+        total = len(layer.paths)
+        progress = QProgressDialog(
+            f"Applying taper to '{layer.name}'…", "", 0, 100, self
+        )
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.show()
+
+        worker = _TaperWorker(paths=list(layer.paths), params=params, parent=self)
+
+        def on_progress(value: int) -> None:
+            progress.setValue(value)
+
+        def on_finished(new_paths: list) -> None:
+            progress.close()
+            self._controller.set_layer_paths(layer_id, new_paths, "Taper Paths")
+            self.statusBar().showMessage(
+                f"Taper applied: {total} → {len(new_paths)} paths.", 4000
+            )
+            worker.deleteLater()
+
+        def on_error(msg: str) -> None:
+            progress.close()
+            QMessageBox.critical(self, "Taper Error", msg)
+            worker.deleteLater()
+
+        worker.progress.connect(on_progress)
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_error)
+        self._taper_worker = worker
         worker.start()
 
     def _on_plot_axidraw(self) -> None:

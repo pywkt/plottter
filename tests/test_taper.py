@@ -328,3 +328,54 @@ class TestTaperParameterValidation:
         poly = _horizontal_line(10.0)
         result = pkg_taper([poly], fill_mode="outline")
         assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# (b) Circular path produces tapered ring
+# ---------------------------------------------------------------------------
+
+
+def _make_circle(n: int = 40, radius: float = 5.0) -> list[tuple[float, float]]:
+    """Return a closed circular polyline with n evenly-spaced points."""
+    pts = []
+    for i in range(n):
+        theta = 2 * math.pi * i / n
+        pts.append((radius * math.cos(theta), radius * math.sin(theta)))
+    pts.append(pts[0])  # close the loop
+    return pts
+
+
+class TestCircularPath:
+    def test_outline_mode_two_paths_per_circle(self):
+        circle = _make_circle(n=40, radius=5.0)
+        result = taper_paths([circle], max_width_mm=1.0, fade_fraction=0.2, fill_mode="outline")
+        assert len(result) == 2
+
+    def test_filled_mode_multiple_paths_per_circle(self):
+        circle = _make_circle(n=40, radius=5.0)
+        # half_max=1.0, offsets: -1.0, -0.5, 0.0, 0.5, 1.0 = 5 strokes
+        result = taper_paths([circle], max_width_mm=2.0, fade_fraction=0.0,
+                              fill_spacing_mm=0.5, fill_mode="filled")
+        assert len(result) == 5
+
+    def test_circle_paths_have_same_point_count_as_input(self):
+        circle = _make_circle(n=40, radius=5.0)
+        result = taper_paths([circle], max_width_mm=1.0, fade_fraction=0.0, fill_mode="outline")
+        for p in result:
+            assert len(p) == len(circle)
+
+    def test_circle_outer_edge_farther_than_inner_edge(self):
+        """Outline mode: one edge is farther from the origin than the other."""
+        circle = _make_circle(n=40, radius=5.0)
+        result = taper_paths([circle], max_width_mm=2.0, fade_fraction=0.0, fill_mode="outline")
+        assert len(result) == 2
+        # Compute mean radii of both edges
+        def mean_radius(path):
+            return sum(math.hypot(x, y) for x, y in path) / len(path)
+        r0 = mean_radius(result[0])
+        r1 = mean_radius(result[1])
+        # One should be ~6.0 (radius+1), the other ~4.0 (radius-1)
+        outer_r = max(r0, r1)
+        inner_r = min(r0, r1)
+        assert abs(outer_r - 6.0) < 0.1
+        assert abs(inner_r - 4.0) < 0.1
