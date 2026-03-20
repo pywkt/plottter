@@ -709,7 +709,7 @@ class PenroseGenerator(Generator):
     def get_presets(self) -> list[Preset]:
         return [
             Preset(
-                name="Classic Sun",
+                name="Classic P3",
                 params={
                     "initial_config": "Sun",
                     "subdivisions": 5,
@@ -720,10 +720,10 @@ class PenroseGenerator(Generator):
                 },
             ),
             Preset(
-                name="Star Pattern",
+                name="Penrose Stars",
                 params={
                     "initial_config": "Star",
-                    "subdivisions": 5,
+                    "subdivisions": 4,
                     "rotation_deg": 0.0,
                     "render_mode": "Edges Only",
                     "x_offset_mm": 0.0,
@@ -731,10 +731,21 @@ class PenroseGenerator(Generator):
                 },
             ),
             Preset(
-                name="Arc Decorations",
+                name="Arc Pattern",
                 params={
                     "initial_config": "Sun",
-                    "subdivisions": 4,
+                    "subdivisions": 5,
+                    "rotation_deg": 0.0,
+                    "render_mode": "Arcs Only",
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="Full Decoration",
+                params={
+                    "initial_config": "Sun",
+                    "subdivisions": 6,
                     "rotation_deg": 0.0,
                     "render_mode": "Edges + Arcs",
                     "x_offset_mm": 0.0,
@@ -742,12 +753,23 @@ class PenroseGenerator(Generator):
                 },
             ),
             Preset(
-                name="Arcs Only",
+                name="Dense Tiling",
                 params={
                     "initial_config": "Sun",
-                    "subdivisions": 4,
+                    "subdivisions": 7,
                     "rotation_deg": 0.0,
-                    "render_mode": "Arcs Only",
+                    "render_mode": "Edges Only",
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="Dart Origin",
+                params={
+                    "initial_config": "Dart",
+                    "subdivisions": 5,
+                    "rotation_deg": 0.0,
+                    "render_mode": "Edges Only",
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
                 },

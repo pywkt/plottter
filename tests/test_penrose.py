@@ -853,3 +853,233 @@ class TestEdgesOnlyMode:
         coords0 = {(round(p[0], 3), round(p[1], 3)) for poly in r0 for p in poly}
         coords45 = {(round(p[0], 3), round(p[1], 3)) for poly in r45 for p in poly}
         assert coords0 != coords45
+
+
+# ---------------------------------------------------------------------------
+# Task 46.4 — Presets, registration, and high-depth generation
+# ---------------------------------------------------------------------------
+
+_EXPECTED_PRESET_NAMES = {
+    "Classic P3",
+    "Penrose Stars",
+    "Arc Pattern",
+    "Full Decoration",
+    "Dense Tiling",
+    "Dart Origin",
+}
+
+
+def _small_canvas_penrose():
+    """80×80 mm canvas for fast preset testing."""
+    from plottter.models.canvas import Canvas
+    return Canvas(width_mm=80.0, height_mm=80.0, margin_mm=5.0)
+
+
+class TestTask464Presets:
+    """Task 46.4: preset definitions, registration, and high-depth generation."""
+
+    def setup_method(self):
+        from plottter.generators.penrose import PenroseGenerator
+        self.gen = PenroseGenerator()
+        self.canvas = _small_canvas_penrose()
+
+    # --- preset inventory ---
+
+    def test_exact_six_presets(self):
+        presets = self.gen.get_presets()
+        assert len(presets) == 6, f"Expected 6 presets, got {len(presets)}"
+
+    def test_all_expected_preset_names_present(self):
+        preset_names = {p.name for p in self.gen.get_presets()}
+        for name in _EXPECTED_PRESET_NAMES:
+            assert name in preset_names, f"Preset '{name}' is missing"
+
+    # --- preset parameter correctness ---
+
+    def test_classic_p3_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Classic P3"]
+        assert p.params["initial_config"] == "Sun"
+        assert p.params["subdivisions"] == 5
+        assert p.params["render_mode"] == "Edges Only"
+
+    def test_penrose_stars_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Penrose Stars"]
+        assert p.params["initial_config"] == "Star"
+        assert p.params["subdivisions"] == 4
+        assert p.params["render_mode"] == "Edges Only"
+
+    def test_arc_pattern_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Arc Pattern"]
+        assert p.params["initial_config"] == "Sun"
+        assert p.params["subdivisions"] == 5
+        assert p.params["render_mode"] == "Arcs Only"
+
+    def test_full_decoration_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Full Decoration"]
+        assert p.params["initial_config"] == "Sun"
+        assert p.params["subdivisions"] == 6
+        assert p.params["render_mode"] == "Edges + Arcs"
+
+    def test_dense_tiling_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Dense Tiling"]
+        assert p.params["initial_config"] == "Sun"
+        assert p.params["subdivisions"] == 7
+        assert p.params["render_mode"] == "Edges Only"
+
+    def test_dart_origin_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Dart Origin"]
+        assert p.params["initial_config"] == "Dart"
+        assert p.params["subdivisions"] == 5
+        assert p.params["render_mode"] == "Edges Only"
+
+    # (f) all presets generate valid output
+
+    def test_all_presets_generate_nonempty_list(self):
+        """(f) Every preset must return a non-empty list of Polylines."""
+        for preset in self.gen.get_presets():
+            result = self.gen.generate(preset.params, self.canvas)
+            assert isinstance(result, list), (
+                f"Preset {preset.name!r}: expected list, got {type(result)}"
+            )
+            assert len(result) > 0, (
+                f"Preset {preset.name!r}: expected non-empty output"
+            )
+
+    def test_all_preset_polylines_have_at_least_two_points(self):
+        """Every Polyline from every preset must have >= 2 points."""
+        for preset in self.gen.get_presets():
+            result = self.gen.generate(preset.params, self.canvas)
+            for pl in result:
+                assert len(pl) >= 2, (
+                    f"Preset {preset.name!r}: polyline has fewer than 2 points"
+                )
+
+    def test_preset_output_within_canvas_bounds(self):
+        """Preset output coordinates must lie within the canvas drawing area."""
+        x1, y1, x2, y2 = self.canvas.drawing_area()
+        tol = 1e-6
+        for preset in self.gen.get_presets():
+            result = self.gen.generate(preset.params, self.canvas)
+            for pl in result:
+                for x, y in pl:
+                    assert x >= x1 - tol, f"Preset {preset.name!r}: x={x:.3f} < x_min={x1}"
+                    assert x <= x2 + tol, f"Preset {preset.name!r}: x={x:.3f} > x_max={x2}"
+                    assert y >= y1 - tol, f"Preset {preset.name!r}: y={y:.3f} < y_min={y1}"
+                    assert y <= y2 + tol, f"Preset {preset.name!r}: y={y:.3f} > y_max={y2}"
+
+    # (g) generator is registered and accessible
+
+    def test_generator_registered_and_accessible(self):
+        """(g) 'Penrose Tiling' must be in GENERATORS and return a usable instance."""
+        from plottter.generators import GENERATORS
+        assert "Penrose Tiling" in GENERATORS
+        cls = GENERATORS["Penrose Tiling"]
+        instance = cls()
+        assert len(instance.get_parameters()) > 0
+
+    # (h) high subdivision depth (7) completes without error
+
+    def test_high_subdivision_depth_7_edges_only(self):
+        """(h) Depth 7, Edges Only must complete and return non-empty output."""
+        result = self.gen.generate(
+            _make_params(subdivisions=7, render_mode="Edges Only"),
+            self.canvas,
+        )
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+    def test_high_subdivision_depth_7_arcs_only(self):
+        """(h) Depth 7, Arcs Only must also complete without error."""
+        result = self.gen.generate(
+            _make_params(subdivisions=7, render_mode="Arcs Only"),
+            self.canvas,
+        )
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+    # (a) subdivision increases triangle count by expected factor
+
+    def test_subdivision_count_grows_by_expected_factor(self):
+        """(a) Each subdivision multiplies triangle count by ~PHI² after warm-up."""
+        tris = _initial_config("Sun", 1.0)
+        for _ in range(3):
+            tris = _subdivide(tris)
+        n_before = len(tris)
+        tris = _subdivide(tris)
+        n_after = len(tris)
+        ratio = n_after / n_before
+        assert abs(ratio - PHI ** 2) < 0.15, (
+            f"Growth ratio {ratio:.4f} expected near PHI² ≈ {PHI**2:.4f}"
+        )
+
+    # (b) edge deduplication removes correct number of edges
+
+    def test_edge_deduplication_reduces_count(self):
+        """(b) Deduplicated edge count must be < 4 per rhomb with no duplicates."""
+        from plottter.generators.penrose import _long_edge_keys
+        tris = _initial_config("Sun", 1.0)
+        for _ in range(3):
+            tris = _subdivide(tris)
+        long_edge_map: dict = {}
+        for i, (t, A, B, C) in enumerate(tris):
+            for key in _long_edge_keys(t, A, B, C):
+                long_edge_map.setdefault(key, []).append(i)
+        n_rhombs = sum(
+            1 for idxs in long_edge_map.values()
+            if len(idxs) == 2 and tris[idxs[0]][0] == tris[idxs[1]][0]
+        )
+        edges = _triangles_to_edges(tris)
+        assert len(edges) < 4 * n_rhombs, (
+            f"Edge count {len(edges)} should be < 4 × n_rhombs ({4 * n_rhombs})"
+        )
+        keys = [_edge_key(v1, v2) for v1, v2 in edges]
+        assert len(keys) == len(set(keys)), "Duplicate edges in deduplicated output"
+
+    # (c) all edges within canvas bounds after clipping
+
+    def test_all_edges_within_canvas_after_clipping(self):
+        """(c) generate() output must have all points within canvas drawing area."""
+        from plottter.models.canvas import Canvas
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        x1, y1, x2, y2 = canvas.drawing_area()
+        result = self.gen.generate(
+            _make_params(subdivisions=4, render_mode="Edges Only"),
+            canvas,
+        )
+        tol = 1e-6
+        for pl in result:
+            for x, y in pl:
+                assert x >= x1 - tol and x <= x2 + tol
+                assert y >= y1 - tol and y <= y2 + tol
+
+    # (d) arc mode produces curved polylines with >2 points per arc
+
+    def test_arc_mode_produces_multipoint_polylines(self):
+        """(d) 'Arcs Only' must yield at least one polyline with more than 2 points."""
+        result = self.gen.generate(
+            _make_params(subdivisions=3, render_mode="Arcs Only"),
+            self.canvas,
+        )
+        assert len(result) > 0
+        assert any(len(pl) > 2 for pl in result), (
+            "'Arcs Only' must produce at least one curved (>2 point) polyline"
+        )
+
+    # (e) different initial configs produce different triangle counts
+
+    def test_different_configs_produce_different_counts(self):
+        """(e) Sun and Dart start from different seed sizes → different counts."""
+        sun = _initial_config("Sun", 1.0)
+        dart = _initial_config("Dart", 1.0)
+        for _ in range(3):
+            sun = _subdivide(sun)
+            dart = _subdivide(dart)
+        assert len(sun) != len(dart), (
+            f"Sun ({len(sun)}) and Dart ({len(dart)}) should have different counts"
+        )
