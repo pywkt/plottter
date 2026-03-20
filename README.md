@@ -4,10 +4,10 @@ A free, open-source desktop application for generating pen-plotter-ready vector 
 
 ## Features
 
-**22 generators** across math art, image-to-lines, and 3D:
+**27 generators** across math art, image-to-lines, and 3D:
 
-- **Math Art** — Parametric curves, polar curves, modular multiplication, Perlin noise flow fields, L-system fractals, grid patterns, Islamic geometric tiling, Celtic knots, concentric rings, dot grids, geometric grids, and text rendering
-- **Image to Lines** — Edge detection (Canny), hatching, flow field/squiggle, Voronoi stippling, contour lines, XDoG, FDoG (coherent lines), hedcut portraits, scanline halftone, and circular scribble art
+- **Math Art** — Parametric curves, polar curves, modular multiplication, Perlin noise flow fields, L-system fractals, grid patterns, Islamic geometric tiling, Celtic knots, concentric rings, dot grids, geometric grids, Voronoi/Delaunay tessellation, Penrose aperiodic tiling, calligraphy, and text rendering
+- **Image to Lines** — Edge detection (Canny), hatching, flow field/squiggle, Voronoi stippling, contour lines, XDoG, FDoG (coherent lines), hedcut portraits, scanline halftone, circular scribble art, Line Integral Convolution (LIC), Tonal Art Maps (TAM), and dot grid halftone
 - **3D Scene** — Wireframe renderer with hidden line removal, 10+ primitive shapes, OBJ/STL mesh import, camera controls, and shadow effects
 
 **Multi-layer system** with per-layer pen colors, drag reorder, visibility/lock controls, and color separation (K-Means, Luminance, RGB, CMYK).
@@ -17,6 +17,17 @@ A free, open-source desktop application for generating pen-plotter-ready vector 
 **Post-processing tools:** Path optimization (KD-tree nearest-neighbor + 2-opt + Or-opt), simplification, merge, clip, weld overlapping paths, Bezier curve fitting, and a brush system (stippled, multi-stroke, calligraphic).
 
 **Other features:** Stroke-order animation, pen-up travel visualization, pen jitter simulation, CLI batch mode, plugin system, Google Fonts integration, and AI-powered depth maps and background removal via Replicate.
+
+## Gallery
+
+| | | |
+|---|---|---|
+| ![Parametric Curves](docs/images/parametric-curves_lissajous.png) | ![Flow Field](docs/images/flow-field_turbulent.png) | ![Stipple](docs/images/stipple_tsp-art.png) |
+| Parametric Curves — Lissajous | Flow Field — Turbulent | Stipple — TSP Art |
+| ![Hatching](docs/images/hatching_woodcut.png) | ![Penrose Tiling](docs/images/penrose-tiling_classic-p3.png) | ![Voronoi / Delaunay](docs/images/voronoi-delaunay_classic-voronoi.png) |
+| Hatching — Woodcut | Penrose Tiling — Classic P3 | Voronoi / Delaunay — Classic |
+| ![3D Scene](docs/images/3d-scene_dramatic-shadows.png) | | |
+| 3D Scene — Dramatic Shadows | | |
 
 ## Requirements
 
@@ -40,10 +51,11 @@ pip install -e .
 ### Optional dependencies
 
 ```bash
-pip install -e ".[ai]"     # Replicate AI features (depth maps, background removal)
 pip install -e ".[fmm]"    # Fast Marching Method for topographic contours
 pip install pyaxidraw       # Direct AxiDraw USB control
 ```
+
+AI features (depth maps, background removal, segmentation) require a Replicate.com API key configured in Preferences.
 
 ## Usage
 
