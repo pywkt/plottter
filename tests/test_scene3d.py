@@ -3022,3 +3022,108 @@ class TestComputeVisibleFaces:
         r3 = scene._compute_visible_faces((0, 1, 1), cam, 100.0, 100.0)
         assert len(r3) == 1
         assert abs(r3[0][1] - 1.0 / np.sqrt(2)) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Task 52.3 — 2D triangle hatching fill
+# ---------------------------------------------------------------------------
+
+class TestFillTriangleWithHatching:
+    """Tests for _fill_triangle_with_hatching() and brightness_to_density()."""
+
+    def _equilateral(self, side: float = 10.0) -> list[tuple[float, float]]:
+        """Equilateral triangle centred at the origin."""
+        h = side * (3 ** 0.5) / 2.0
+        return [(0.0, 2 * h / 3), (-side / 2, -h / 3), (side / 2, -h / 3)]
+
+    # (a) Equilateral triangle with density=2 produces a plausible line count.
+    def test_equilateral_density2_line_count(self):
+        from plottter.scene3d.hatching import _fill_triangle_with_hatching
+        verts = self._equilateral(10.0)
+        lines = _fill_triangle_with_hatching(verts, density=2.0, angle_deg=0.0, cross_hatch=False)
+        # density=2 → spacing=0.5 mm.  Triangle height ≈ 8.66 mm → ~17 lines.
+        # Accept a generous ±5 tolerance to allow for boundary edge cases.
+        assert 10 <= len(lines) <= 25, f"Expected ~17 lines, got {len(lines)}"
+        for polyline in lines:
+            assert len(polyline) >= 2
+
+    # (b) cross_hatch=True approximately doubles the line count.
+    def test_cross_hatch_doubles_lines(self):
+        from plottter.scene3d.hatching import _fill_triangle_with_hatching
+        verts = self._equilateral(10.0)
+        single = _fill_triangle_with_hatching(verts, density=2.0, angle_deg=0.0, cross_hatch=False)
+        double = _fill_triangle_with_hatching(verts, density=2.0, angle_deg=0.0, cross_hatch=True)
+        # Cross-hatch must have more lines than single-hatch.
+        assert len(double) > len(single)
+        # And it should be roughly twice as many (allow ±5 for boundary effects).
+        assert abs(len(double) - 2 * len(single)) <= 5
+
+    # (c) Zero-area (degenerate) triangle produces no output.
+    def test_zero_area_triangle_returns_empty(self):
+        from plottter.scene3d.hatching import _fill_triangle_with_hatching
+        # Collinear points → zero area.
+        verts = [(0.0, 0.0), (1.0, 0.0), (2.0, 0.0)]
+        lines = _fill_triangle_with_hatching(verts, density=2.0, angle_deg=0.0, cross_hatch=False)
+        assert lines == []
+
+    # (c) Very tiny triangle (area ~ 0) also returns empty.
+    def test_tiny_triangle_returns_empty(self):
+        from plottter.scene3d.hatching import _fill_triangle_with_hatching
+        eps = 1e-4
+        verts = [(0.0, 0.0), (eps, 0.0), (0.0, eps)]
+        lines = _fill_triangle_with_hatching(verts, density=2.0, angle_deg=0.0, cross_hatch=False)
+        assert lines == []
+
+    # (d) All returned line segments are clipped to the triangle polygon.
+    def test_lines_clipped_to_triangle(self):
+        from plottter.scene3d.hatching import _fill_triangle_with_hatching
+        from shapely.geometry import Polygon, Point
+        verts = self._equilateral(10.0)
+        poly = Polygon(verts)
+        # Small tolerance for floating-point boundary hits.
+        expanded = poly.buffer(1e-6)
+        lines = _fill_triangle_with_hatching(verts, density=1.0, angle_deg=30.0, cross_hatch=False)
+        assert len(lines) > 0
+        for polyline in lines:
+            for x, y in polyline:
+                assert expanded.contains(Point(x, y)), (
+                    f"Point ({x:.6f}, {y:.6f}) lies outside the triangle polygon"
+                )
+
+    # Offset triangle (realistic canvas coords, not near origin) must still produce lines.
+    def test_offset_triangle_produces_lines(self):
+        from plottter.scene3d.hatching import _fill_triangle_with_hatching
+        # Same equilateral shape translated to realistic canvas coordinates (~100mm from corner).
+        offset = (100.0, 100.0)
+        verts_origin = self._equilateral(10.0)
+        verts_offset = [(x + offset[0], y + offset[1]) for x, y in verts_origin]
+        lines_origin = _fill_triangle_with_hatching(verts_origin, density=2.0, angle_deg=0.0, cross_hatch=False)
+        lines_offset = _fill_triangle_with_hatching(verts_offset, density=2.0, angle_deg=0.0, cross_hatch=False)
+        assert len(lines_offset) > 0, "Offset triangle produced no hatch lines"
+        assert len(lines_offset) == len(lines_origin), (
+            f"Offset triangle ({len(lines_offset)}) should have same line count "
+            f"as origin triangle ({len(lines_origin)})"
+        )
+
+    # density=0 returns empty.
+    def test_zero_density_returns_empty(self):
+        from plottter.scene3d.hatching import _fill_triangle_with_hatching
+        verts = self._equilateral(10.0)
+        lines = _fill_triangle_with_hatching(verts, density=0.0, angle_deg=0.0, cross_hatch=False)
+        assert lines == []
+
+    # brightness_to_density mapping.
+    def test_brightness_to_density_fully_lit(self):
+        from plottter.scene3d.hatching import brightness_to_density
+        d = brightness_to_density(brightness=1.0, min_density=1.0, max_density=5.0)
+        assert abs(d - 1.0) < 1e-9
+
+    def test_brightness_to_density_fully_dark(self):
+        from plottter.scene3d.hatching import brightness_to_density
+        d = brightness_to_density(brightness=0.0, min_density=1.0, max_density=5.0)
+        assert abs(d - 5.0) < 1e-9
+
+    def test_brightness_to_density_midpoint(self):
+        from plottter.scene3d.hatching import brightness_to_density
+        d = brightness_to_density(brightness=0.5, min_density=1.0, max_density=5.0)
+        assert abs(d - 3.0) < 1e-9
