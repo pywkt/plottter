@@ -736,3 +736,123 @@ def optimize_or_opt(
             break
 
     return route
+
+
+# ---------------------------------------------------------------------------
+# 3-opt helpers
+# ---------------------------------------------------------------------------
+
+_3OPT_NEIGHBOR_K = 15  # Default number of nearest neighbors for 3-opt
+
+
+def _3opt_cost(paths: list[list[Point]], i: int, j: int, k: int) -> float:
+    """Compute the cost of the three edges removed in a 3-opt move.
+
+    Returns the sum of Euclidean distances for the three edges:
+        dist(end[i], start[i+1]) + dist(end[j], start[j+1]) + dist(end[k], start[k+1])
+
+    Args:
+        paths: Current ordered list of polylines.
+        i: Index of the first cut point.
+        j: Index of the second cut point (i < j).
+        k: Index of the third cut point (j < k).
+
+    Returns:
+        Sum of the three removed edge lengths.
+    """
+    n = len(paths)
+    d1 = _dist(paths[i][-1], paths[i + 1][0]) if i + 1 < n else 0.0
+    d2 = _dist(paths[j][-1], paths[j + 1][0]) if j + 1 < n else 0.0
+    d3 = _dist(paths[k][-1], paths[k + 1][0]) if k + 1 < n else 0.0
+    return d1 + d2 + d3
+
+
+def _rev_seg(seg: list[list[Point]]) -> list[list[Point]]:
+    """Reverse a segment: reverse order of paths and flip each path."""
+    return [p[::-1] for p in reversed(seg)]
+
+
+def _3opt_reconnect(
+    paths: list[list[Point]], i: int, j: int, k: int, move_id: int
+) -> list[list[Point]]:
+    """Reconnect three segments after a 3-opt cut.
+
+    Given cut points i < j < k, the route is split into four parts:
+        A = paths[0..i], B = paths[i+1..j], C = paths[j+1..k], D = paths[k+1..]
+
+    The five non-identity reconnection moves are:
+        move 0: A + B_rev + C + D        (reverse segment B)
+        move 1: A + B + C_rev + D        (reverse segment C)
+        move 2: A + B_rev + C_rev + D    (reverse both B and C)
+        move 3: A + C + B + D            (swap B and C, no reversal)
+        move 4: A + C_rev + B_rev + D    (swap B and C, both reversed)
+
+    Each reversal flips the order of paths within the segment and also
+    reverses the point order within each individual path so that pen-up
+    travel is computed correctly.
+
+    Args:
+        paths: Current ordered list of polylines.
+        i: Index of the first cut point.
+        j: Index of the second cut point (i < j).
+        k: Index of the third cut point (j < k).
+        move_id: Reconnection move identifier (0–4).
+
+    Returns:
+        New list of paths with the segments reconnected according to move_id.
+
+    Raises:
+        ValueError: If move_id is not in 0–4.
+    """
+    A = paths[: i + 1]
+    B = paths[i + 1 : j + 1]
+    C = paths[j + 1 : k + 1]
+    D = paths[k + 1 :]
+
+    if move_id == 0:
+        return A + _rev_seg(B) + C + D
+    elif move_id == 1:
+        return A + B + _rev_seg(C) + D
+    elif move_id == 2:
+        return A + _rev_seg(B) + _rev_seg(C) + D
+    elif move_id == 3:
+        return A + C + B + D
+    elif move_id == 4:
+        return A + _rev_seg(C) + _rev_seg(B) + D
+    else:
+        raise ValueError(f"Invalid move_id {move_id!r}: must be 0-4")
+
+
+def _build_3opt_neighbors(
+    paths: list[list[Point]], k: int = _3OPT_NEIGHBOR_K
+) -> list[list[int]]:
+    """Build a spatial neighbor list for 3-opt using path midpoints.
+
+    For each position *i* in *paths*, returns the indices of the *k* closest
+    positions (by midpoint Euclidean distance).  Mirrors the pattern used by
+    ``_build_or_opt_neighbors``.
+
+    Args:
+        paths: Current ordered list of polylines.
+        k: Number of neighbors to compute per position.
+
+    Returns:
+        List of length n; entry i is a list of up to k position indices.
+    """
+    n = len(paths)
+    k = min(k, n - 1)
+
+    mids = np.empty((n, 2), dtype=np.float64)
+    for i, path in enumerate(paths):
+        mids[i, 0] = (path[0][0] + path[-1][0]) / 2.0
+        mids[i, 1] = (path[0][1] + path[-1][1]) / 2.0
+
+    tree = cKDTree(mids)
+    _, indices = tree.query(mids, k=min(k + 1, n))
+
+    neighbors: list[list[int]] = []
+    for i in range(n):
+        nbrs = [int(idx) for idx in indices[i] if idx != i]
+        neighbors.append(nbrs[:k])
+
+    return neighbors
