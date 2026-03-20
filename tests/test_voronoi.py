@@ -685,3 +685,159 @@ class TestRenderModesBothAndCentroids:
         )
         assert isinstance(result, list)
         assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# Image-density mode — Task 45.5 (h)
+# ---------------------------------------------------------------------------
+
+
+class TestImageDensity:
+    """Tests for image-density seed modulation: black → more seeds, white → fewer."""
+
+    @staticmethod
+    def _white_image(size: int = 64) -> np.ndarray:
+        """Fully white RGB image (all 255)."""
+        return np.full((size, size, 3), 255, dtype=np.uint8)
+
+    @staticmethod
+    def _black_image(size: int = 64) -> np.ndarray:
+        """Fully black RGB image (all 0)."""
+        return np.zeros((size, size, 3), dtype=np.uint8)
+
+    def test_white_image_produces_no_points(self):
+        """Fully white density → acceptance P = 1 − 255/255 = 0 → zero seeds."""
+        from plottter.generators.voronoi import (
+            _prepare_density_image,
+            _seeds_random_density,
+        )
+
+        w, h = 100.0, 100.0
+        density = _prepare_density_image(self._white_image(), {}, w, h)
+        pts = _seeds_random_density(200, w, h, np.random.default_rng(0), density)
+        assert len(pts) == 0, f"Expected 0 points from white image, got {len(pts)}"
+
+    def test_black_image_accepts_all_attempts(self):
+        """Fully black density → acceptance P = 1 − 0/255 = 1 → all n accepted."""
+        from plottter.generators.voronoi import (
+            _prepare_density_image,
+            _seeds_random_density,
+        )
+
+        w, h = 100.0, 100.0
+        n = 100
+        density = _prepare_density_image(self._black_image(), {}, w, h)
+        pts = _seeds_random_density(n, w, h, np.random.default_rng(0), density)
+        assert len(pts) == n, f"Expected {n} points from black image, got {len(pts)}"
+
+    def test_black_image_produces_more_points_than_white(self):
+        """Dark image → more seeds; bright image → fewer seeds."""
+        from plottter.generators.voronoi import (
+            _prepare_density_image,
+            _seeds_random_density,
+        )
+
+        w, h = 100.0, 100.0
+        n = 200
+        black_density = _prepare_density_image(self._black_image(), {}, w, h)
+        white_density = _prepare_density_image(self._white_image(), {}, w, h)
+        pts_black = _seeds_random_density(n, w, h, np.random.default_rng(0), black_density)
+        pts_white = _seeds_random_density(n, w, h, np.random.default_rng(0), white_density)
+        assert len(pts_black) > len(pts_white), (
+            f"Black image should produce more points ({len(pts_black)}) "
+            f"than white image ({len(pts_white)})"
+        )
+
+    def test_image_density_through_generate_black_vs_white(self):
+        """generate() with image_density=True: black image → more Voronoi edges."""
+        from plottter.generators.voronoi import VoronoiGenerator
+
+        gen = VoronoiGenerator()
+        canvas = make_canvas()
+        common = {
+            "image_density": True,
+            "seed_method": "Random",
+            "num_points": 200,
+            "render_mode": "Voronoi Edges",
+            "random_seed": 0,
+        }
+        result_black = gen.generate({**common, "_source_image": self._black_image()}, canvas)
+        result_white = gen.generate({**common, "_source_image": self._white_image()}, canvas)
+        # Black → more seeds → more Voronoi edges
+        assert len(result_black) > len(result_white), (
+            f"Black image should produce more edges ({len(result_black)}) "
+            f"than white image ({len(result_white)})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# All presets — Task 45.5 (i)
+# ---------------------------------------------------------------------------
+
+
+def _small_canvas() -> "Canvas":
+    """A small 80×80 mm canvas for fast preset testing."""
+    from plottter.models.canvas import Canvas
+
+    return Canvas(width_mm=80.0, height_mm=80.0, margin_mm=5.0)
+
+
+class TestAllPresets:
+    """All registered VoronoiGenerator presets should produce valid non-empty output."""
+
+    def setup_method(self):
+        from plottter.generators.voronoi import VoronoiGenerator
+
+        self.gen = VoronoiGenerator()
+        # Use a small canvas so Poisson Disk / Lloyd presets finish quickly
+        self.canvas = _small_canvas()
+
+    def test_preset_count(self):
+        presets = self.gen.get_presets()
+        assert len(presets) >= 5, f"Expected at least 5 presets, got {len(presets)}"
+
+    def test_all_presets_generate_non_empty_valid_polylines(self):
+        """Every preset must return a non-empty list of valid Polylines."""
+        presets = self.gen.get_presets()
+        for preset in presets:
+            result = self.gen.generate(preset.params, self.canvas)
+            assert isinstance(result, list), (
+                f"Preset {preset.name!r}: expected list, got {type(result)}"
+            )
+            assert len(result) > 0, (
+                f"Preset {preset.name!r}: expected non-empty output"
+            )
+            for pl in result:
+                assert isinstance(pl, list), (
+                    f"Preset {preset.name!r}: element is not a list"
+                )
+                assert len(pl) >= 2, (
+                    f"Preset {preset.name!r}: polyline has fewer than 2 points"
+                )
+                for pt in pl:
+                    assert len(pt) == 2, (
+                        f"Preset {preset.name!r}: point is not a 2-tuple"
+                    )
+
+    def test_preset_output_within_canvas_bounds(self):
+        """Preset output coordinates must lie within the canvas drawing area."""
+        presets = self.gen.get_presets()
+        x1, y1, x2, y2 = self.canvas.drawing_area()
+        # Expand by a generous tolerance for clipping edge cases
+        tol = 1.0
+        for preset in presets:
+            result = self.gen.generate(preset.params, self.canvas)
+            for pl in result:
+                for x, y in pl:
+                    assert x >= x1 - tol, (
+                        f"Preset {preset.name!r}: x={x:.3f} < x_min={x1}"
+                    )
+                    assert x <= x2 + tol, (
+                        f"Preset {preset.name!r}: x={x:.3f} > x_max={x2}"
+                    )
+                    assert y >= y1 - tol, (
+                        f"Preset {preset.name!r}: y={y:.3f} < y_min={y1}"
+                    )
+                    assert y <= y2 + tol, (
+                        f"Preset {preset.name!r}: y={y:.3f} > y_max={y2}"
+                    )
