@@ -62,6 +62,19 @@ class Plane(Shape):
             paths.append(p)
         return paths
 
+    def surface_triangles(self) -> list[tuple]:
+        """Return 2 world-space triangles covering the full plane extent."""
+        h = self.size / 2
+        c = self.center
+        v00 = vec3(c[0] - h, c[1], c[2] - h)
+        v10 = vec3(c[0] + h, c[1], c[2] - h)
+        v11 = vec3(c[0] + h, c[1], c[2] + h)
+        v01 = vec3(c[0] - h, c[1], c[2] + h)
+        return [
+            (v00, v10, v11),
+            (v00, v11, v01),
+        ]
+
     def intersect(self, ray: Ray) -> Hit | None:
         # Infinite plane at y = center[1]
         if abs(ray.direction[1]) < EPSILON:

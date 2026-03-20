@@ -2705,9 +2705,9 @@ class TestFaceNormalShadowClassification:
 class TestSurfaceTriangles:
     def test_base_shape_default_returns_empty(self):
         """The default surface_triangles() on a Shape with no override returns []."""
-        from plottter.scene3d.shapes.sphere import Sphere
-        # Sphere does not override surface_triangles — exercises the base default
-        s = Sphere(radius=1.0)
+        from plottter.scene3d.shapes.plane import TerrainPlane
+        # TerrainPlane does not override surface_triangles — exercises the base default
+        s = TerrainPlane()
         tris = s.surface_triangles()
         assert tris == []
 
@@ -2794,3 +2794,143 @@ class TestSurfaceTriangles:
         faces = np.zeros((0, 3), dtype=np.int32)
         mesh = Mesh(vertices=vertices, faces=faces)
         assert mesh.surface_triangles() == []
+
+    # --- Sphere ---
+
+    def test_sphere_returns_512_triangles(self):
+        """Sphere.surface_triangles() returns exactly 512 triangles (16×16×2)."""
+        from plottter.scene3d.shapes.sphere import Sphere
+        s = Sphere(radius=1.0)
+        tris = s.surface_triangles()
+        assert len(tris) == 512
+
+    def test_sphere_triangles_are_3_tuples(self):
+        """Each sphere triangle is a 3-tuple of Vec3 vertices."""
+        from plottter.scene3d.shapes.sphere import Sphere
+        s = Sphere(radius=1.0)
+        for tri in s.surface_triangles():
+            assert len(tri) == 3
+            for v in tri:
+                assert len(v) == 3
+
+    def test_sphere_vertices_in_world_space(self):
+        """Sphere vertices are offset by center position."""
+        from plottter.scene3d.shapes.sphere import Sphere
+        from plottter.scene3d.vector3 import vec3
+        center = vec3(10.0, 5.0, -3.0)
+        s = Sphere(center=center, radius=2.0)
+        tris = s.surface_triangles()
+        all_verts = [v for tri in tris for v in tri]
+        # All x coords must be in [center.x - r, center.x + r]
+        xs = [float(v[0]) for v in all_verts]
+        assert all(8.0 - 1e-9 <= x <= 12.0 + 1e-9 for x in xs)
+        ys = [float(v[1]) for v in all_verts]
+        assert all(3.0 - 1e-9 <= y <= 7.0 + 1e-9 for y in ys)
+
+    # --- Cylinder ---
+
+    def test_cylinder_returns_96_triangles(self):
+        """Cylinder.surface_triangles() returns exactly 96 triangles (48 side + 24+24 caps)."""
+        from plottter.scene3d.shapes.cylinder import Cylinder
+        from plottter.scene3d.vector3 import vec3
+        cyl = Cylinder(bottom=vec3(0, 0, 0), top=vec3(0, 2, 0), radius=1.0)
+        tris = cyl.surface_triangles()
+        assert len(tris) == 96
+
+    def test_cylinder_triangles_are_3_tuples(self):
+        """Each cylinder triangle is a 3-tuple of Vec3 vertices."""
+        from plottter.scene3d.shapes.cylinder import Cylinder
+        from plottter.scene3d.vector3 import vec3
+        cyl = Cylinder(bottom=vec3(0, 0, 0), top=vec3(0, 2, 0), radius=1.0)
+        for tri in cyl.surface_triangles():
+            assert len(tri) == 3
+            for v in tri:
+                assert len(v) == 3
+
+    def test_cylinder_vertices_in_world_space(self):
+        """Cylinder vertices lie within the bounding cylinder volume."""
+        from plottter.scene3d.shapes.cylinder import Cylinder
+        from plottter.scene3d.vector3 import vec3
+        bottom = vec3(5.0, 1.0, 2.0)
+        top = vec3(5.0, 4.0, 2.0)
+        cyl = Cylinder(bottom=bottom, top=top, radius=1.5)
+        tris = cyl.surface_triangles()
+        all_verts = [v for tri in tris for v in tri]
+        # y coords must be in [1, 4]
+        ys = [float(v[1]) for v in all_verts]
+        assert all(1.0 - 1e-9 <= y <= 4.0 + 1e-9 for y in ys)
+        # radial distance from axis (x=5, z=2) must be <= radius
+        for v in all_verts:
+            dx = float(v[0]) - 5.0
+            dz = float(v[2]) - 2.0
+            assert dx * dx + dz * dz <= 1.5 * 1.5 + 1e-9
+
+    # --- Cone ---
+
+    def test_cone_returns_48_triangles(self):
+        """Cone.surface_triangles() returns exactly 48 triangles (24 side + 24 cap)."""
+        from plottter.scene3d.shapes.cone import Cone
+        from plottter.scene3d.vector3 import vec3
+        cone = Cone(apex=vec3(0, 2, 0), base=vec3(0, 0, 0), radius=1.0)
+        tris = cone.surface_triangles()
+        assert len(tris) == 48
+
+    def test_cone_triangles_are_3_tuples(self):
+        """Each cone triangle is a 3-tuple of Vec3 vertices."""
+        from plottter.scene3d.shapes.cone import Cone
+        from plottter.scene3d.vector3 import vec3
+        cone = Cone(apex=vec3(0, 2, 0), base=vec3(0, 0, 0), radius=1.0)
+        for tri in cone.surface_triangles():
+            assert len(tri) == 3
+            for v in tri:
+                assert len(v) == 3
+
+    def test_cone_vertices_in_world_space(self):
+        """Cone vertices are in world space; apex vertex appears in side triangles."""
+        from plottter.scene3d.shapes.cone import Cone
+        from plottter.scene3d.vector3 import vec3
+        apex = vec3(3.0, 5.0, 1.0)
+        base = vec3(3.0, 0.0, 1.0)
+        cone = Cone(apex=apex, base=base, radius=2.0)
+        tris = cone.surface_triangles()
+        # First vertex of each side triangle should equal apex
+        apex_count = sum(
+            1 for tri in tris
+            if np.allclose(tri[0], apex, atol=1e-9)
+        )
+        assert apex_count == 24
+
+    # --- Plane ---
+
+    def test_plane_returns_2_triangles(self):
+        """Plane.surface_triangles() returns exactly 2 triangles."""
+        from plottter.scene3d.shapes.plane import Plane
+        p = Plane(size=10.0)
+        tris = p.surface_triangles()
+        assert len(tris) == 2
+
+    def test_plane_triangles_are_3_tuples(self):
+        """Each plane triangle is a 3-tuple of Vec3 vertices."""
+        from plottter.scene3d.shapes.plane import Plane
+        p = Plane(size=4.0)
+        for tri in p.surface_triangles():
+            assert len(tri) == 3
+            for v in tri:
+                assert len(v) == 3
+
+    def test_plane_vertices_in_world_space(self):
+        """Plane vertices are offset by center and span the full extent."""
+        from plottter.scene3d.shapes.plane import Plane
+        from plottter.scene3d.vector3 import vec3
+        center = vec3(1.0, 0.5, -2.0)
+        p = Plane(center=center, size=6.0)
+        tris = p.surface_triangles()
+        all_verts = [v for tri in tris for v in tri]
+        xs = {round(float(v[0]), 6) for v in all_verts}
+        zs = {round(float(v[2]), 6) for v in all_verts}
+        # Corners at center ± 3.0
+        assert -2.0 in xs and 4.0 in xs
+        assert -5.0 in zs and 1.0 in zs
+        # All y values equal center.y
+        ys = [float(v[1]) for v in all_verts]
+        assert all(abs(y - 0.5) < 1e-9 for y in ys)

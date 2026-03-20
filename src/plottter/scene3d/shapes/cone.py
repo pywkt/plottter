@@ -105,6 +105,34 @@ class Cone(Shape):
             return None
         return Hit(shape=self, t=t, point=ray.at(t))
 
+    def surface_triangles(self) -> list[tuple]:
+        """Return 48 world-space triangles: 24 side triangles + 24 base cap triangles."""
+        n = 24
+        triangles = []
+
+        # Compute local frame (same logic as _base_points but without the loop)
+        axis = self.apex - self.base
+        axis_len = float(np.linalg.norm(axis))
+        axis_dir = axis / max(axis_len, 1e-9)
+        up = vec3(0, 1, 0)
+        if abs(float(np.dot(up, axis_dir))) > 0.99:
+            up = vec3(1, 0, 0)
+        r1 = np.cross(axis_dir, up)
+        r1 = r1 / max(float(np.linalg.norm(r1)), 1e-9)
+        r2 = np.cross(axis_dir, r1)
+
+        for i in range(n):
+            theta0 = 2 * math.pi * i / n
+            theta1 = 2 * math.pi * (i + 1) / n
+            b0 = self.base + self.radius * (math.cos(theta0) * r1 + math.sin(theta0) * r2)
+            b1 = self.base + self.radius * (math.cos(theta1) * r1 + math.sin(theta1) * r2)
+            # Side triangle: apex → b0 → b1
+            triangles.append((self.apex, b0, b1))
+            # Base cap triangle (reversed winding for downward normal)
+            triangles.append((self.base, b1, b0))
+
+        return triangles
+
     def bbox(self) -> BBox:
         r = self.radius
         base = self.base

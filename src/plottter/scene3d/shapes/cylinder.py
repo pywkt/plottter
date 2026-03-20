@@ -98,6 +98,29 @@ class Cylinder(Shape):
             return None
         return Hit(shape=self, t=t, point=ray.at(t))
 
+    def surface_triangles(self) -> list[tuple]:
+        """Return 96 world-space triangles: 48 side + 24 top cap + 24 bottom cap."""
+        n = 24
+        r1, r2 = self._local_frame()
+        triangles = []
+
+        for i in range(n):
+            theta0 = 2 * math.pi * i / n
+            theta1 = 2 * math.pi * (i + 1) / n
+            b0 = self.bottom + self.radius * (math.cos(theta0) * r1 + math.sin(theta0) * r2)
+            b1 = self.bottom + self.radius * (math.cos(theta1) * r1 + math.sin(theta1) * r2)
+            t0 = self.top + self.radius * (math.cos(theta0) * r1 + math.sin(theta0) * r2)
+            t1 = self.top + self.radius * (math.cos(theta1) * r1 + math.sin(theta1) * r2)
+            # Side quad → 2 triangles
+            triangles.append((b0, b1, t1))
+            triangles.append((b0, t1, t0))
+            # Top cap fan
+            triangles.append((self.top, t0, t1))
+            # Bottom cap fan (reversed winding for downward normal)
+            triangles.append((self.bottom, b1, b0))
+
+        return triangles
+
     def bbox(self) -> BBox:
         r = self.radius
         min_pt = np.minimum(self.bottom, self.top) - r

@@ -95,6 +95,29 @@ class Sphere(Shape):
             return None
         return Hit(shape=self, t=t, point=ray.at(t))
 
+    def surface_triangles(self) -> list[tuple]:
+        """Return 512 world-space triangles (16 lat × 16 lon × 2 per quad)."""
+        n_lat, n_lon = 16, 16
+
+        def vertex(i: int, j: int):
+            phi = math.pi * i / n_lat
+            theta = 2 * math.pi * j / n_lon
+            x = self.center[0] + self.radius * math.sin(phi) * math.cos(theta)
+            y = self.center[1] + self.radius * math.cos(phi)
+            z = self.center[2] + self.radius * math.sin(phi) * math.sin(theta)
+            return vec3(x, y, z)
+
+        triangles = []
+        for i in range(n_lat):
+            for j in range(n_lon):
+                v00 = vertex(i, j)
+                v10 = vertex(i + 1, j)
+                v11 = vertex(i + 1, (j + 1) % n_lon)
+                v01 = vertex(i, (j + 1) % n_lon)
+                triangles.append((v00, v10, v11))
+                triangles.append((v00, v11, v01))
+        return triangles
+
     def bbox(self) -> BBox:
         r = self.radius
         return BBox(self.center - r, self.center + r)
