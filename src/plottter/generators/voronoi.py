@@ -14,9 +14,11 @@ from shapely.geometry import LineString, box as shapely_box
 
 from plottter.generators import register_generator
 from plottter.generators.base import (
+    BoolParam,
     ChoiceParam,
     FloatParam,
     Generator,
+    ImageParam,
     IntParam,
     Parameter,
     Preset,
@@ -159,6 +161,197 @@ def _seeds_phyllotaxis(n: int, w: float, h: float) -> np.ndarray:
         pts[i, 0] = cx + r * math.cos(theta)
         pts[i, 1] = cy + r * math.sin(theta)
     return pts
+
+
+# ---------------------------------------------------------------------------
+# Image-density helpers
+# ---------------------------------------------------------------------------
+
+
+def _prepare_density_image(
+    source: np.ndarray,
+    params: dict,
+    draw_w: float,
+    draw_h: float,
+    resolution: int = 512,
+) -> np.ndarray:
+    """Convert *source* to a grayscale density map at *resolution* × *resolution*.
+
+    Applies brightness/contrast/invert from *params*, then resizes to
+    ``resolution × resolution`` (or smaller for thin canvases) so that
+    point coordinates in mm can be mapped to pixel lookups cheaply.
+
+    Returns a 2D uint8 array (H × W) sized to the drawing area aspect ratio.
+    """
+    from plottter.io.image_import import (
+        adjust_brightness,
+        adjust_contrast,
+        invert_image,
+        to_grayscale,
+    )
+
+    img = source.copy()
+    brightness = float(params.get("brightness", 0.0))
+    contrast = float(params.get("contrast", 0.0))
+    invert = bool(params.get("invert", False))
+
+    if brightness != 0.0:
+        img = adjust_brightness(img, brightness)
+    if contrast != 0.0:
+        img = adjust_contrast(img, contrast)
+    if invert:
+        img = invert_image(img)
+
+    gray = to_grayscale(img)
+
+    # Resize to target resolution, preserving aspect ratio
+    import PIL.Image as _PILImage  # type: ignore[import]
+
+    aspect = draw_w / max(draw_h, 1e-6)
+    if aspect >= 1.0:
+        out_w = resolution
+        out_h = max(1, int(resolution / aspect))
+    else:
+        out_h = resolution
+        out_w = max(1, int(resolution * aspect))
+
+    pil_gray = _PILImage.fromarray(gray)
+    pil_gray = pil_gray.resize((out_w, out_h), _PILImage.LANCZOS)
+    return np.array(pil_gray, dtype=np.uint8)
+
+
+def _sample_brightness(
+    img: np.ndarray, x: float, y: float, w: float, h: float
+) -> float:
+    """Sample grayscale brightness (0–255) at drawing-area position *(x, y)*."""
+    img_h, img_w = img.shape
+    px = min(img_w - 1, max(0, int(x / w * img_w)))
+    py = min(img_h - 1, max(0, int(y / h * img_h)))
+    return float(img[py, px])
+
+
+def _seeds_random_density(
+    n: int,
+    w: float,
+    h: float,
+    rng: np.random.Generator,
+    density_img: np.ndarray,
+) -> np.ndarray:
+    """Random seeds with rejection sampling: accept with P = 1 − brightness/255."""
+    max_attempts = n * 20
+    points: list[tuple[float, float]] = []
+    for _ in range(max_attempts):
+        if len(points) >= n:
+            break
+        x = float(rng.uniform(0.0, w))
+        y = float(rng.uniform(0.0, h))
+        brightness = _sample_brightness(density_img, x, y, w, h)
+        if rng.random() < (1.0 - brightness / 255.0):
+            points.append((x, y))
+    if not points:
+        return np.empty((0, 2), dtype=float)
+    return np.array(points, dtype=float)
+
+
+def _seeds_poisson_disk_density(
+    spacing: float,
+    w: float,
+    h: float,
+    rng: np.random.Generator,
+    density_img: np.ndarray,
+) -> np.ndarray:
+    """Variable-spacing Poisson disk sampling driven by image brightness.
+
+    Minimum distance at each candidate = ``spacing * (0.3 + 0.7 * brightness/255)``.
+    Dark areas (low brightness) get tighter packing; bright areas get wider.
+    """
+    # Grid cell size is based on the tightest possible spacing
+    min_spacing = spacing * 0.3
+    cell_size = min_spacing / math.sqrt(2.0)
+    cols = max(1, int(math.ceil(w / cell_size)))
+    rows = max(1, int(math.ceil(h / cell_size)))
+    grid: list[tuple[float, float] | None] = [None] * (cols * rows)
+
+    def _grid_idx(x: float, y: float) -> int:
+        gx = min(cols - 1, int(x / cell_size))
+        gy = min(rows - 1, int(y / cell_size))
+        return gy * cols + gx
+
+    def _too_close(x: float, y: float, local_spacing: float) -> bool:
+        local_sq = local_spacing * local_spacing
+        gx = int(x / cell_size)
+        gy = int(y / cell_size)
+        for dy in range(-2, 3):
+            for dx in range(-2, 3):
+                ngx, ngy = gx + dx, gy + dy
+                if 0 <= ngx < cols and 0 <= ngy < rows:
+                    pt = grid[ngy * cols + ngx]
+                    if pt is not None:
+                        if (pt[0] - x) ** 2 + (pt[1] - y) ** 2 < local_sq:
+                            return True
+        return False
+
+    x0 = float(rng.uniform(0.0, w))
+    y0 = float(rng.uniform(0.0, h))
+    grid[_grid_idx(x0, y0)] = (x0, y0)
+    active: list[tuple[float, float]] = [(x0, y0)]
+    points: list[tuple[float, float]] = [(x0, y0)]
+    k = 30
+
+    while active:
+        idx = int(rng.integers(0, len(active)))
+        ax, ay = active[idx]
+        br_ax = _sample_brightness(density_img, ax, ay, w, h)
+        parent_sp = spacing * (0.3 + 0.7 * br_ax / 255.0)
+        found = False
+        for _ in range(k):
+            angle = float(rng.uniform(0.0, 2.0 * math.pi))
+            r = float(rng.uniform(parent_sp, 2.0 * parent_sp))
+            nx = ax + r * math.cos(angle)
+            ny = ay + r * math.sin(angle)
+            if 0.0 <= nx <= w and 0.0 <= ny <= h:
+                br_n = _sample_brightness(density_img, nx, ny, w, h)
+                local_sp = spacing * (0.3 + 0.7 * br_n / 255.0)
+                if not _too_close(nx, ny, local_sp):
+                    grid[_grid_idx(nx, ny)] = (nx, ny)
+                    active.append((nx, ny))
+                    points.append((nx, ny))
+                    found = True
+                    break
+        if not found:
+            active.pop(idx)
+
+    if not points:
+        return np.empty((0, 2), dtype=float)
+    return np.array(points, dtype=float)
+
+
+def _seeds_grid_jitter_density(
+    spacing: float,
+    jitter: float,
+    w: float,
+    h: float,
+    rng: np.random.Generator,
+    density_img: np.ndarray,
+    threshold: float = 128.0,
+) -> np.ndarray:
+    """Grid-jitter seeds, skipping points where brightness exceeds *threshold*."""
+    xs = np.arange(spacing / 2.0, w, spacing)
+    ys = np.arange(spacing / 2.0, h, spacing)
+    offset = jitter * spacing
+    kept: list[tuple[float, float]] = []
+    for y_base in ys:
+        for x_base in xs:
+            dx = float(rng.uniform(-offset, offset))
+            dy = float(rng.uniform(-offset, offset))
+            x = float(np.clip(x_base + dx, 0.0, w))
+            y = float(np.clip(y_base + dy, 0.0, h))
+            brightness = _sample_brightness(density_img, x, y, w, h)
+            if brightness <= threshold:
+                kept.append((x, y))
+    if not kept:
+        return np.empty((0, 2), dtype=float)
+    return np.array(kept, dtype=float)
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +683,53 @@ class VoronoiGenerator(Generator):
                 default=42,
                 description="Seed for the random number generator (for reproducibility).",
             ),
+            BoolParam(
+                name="image_density",
+                label="Image Density",
+                default=False,
+                randomizable=False,
+                description=(
+                    "Modulate seed point density by image brightness. "
+                    "Dark areas get more seeds; bright areas get fewer."
+                ),
+            ),
+            ImageParam(
+                name="_source_image",
+                label="Source Image",
+                randomizable=False,
+                visible_when={"image_density": [True]},
+                description="Image used to drive seed density (dark → dense, bright → sparse).",
+            ),
+            FloatParam(
+                name="brightness",
+                label="Brightness",
+                min=-100.0,
+                max=100.0,
+                step=1.0,
+                default=0.0,
+                randomizable=False,
+                visible_when={"image_density": [True]},
+                description="Adjust image brightness before density computation (-100 to +100).",
+            ),
+            FloatParam(
+                name="contrast",
+                label="Contrast",
+                min=-100.0,
+                max=100.0,
+                step=1.0,
+                default=0.0,
+                randomizable=False,
+                visible_when={"image_density": [True]},
+                description="Adjust image contrast before density computation (-100 to +100).",
+            ),
+            BoolParam(
+                name="invert",
+                label="Invert Image",
+                default=False,
+                randomizable=False,
+                visible_when={"image_density": [True]},
+                description="Invert image tones (bright areas become dense, dark areas become sparse).",
+            ),
             FloatParam(
                 name="x_offset_mm",
                 label="X Offset (mm)",
@@ -514,6 +754,63 @@ class VoronoiGenerator(Generator):
 
     def get_presets(self) -> list[Preset]:
         return [
+            Preset(
+                name="Classic Voronoi",
+                params={
+                    "num_points": 500,
+                    "seed_method": "Random",
+                    "lloyd_iterations": 0,
+                    "render_mode": "Voronoi Edges",
+                    "random_seed": 42,
+                },
+            ),
+            Preset(
+                name="Relaxed Hexagons",
+                params={
+                    "num_points": 300,
+                    "seed_method": "Random",
+                    "lloyd_iterations": 20,
+                    "render_mode": "Voronoi Edges",
+                    "random_seed": 42,
+                },
+            ),
+            Preset(
+                name="Blue Noise Voronoi",
+                params={
+                    "seed_method": "Poisson Disk",
+                    "poisson_spacing_mm": 3.0,
+                    "lloyd_iterations": 0,
+                    "render_mode": "Voronoi Edges",
+                    "random_seed": 42,
+                },
+            ),
+            Preset(
+                name="Delaunay Mesh",
+                params={
+                    "num_points": 1000,
+                    "seed_method": "Random",
+                    "render_mode": "Delaunay Edges",
+                    "random_seed": 42,
+                },
+            ),
+            Preset(
+                name="Golden Spiral",
+                params={
+                    "num_points": 500,
+                    "seed_method": "Phyllotaxis",
+                    "render_mode": "Voronoi Edges",
+                },
+            ),
+            Preset(
+                name="Organic Cells",
+                params={
+                    "num_points": 200,
+                    "seed_method": "Random",
+                    "lloyd_iterations": 10,
+                    "render_mode": "Voronoi Edges",
+                    "random_seed": 42,
+                },
+            ),
             Preset(
                 name="Random Scatter",
                 params={"num_points": 500, "seed_method": "Random", "random_seed": 42},
@@ -558,13 +855,37 @@ class VoronoiGenerator(Generator):
         centroid_radius = float(params.get("centroid_radius_mm", 0.5))
         lloyd_iterations = int(params.get("lloyd_iterations", 0))
 
+        image_density = bool(params.get("image_density", False))
+
         draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
         draw_w = draw_x2 - draw_x1
         draw_h = draw_y2 - draw_y1
 
         rng = np.random.default_rng(random_seed)
 
-        if seed_method == "Poisson Disk":
+        # Prepare density image when image-density mode is active
+        density_img: np.ndarray | None = None
+        if image_density:
+            source: np.ndarray | None = params.get("_source_image")
+            if source is not None:
+                density_img = _prepare_density_image(source, params, draw_w, draw_h)
+
+        if density_img is not None:
+            # Image-density mode: each seed method has a density-aware variant
+            if seed_method == "Poisson Disk":
+                seeds = _seeds_poisson_disk_density(
+                    poisson_spacing, draw_w, draw_h, rng, density_img
+                )
+            elif seed_method == "Grid Jitter":
+                seeds = _seeds_grid_jitter_density(
+                    grid_spacing, grid_jitter, draw_w, draw_h, rng, density_img
+                )
+            elif seed_method == "Phyllotaxis":
+                # Phyllotaxis is a deterministic spiral — fall back to random density
+                seeds = _seeds_random_density(num_points, draw_w, draw_h, rng, density_img)
+            else:  # "Random" (default)
+                seeds = _seeds_random_density(num_points, draw_w, draw_h, rng, density_img)
+        elif seed_method == "Poisson Disk":
             seeds = _seeds_poisson_disk(poisson_spacing, draw_w, draw_h, rng)
         elif seed_method == "Grid Jitter":
             seeds = _seeds_grid_jitter(grid_spacing, grid_jitter, draw_w, draw_h, rng)
