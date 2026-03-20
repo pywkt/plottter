@@ -195,6 +195,33 @@ then export.
 
 ---
 
+## AI Features
+
+### AI features not working (mask generation, background removal, depth maps)
+
+**Symptom:** AI buttons in Mask Paint mode are greyed out, or clicking them shows "API key not
+configured" / produces no result.
+
+**Cause:** The Replicate API key has not been set, or the key is invalid.
+
+**Fix:**
+1. Open **Edit › Preferences**
+2. Paste your Replicate API key into the **Replicate API Key** field and click **OK**
+3. Verify the key is valid at [replicate.com](https://replicate.com) — keys start with `r8_`
+
+> **No additional packages required.** Plottter uses the Replicate REST API directly. You do not
+> need to run `pip install` anything extra to enable AI features.
+
+### AI generation is slow or times out
+
+**Cause:** Replicate runs models on cold-start cloud GPUs; the first request after a period of
+inactivity may take 30–60 seconds.
+
+**Fix:** Wait for the first request to complete — subsequent requests in the same session are
+faster. If a request times out, click the AI button again to retry.
+
+---
+
 ## AxiDraw USB Issues
 
 ### "pyaxidraw is NOT installed"

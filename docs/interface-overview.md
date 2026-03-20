@@ -76,9 +76,24 @@ The **Mode Panel** selects the type of art generation:
 | **Image to Lines** | Convert a raster image to plotter paths via edge detection, hatching, stippling, halftone, hedcut, or flow fields |
 | **3D Scene** | Create 3D wireframe objects with hidden line removal, shadows, and mesh import |
 | **Color Separation** | Separate an image by hue, luminance, or channel and assign each color to a separate layer |
-| **Mask Paint** | Paint regions on the canvas with a brush to create custom masks for per-region line art |
+| **Mask Paint** | Paint regions on the canvas with a brush to create custom masks for per-region line art; supports AI-assisted mask generation (requires Replicate API key) |
 
 Selecting a mode updates the **Settings Panel** on the right with relevant controls.
+
+### Mask Paint — AI mask generation
+
+In Mask Paint mode, in addition to freehand brush painting you can generate masks automatically
+using AI-powered segmentation (via the [Replicate.com](https://replicate.com) API):
+
+| Prompt type | How to use |
+|-------------|-----------|
+| **Point prompt** | Click on the canvas to place a foreground point; the model segments the object at that location |
+| **Box prompt** | Drag a rectangle on the canvas; the model segments content inside the box |
+| **Text prompt** | Type a description (e.g. "person", "background") and the model generates a matching mask |
+
+> **Requirement:** A Replicate API key must be configured in **Edit › Preferences** before AI
+> mask generation is available. No additional Python packages are required. All AI controls are
+> automatically disabled when no API key is set.
 
 ---
 
@@ -131,9 +146,21 @@ Each row shows:
 - **Eye icon / checkbox** — toggle layer visibility
 - **Lock icon / checkbox** — when locked, the layer cannot be edited
 - **Path count badge** — number of polylines in the layer
+- **Opacity slider** — drag to set the layer's opacity from 0–100% (canvas preview only; undoable)
+- **Opacity label** — displays the current percentage next to the slider
 
 Drag rows to reorder layers. The order affects export (layer 01 is exported first) and the
 animation playback sequence.
+
+### Multi-layer selection
+
+The layer list supports **extended selection**:
+
+- **Ctrl+Click** — add or remove individual layers from the selection
+- **Shift+Click** — select a contiguous range
+
+Selected layers are highlighted in blue. Use multi-selection to **Merge** several layers at once
+into a single layer (all their paths are combined).
 
 ### Layer buttons
 
@@ -188,6 +215,7 @@ The status bar at the bottom of the window shows:
 | Undo | `Ctrl+Z` | Undo the last action |
 | Redo | `Ctrl+Y` | Redo the last undone action |
 | Canvas Settings | — | Edit paper size and margins |
+| Preferences… | — | Set the Replicate API key and other application preferences |
 
 ### View
 
@@ -199,6 +227,10 @@ The status bar at the bottom of the window shows:
 | Toggle Grid | `G` | Show or hide the 10 mm grid |
 | Toggle Registration Marks | `R` | Show or hide corner crosshairs |
 | Toggle Travel Lines | `T` | Show or hide pen-up travel moves |
+| Toggle Image Overlay | — | Show or hide the source image behind paths |
+| Toggle Paper Texture | — | Show or hide a paper texture in the canvas background |
+| Toggle Pen Jitter | — | Simulate hand-drawn line variation in the preview |
+| Pen Jitter Intensity… | — | Set the jitter amount |
 
 ### Generate
 
@@ -206,7 +238,8 @@ The status bar at the bottom of the window shows:
 |------|-------------|
 | Generate | Run the current generator |
 | Randomize | Randomize all parameters |
-| Surprise Me | Pick a random math generator with random parameters |
+| Surprise Me! | Pick a random math generator with random parameters |
+| Browse Presets… | Open the preset gallery to browse and apply saved presets |
 
 ### Tools
 

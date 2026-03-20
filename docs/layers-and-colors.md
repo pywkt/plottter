@@ -17,9 +17,31 @@ Each row in the layer list represents one layer:
 | **Eye icon** | Click to toggle visibility; hidden layers are not exported |
 | **Lock icon** | Click to lock; locked layers cannot be edited or optimized |
 | **Path count** | Number of polylines currently on this layer |
+| **Opacity slider** | Drag to set layer opacity from 0–100%; affects canvas preview |
+| **Opacity label** | Shows current opacity percentage next to the slider |
 
 Layers are ordered top-to-bottom in the panel. The top layer is drawn last (on top) in the
 preview; the bottom layer is drawn first (behind everything else).
+
+### Opacity
+
+Each layer has a horizontal opacity slider (0–100%). Dragging it changes how transparent the
+layer appears in the canvas preview. Opacity changes are fully undoable with `Ctrl+Z`.
+
+> **Note:** Opacity is a preview-only property. Exported SVG files always render paths at full
+> opacity; use the opacity slider for visual reference when composing multi-layer artwork.
+
+### Multi-Layer Selection
+
+The layer list supports multi-selection:
+
+- **Ctrl+Click** — add or remove a layer from the current selection without deselecting others
+- **Shift+Click** — select a contiguous range from the previously active layer to the clicked layer
+
+Selected layers are highlighted with a subtle blue tint. The "active" layer (the one that receives
+generated paths) is the last layer you clicked and shows a full selection highlight.
+
+Multi-selection is used primarily for the **Merge** operation (see below).
 
 ---
 
@@ -60,11 +82,16 @@ Export each layer separately (File › Export All Layers) to get one SVG per pen
 
 ### Merge
 
-Select two or more layers in the panel (Ctrl-click to multi-select), then click **Merge**.
-All paths from the selected layers are combined into a single new layer. The original layers
-are removed.
+To merge layers:
 
-Alternatively, right-click and choose **Merge Selected** from the context menu.
+1. **Ctrl+Click** each layer you want to merge (they will be highlighted in blue)
+2. For a contiguous range, click the first layer then **Shift+Click** the last
+3. Click **Merge**
+
+All paths from the selected layers are combined into a single new layer. The original layers
+are removed. The merge is undoable.
+
+Alternatively, right-click any selected layer and choose **Merge Selected** from the context menu.
 
 ### Duplicate
 
