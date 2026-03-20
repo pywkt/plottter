@@ -420,3 +420,80 @@ class TestEdgeCases:
                                    count=-1, include_original=False)
         assert len(result0) == 2
         assert len(result_neg) == 2
+
+
+# ---------------------------------------------------------------------------
+# Task 50.2 — GUI tool requirements (a)–(e)
+# These tests verify the specific scenarios required by task 50.2.
+# ---------------------------------------------------------------------------
+
+class TestTask502:
+    """Explicit coverage of task 50.2 test requirements (a)–(e)."""
+
+    # (a) Straight line produces parallel lines at correct distance
+    def test_a_straight_line_parallel_at_correct_distance(self) -> None:
+        """(a) A straight horizontal line offsets to parallel lines at distance d."""
+        import math
+        d = 2.0
+        line = [(0.0, 0.0), (30.0, 0.0)]
+        result = offset_paths([line], distance_mm=d, sides="both",
+                               count=1, include_original=False)
+        assert len(result) == 2
+        for poly in result:
+            avg_y = sum(p[1] for p in poly) / len(poly)
+            assert abs(abs(avg_y) - d) < 0.3, (
+                f"Expected offset at distance {d}, got avg |y|={abs(avg_y):.3f}"
+            )
+
+    # (b) Closed path produces inset and outset offsets
+    def test_b_closed_path_inset_outset(self) -> None:
+        """(b) A closed square offset with sides='both' produces larger+smaller rings."""
+        sq = [(-5.0, -5.0), (5.0, -5.0), (5.0, 5.0), (-5.0, 5.0), (-5.0, -5.0)]
+        result = offset_paths([sq], distance_mm=1.5, sides="both",
+                               count=1, include_original=False)
+        assert len(result) >= 2
+        # Outset ring should have points farther from origin than inset
+        dists = [max(math.hypot(p[0], p[1]) for p in poly) for poly in result]
+        assert max(dists) > 5.0   # outset is larger than original
+        assert min(dists) < 5.0 * math.sqrt(2)  # inset is still within bounds
+
+    # (c) Multiple counts produce multiple offsets
+    def test_c_multiple_counts_produce_multiple_offsets(self) -> None:
+        """(c) count=3 produces 3 offset copies per side."""
+        line = [(0.0, 0.0), (20.0, 0.0)]
+        result_left = offset_paths([line], distance_mm=1.0, sides="left",
+                                    count=3, include_original=False)
+        assert len(result_left) == 3
+
+        result_both = offset_paths([line], distance_mm=1.0, sides="both",
+                                    count=3, include_original=False)
+        assert len(result_both) == 6
+
+    # (d) All join styles produce valid output
+    def test_d_all_join_styles_valid_output(self) -> None:
+        """(d) round, mitre, and bevel join styles all produce valid non-empty paths."""
+        path = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0)]
+        for style in ("round", "mitre", "bevel"):
+            result = offset_paths([path], distance_mm=1.0, sides="left",
+                                   count=1, join_style=style, include_original=False)
+            assert len(result) >= 1, f"join_style='{style}' produced no output"
+            for poly in result:
+                assert len(poly) >= 2
+                for pt in poly:
+                    assert math.isfinite(pt[0]) and math.isfinite(pt[1])
+
+    # (e) Degenerate paths are handled gracefully
+    def test_e_degenerate_paths_handled(self) -> None:
+        """(e) Single-point, zero-length and empty paths are skipped without error."""
+        import math
+        # Single point
+        assert offset_paths([[(0.0, 0.0)]], distance_mm=1.0) == []
+        # Empty path
+        assert offset_paths([[]], distance_mm=1.0) == []
+        # Empty list
+        assert offset_paths([], distance_mm=1.0) == []
+        # Valid path alongside degenerate ones still works
+        valid = [(0.0, 0.0), (10.0, 0.0)]
+        result = offset_paths([[(0.0, 0.0)], valid, []], distance_mm=1.0,
+                               sides="both", count=1, include_original=False)
+        assert len(result) == 2  # only the valid path contributes

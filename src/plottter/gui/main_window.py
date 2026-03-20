@@ -256,6 +256,34 @@ class _TaperWorker(QThread):
             self.error.emit(str(exc))
 
 
+class _OffsetWorker(QThread):
+    """QThread that runs offset_paths on a layer's paths."""
+
+    finished = pyqtSignal(list)  # (new_paths,)
+    error = pyqtSignal(str)
+    progress = pyqtSignal(int)  # 0-100
+
+    def __init__(
+        self,
+        paths: list[Polyline],
+        params: dict,
+        parent=None,
+    ) -> None:
+        super().__init__(parent)
+        self._paths = paths
+        self._params = params
+
+    def run(self) -> None:
+        try:
+            from plottter.processing.offset import offset_paths
+            self.progress.emit(10)
+            result = offset_paths(self._paths, **self._params)
+            self.progress.emit(100)
+            self.finished.emit(result)
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))
+
+
 class _BrushDialog:
     """Factory that builds and shows the Apply Brush dialog.
 
@@ -777,6 +805,11 @@ class MainWindow(QMainWindow):
         self._act_taper.setToolTip("Replace paths with tapered stroke outlines that fade in and out")
         self._act_taper.triggered.connect(self._on_taper_layer)
         tools_menu.addAction(self._act_taper)
+
+        self._act_offset = QAction("Offset Paths…", self)
+        self._act_offset.setToolTip("Generate parallel offset copies of paths at a specified distance")
+        self._act_offset.triggered.connect(self._on_offset_layer)
+        tools_menu.addAction(self._act_offset)
 
         tools_menu.addSeparator()
 
@@ -1488,6 +1521,54 @@ class MainWindow(QMainWindow):
         worker.finished.connect(on_finished)
         worker.error.connect(on_error)
         self._taper_worker = worker
+        worker.start()
+
+    def _on_offset_layer(self) -> None:
+        """Show the Offset Paths dialog and replace the selected layer's paths."""
+        layer_id = self._controller.active_layer_id
+        layer = self._controller.get_layer(layer_id) if layer_id else None
+        if layer is None:
+            QMessageBox.warning(self, "Offset Paths", "No selected layer. Please select a layer first.")
+            return
+        if not layer.paths:
+            QMessageBox.information(self, "Offset Paths", "Selected layer has no paths.")
+            return
+
+        from plottter.gui.dialogs.offset_dialog import OffsetSettingsDialog
+        dlg = OffsetSettingsDialog(list(layer.paths), parent=self)
+        if dlg.exec() != OffsetSettingsDialog.DialogCode.Accepted:
+            return
+
+        params = dlg.get_params()
+        total = len(layer.paths)
+        progress = QProgressDialog(
+            f"Applying offset to '{layer.name}'…", "", 0, 100, self
+        )
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.show()
+
+        worker = _OffsetWorker(paths=list(layer.paths), params=params, parent=self)
+
+        def on_progress(value: int) -> None:
+            progress.setValue(value)
+
+        def on_finished(new_paths: list) -> None:
+            progress.close()
+            self._controller.set_layer_paths(layer_id, new_paths, "Offset Paths")
+            self.statusBar().showMessage(
+                f"Offset applied: {total} → {len(new_paths)} paths.", 4000
+            )
+            worker.deleteLater()
+
+        def on_error(msg: str) -> None:
+            progress.close()
+            QMessageBox.critical(self, "Offset Error", msg)
+            worker.deleteLater()
+
+        worker.progress.connect(on_progress)
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_error)
+        self._offset_worker = worker
         worker.start()
 
     def _on_plot_axidraw(self) -> None:
