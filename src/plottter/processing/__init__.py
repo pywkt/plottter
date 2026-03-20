@@ -15,6 +15,7 @@ from plottter.processing.curves import fit_curves
 from plottter.processing.rasterize import rasterize_layer
 from plottter.processing.brush import apply_brush
 from plottter.processing.taper import taper_paths
+from plottter.processing.offset import offset_paths
 
 __all__ = [
     "simplify_paths",
@@ -32,4 +33,5 @@ __all__ = [
     "rasterize_layer",
     "apply_brush",
     "taper_paths",
+    "offset_paths",
 ]
