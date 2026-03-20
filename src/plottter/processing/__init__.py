@@ -14,6 +14,7 @@ from plottter.processing.weld import weld_overlapping_paths
 from plottter.processing.curves import fit_curves
 from plottter.processing.rasterize import rasterize_layer
 from plottter.processing.brush import apply_brush
+from plottter.processing.taper import taper_paths
 
 __all__ = [
     "simplify_paths",
@@ -30,4 +31,5 @@ __all__ = [
     "fit_curves",
     "rasterize_layer",
     "apply_brush",
+    "taper_paths",
 ]
