@@ -13,14 +13,60 @@ real paper.
 | Photo / portrait | Hatching (parallel) | Classic engraving feel |
 | Photo / portrait | Hedcut | WSJ-style stipple portrait with hatched shadows |
 | Photo / portrait | Scanline Halftone | Newspaper/engraving-style line halftone |
+| Photo / portrait | Dot Grid Halftone | Circular halftone dots sized by brightness; clean, retro look |
+| Photo / portrait | TAM (Tonal Art Map) | Pen-aware stroke coverage; accurate tonal rendering without over-inking |
 | Illustration / line art | Edge Detection | Preserves original outlines |
 | Illustration / line art | XDoG | Stylized, ink-like edges with adjustable thickness |
 | Illustration / line art | FDoG | Flow-aligned coherent lines, hand-drawn feel |
+| Illustration / line art | LIC (Line Integral Convolution) | Smooth, texture-following strokes aligned to image flow structure |
 | Landscape / topographic | Contour Lines | Maps tonal structure naturally |
 | Abstract / artistic | Flow Image (flow) | Organic, impressionistic curves |
 | Abstract / artistic | Circular Scribble | Tone-aware scribble texture |
 | Typography / text | Edge Detection | Clean, high-contrast input; threshold first |
 | Woodcut-style | Hatching (contour mode) | Lines follow image edges |
+| Generative / pattern | Voronoi / Delaunay | Cell diagrams and triangulation meshes from point distributions |
+| Generative / pattern | Penrose Tiling | Aperiodic rhombus tiling; arc decorations produce continuous curves |
+
+---
+
+## Voronoi Lloyd Relaxation for Organic Cell Patterns
+
+The Voronoi/Delaunay generator supports **Lloyd relaxation** iterations, which move each
+seed point toward the centroid of its cell. A few iterations produce markedly more organic,
+even-looking cells compared to randomly placed seeds:
+
+- **0 iterations** — raw random Voronoi: jagged, uneven cells
+- **3–5 iterations** — balanced cells that still look hand-placed
+- **10+ iterations** — near-uniform hexagonal packing (less interesting for art)
+
+A good workflow for organic cell art:
+
+1. Math Art mode → **Voronoi / Delaunay** → set `seed_count = 400`, `lloyd_iterations = 4`
+2. Enable **draw_delaunay = true** alongside Voronoi edges for a dual-mesh look
+3. Run **Tools › Optimize Current Layer** — the triangulation produces many short segments
+   that benefit greatly from reordering
+
+For colored cell art, combine with Color Separation: run Voronoi on each color layer so
+cell boundaries align with image regions.
+
+---
+
+## Penrose Arc Decorations for Continuous Curve Art
+
+Penrose tiling's built-in **arc decoration** mode draws circular arcs across tile interiors.
+Because arcs on adjacent tiles are constrained to connect at shared edges, the result is a
+network of long, unbroken curves that thread through the entire pattern — ideal for plotters
+since it minimizes pen lifts.
+
+To get the best continuous-curve effect:
+
+1. Math Art mode → **Penrose Tiling** → enable `draw_arcs = true`, set `draw_tiles = false`
+2. Use a high `iterations` value (5–6) for a dense, intricate mesh
+3. Run **Tools › Merge Nearby Paths** (threshold 0.3 mm) — arc endpoints that are very close
+   but not quite joined will be connected into longer polylines
+4. Run **Tools › Optimize Current Layer** to minimize remaining pen-up travel
+
+Pair with a **Calligraphic** brush post-process at a 45° nib angle for a hand-lettered feel.
 
 ---
 

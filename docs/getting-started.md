@@ -151,8 +151,8 @@ The **File › Recent Projects** submenu lists your last 10 projects for quick a
 
 | Topic | Guide |
 |-------|-------|
-| Math generators (parametric, polar, L-systems, grids, text, 3D) | [Math Art Guide](math-art-guide.md) |
-| Convert a photo to line art (10 algorithms) | [Image-to-Lines Guide](image-to-lines-guide.md) |
+| Math generators (parametric, polar, L-systems, Voronoi/Delaunay, Penrose tiling, grids, text, 3D) | [Math Art Guide](math-art-guide.md) |
+| Convert a photo to line art (LIC, TAM, stipple, hatching, halftone, and more) | [Image-to-Lines Guide](image-to-lines-guide.md) |
 | Work with layers and pen colors | [Layers & Colors](layers-and-colors.md) |
 | Export SVG, HPGL, G-code, or Mural | [Export & Plotting](export-and-plotting.md) |
 | Preview and simulate the plot | [Preview & Simulation](preview-and-simulation.md) |
