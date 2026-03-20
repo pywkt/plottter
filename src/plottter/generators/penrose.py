@@ -283,6 +283,53 @@ def _clip_to_canvas(
     return result
 
 
+def _clip_polyline_to_canvas(
+    polyline: Polyline,
+    canvas_w: float,
+    canvas_h: float,
+    margin: float,
+) -> list[Polyline]:
+    """Clip a multi-point polyline to the canvas drawing area.
+
+    Applies Liang–Barsky clipping to each consecutive segment.  Continuous
+    runs of clipped segments are assembled into output polylines; a gap
+    in the output (segment entirely outside) ends the current run and starts
+    a new one.
+
+    Returns a list of 2-or-more-point polylines.
+    """
+    xmin, ymin = margin, margin
+    xmax, ymax = canvas_w - margin, canvas_h - margin
+
+    result: list[Polyline] = []
+    current: Polyline = []
+
+    for k in range(len(polyline) - 1):
+        (px, py), (qx, qy) = polyline[k], polyline[k + 1]
+        seg = _liang_barsky(px, py, qx, qy, xmin, ymin, xmax, ymax)
+        if seg is None:
+            # Segment fully outside — flush current run
+            if len(current) >= 2:
+                result.append(current)
+            current = []
+            continue
+        cx0, cy0, cx1, cy1 = seg
+        if not current:
+            current = [(cx0, cy0), (cx1, cy1)]
+        else:
+            # If the clipped start differs from last point, flush and restart
+            if abs(current[-1][0] - cx0) > 1e-9 or abs(current[-1][1] - cy0) > 1e-9:
+                if len(current) >= 2:
+                    result.append(current)
+                current = [(cx0, cy0), (cx1, cy1)]
+            else:
+                current.append((cx1, cy1))
+
+    if len(current) >= 2:
+        result.append(current)
+    return result
+
+
 def _generate_rhombs(
     triangles: list[Triangle],
     cx: float,
@@ -320,7 +367,134 @@ def _generate_rhombs(
 
 
 # ---------------------------------------------------------------------------
-# Triangle → polyline conversion
+# Arc decoration helpers
+# ---------------------------------------------------------------------------
+
+def _arc_complex(
+    center: complex,
+    p1: complex,
+    p2: complex,
+    inside_ref: complex,
+    n_segments: int = 12,
+) -> list[complex]:
+    """Return a polyline approximating the arc from p1 to p2 centred at center.
+
+    Selects the arc (of the two possible arcs connecting p1 and p2 on the
+    circle) whose midpoint is closest to *inside_ref*, so the arc lies
+    inside the rhomb rather than outside.  Returns n_segments + 1 points.
+
+    Returns an empty list when the inputs are degenerate.
+    """
+    r1 = abs(p1 - center)
+    r2 = abs(p2 - center)
+    if r1 < 1e-10 or r2 < 1e-10:
+        return []
+    r = (r1 + r2) * 0.5
+
+    a1 = cmath.phase(p1 - center)
+    a2 = cmath.phase(p2 - center)
+
+    # Angular spans for the two possible arcs (CCW and CW from p1 to p2)
+    span_ccw = (a2 - a1) % (2.0 * math.pi)   # going CCW
+    span_cw  = (a1 - a2) % (2.0 * math.pi)   # going CW
+
+    # Midpoints of the two possible arcs
+    mid_ccw = center + r * cmath.exp(1j * (a1 + span_ccw * 0.5))
+    mid_cw  = center + r * cmath.exp(1j * (a1 - span_cw  * 0.5))
+
+    # Pick the arc whose midpoint is closer to the interior reference point
+    if abs(mid_ccw - inside_ref) <= abs(mid_cw - inside_ref):
+        angles = [a1 + span_ccw * k / n_segments for k in range(n_segments + 1)]
+    else:
+        angles = [a1 - span_cw * k / n_segments for k in range(n_segments + 1)]
+
+    return [center + r * cmath.exp(1j * a) for a in angles]
+
+
+def _generate_rhomb_arcs(
+    triangles: list[Triangle],
+    n_arc_segments: int = 12,
+) -> list[list[complex]]:
+    """Compute classic Penrose arc decorations for every rhomb in the tiling.
+
+    For each pair of same-type Robinson triangles sharing a long edge
+    (i.e. each complete rhomb), two circular arcs are drawn inside the rhomb:
+
+    TYPE_THICK pair (kite):
+        Shared-edge vertices are the kite's apex (36°→72° in kite) and
+        base (72°→144° in kite).  Wing vertices are the two 72° tips.
+        - Arc 1: centred at apex, connects the two wing vertices.
+        - Arc 2: centred at base, connects the two wing vertices.
+        These arcs use the long side and the short side as radii respectively,
+        revealing the nested golden-ratio structure.
+
+    TYPE_THIN pair (dart):
+        Shared-edge vertices are the dart's two acute (36°→72°) vertices.
+        Wing vertices are the two obtuse (108°) vertices.
+        - Arc 1: centred at acute vertex 1, connects the two obtuse vertices.
+        - Arc 2: centred at acute vertex 2, connects the two obtuse vertices.
+
+    Returns a list of complex-coordinate polylines (not yet scaled to mm).
+    """
+    long_edge_map: dict[tuple, list[int]] = {}
+    for i, (t, A, B, C) in enumerate(triangles):
+        for key in _long_edge_keys(t, A, B, C):
+            long_edge_map.setdefault(key, []).append(i)
+
+    arcs: list[list[complex]] = []
+
+    for key, indices in long_edge_map.items():
+        if len(indices) != 2:
+            continue
+        i, j = indices
+        ti, Ai, Bi, Ci = triangles[i]
+        tj, Aj, Bj, Cj = triangles[j]
+        if ti != tj:
+            continue  # mixed-type pair — not a valid rhomb
+
+        if ti == TYPE_THIN:
+            # Long edge is BC.  Two thin triangles share this edge.
+            # Ai, Aj = wing (108°) vertices; Bi/Ci = shared-edge (36°) vertices.
+            wing1, wing2 = Ai, Aj
+            sh1, sh2 = Bi, Ci
+            inside = (wing1 + sh1 + wing2 + sh2) * 0.25
+            for center_v in (sh1, sh2):
+                pts = _arc_complex(center_v, wing1, wing2, inside, n_arc_segments)
+                if pts:
+                    arcs.append(pts)
+
+        else:  # TYPE_THICK
+            # Long edges are AB and AC.  Find which long edge of T_i matches key.
+            key_abi = _edge_key(Ai, Bi)
+            key_aci = _edge_key(Ai, Ci)
+            if key == key_abi:
+                sh_apex, sh_base, wing_i = Ai, Bi, Ci
+            elif key == key_aci:
+                sh_apex, sh_base, wing_i = Ai, Ci, Bi
+            else:
+                continue
+
+            # Wing vertex from T_j
+            key_abj = _edge_key(Aj, Bj)
+            key_acj = _edge_key(Aj, Cj)
+            if key == key_abj:
+                wing_j = Cj
+            elif key == key_acj:
+                wing_j = Bj
+            else:
+                continue
+
+            inside = (sh_apex + sh_base + wing_i + wing_j) * 0.25
+            for center_v in (sh_apex, sh_base):
+                pts = _arc_complex(center_v, wing_i, wing_j, inside, n_arc_segments)
+                if pts:
+                    arcs.append(pts)
+
+    return arcs
+
+
+# ---------------------------------------------------------------------------
+# Triangle → polyline conversion (kept for backward compatibility)
 # ---------------------------------------------------------------------------
 
 def _triangles_to_polylines(
@@ -395,58 +569,60 @@ class PenroseGenerator(Generator):
                 choices=["Sun", "Star", "Dart"],
                 default="Sun",
                 description=(
-                    "Starting arrangement: 'Sun' (10 thick triangles), "
-                    "'Star' (10 thin triangles), 'Dart' (4 thin triangles)."
+                    "'Sun' (10 thick triangles, decagonal), "
+                    "'Star' (10 thin triangles, star), "
+                    "'Dart' (4 thin triangles, smaller seed)."
                 ),
             ),
             IntParam(
-                name="depth",
-                label="Subdivision Depth",
-                min=0,
+                name="subdivisions",
+                label="Subdivisions",
+                min=1,
                 max=8,
                 step=1,
-                default=4,
+                default=5,
                 description=(
-                    "Number of subdivision iterations. Each level multiplies "
-                    "the triangle count by ~PHI² ≈ 2.618."
+                    "Subdivision depth — higher = smaller tiles, more detail. "
+                    "Each level multiplies the tile count by ~PHI² ≈ 2.618."
                 ),
-            ),
-            FloatParam(
-                name="radius_mm",
-                label="Radius (mm)",
-                min=10.0,
-                max=300.0,
-                step=1.0,
-                default=90.0,
-                description="Outer radius of the tiling in millimeters.",
             ),
             FloatParam(
                 name="rotation_deg",
                 label="Rotation (°)",
-                min=-180.0,
-                max=180.0,
+                min=0.0,
+                max=360.0,
                 step=1.0,
                 default=0.0,
                 description="Overall rotation of the tiling in degrees.",
             ),
             ChoiceParam(
-                name="draw_mode",
-                label="Draw Mode",
-                choices=["All edges", "Thin only", "Thick only", "Rhombs"],
-                default="All edges",
+                name="render_mode",
+                label="Render Mode",
+                choices=["Edges Only", "Edges + Arcs", "Arcs Only"],
+                default="Edges Only",
                 description=(
-                    "Which triangle type edges to render. 'Rhombs' draws "
-                    "kite-and-dart outlines (internal diagonals omitted)."
+                    "'Edges Only': rhomb outlines. "
+                    "'Edges + Arcs': outlines plus classic arc matching-rule decorations. "
+                    "'Arcs Only': arc decorations only (reveals pentagonal symmetry)."
                 ),
             ),
-            BoolParam(
-                name="deduplicate",
-                label="Deduplicate Edges",
-                default=True,
-                description=(
-                    "Skip shared edges between adjacent triangles to reduce "
-                    "redundant pen strokes."
-                ),
+            FloatParam(
+                name="x_offset_mm",
+                label="X Offset (mm)",
+                min=-150.0,
+                max=150.0,
+                step=1.0,
+                default=0.0,
+                description="Horizontal offset of the tiling centre from canvas centre.",
+            ),
+            FloatParam(
+                name="y_offset_mm",
+                label="Y Offset (mm)",
+                min=-150.0,
+                max=150.0,
+                step=1.0,
+                default=0.0,
+                description="Vertical offset of the tiling centre from canvas centre.",
             ),
         ]
 
@@ -458,51 +634,77 @@ class PenroseGenerator(Generator):
         cancelled_callback: Any = None,
     ) -> list[Polyline]:
         config = params.get("initial_config", "Sun")
-        depth = int(params.get("depth", 4))
-        radius_mm = float(params.get("radius_mm", 90.0))
+        subdivisions = max(1, int(params.get("subdivisions", 5)))
         rotation_deg = float(params.get("rotation_deg", 0.0))
-        draw_mode = params.get("draw_mode", "All edges")
-        deduplicate = bool(params.get("deduplicate", True))
+        render_mode = params.get("render_mode", "Edges Only")
+        x_offset_mm = float(params.get("x_offset_mm", 0.0))
+        y_offset_mm = float(params.get("y_offset_mm", 0.0))
 
         # Build initial triangles in normalised complex space (unit radius)
         triangles = _initial_config(config, 1.0)
 
-        # Iterative subdivision
-        for i in range(depth):
+        # Iterative subdivision with progress reported at 0–50 %
+        for i in range(subdivisions):
             if cancelled_callback and cancelled_callback():
                 return []
             triangles = _subdivide(triangles)
             if progress_callback:
-                progress_callback(int(100 * (i + 1) / max(depth, 1)))
+                progress_callback(int(50 * (i + 1) / max(subdivisions, 1)))
 
-        # Canvas centre and drawing area in mm
+        if progress_callback:
+            progress_callback(50)
+
+        # Canvas layout: auto-fit the unit-radius tiling to the drawing area
         x1, y1, x2, y2 = canvas.drawing_area()
-        cx = (x1 + x2) / 2
-        cy = (y1 + y2) / 2
+        draw_w, draw_h = x2 - x1, y2 - y1
+        cx = (x1 + x2) / 2.0 + x_offset_mm
+        cy = (y1 + y2) / 2.0 + y_offset_mm
+        scale = min(draw_w, draw_h) / 2.0
 
         rotation_rad = math.radians(rotation_deg)
+        rot_factor = cmath.exp(1j * rotation_rad)
 
-        if draw_mode == "Rhombs":
-            return _generate_rhombs(
-                triangles,
-                cx=cx,
-                cy=cy,
-                scale=radius_mm,
-                rotation=rotation_rad,
-                canvas_w=canvas.width_mm,
-                canvas_h=canvas.height_mm,
-                margin=canvas.margin_mm,
+        def to_mm(z: complex) -> tuple[float, float]:
+            z2 = z * rot_factor
+            return (cx + z2.real * scale, cy - z2.imag * scale)
+
+        result: list[Polyline] = []
+
+        # --- Edge polylines (rhomb outlines) ---
+        if render_mode in ("Edges Only", "Edges + Arcs"):
+            result.extend(
+                _generate_rhombs(
+                    triangles,
+                    cx=cx,
+                    cy=cy,
+                    scale=scale,
+                    rotation=rotation_rad,
+                    canvas_w=canvas.width_mm,
+                    canvas_h=canvas.height_mm,
+                    margin=canvas.margin_mm,
+                )
             )
 
-        return _triangles_to_polylines(
-            triangles,
-            cx=cx,
-            cy=cy,
-            scale=radius_mm,
-            rotation=rotation_rad,
-            draw_mode=draw_mode,
-            deduplicate=deduplicate,
-        )
+        if progress_callback:
+            progress_callback(75)
+
+        # --- Arc decorations ---
+        if render_mode in ("Edges + Arcs", "Arcs Only"):
+            for arc_curve in _generate_rhomb_arcs(triangles, n_arc_segments=12):
+                mm_pts = [to_mm(z) for z in arc_curve]
+                result.extend(
+                    _clip_polyline_to_canvas(
+                        mm_pts,
+                        canvas.width_mm,
+                        canvas.height_mm,
+                        canvas.margin_mm,
+                    )
+                )
+
+        if progress_callback:
+            progress_callback(100)
+
+        return result
 
     def get_presets(self) -> list[Preset]:
         return [
@@ -510,33 +712,44 @@ class PenroseGenerator(Generator):
                 name="Classic Sun",
                 params={
                     "initial_config": "Sun",
-                    "depth": 5,
-                    "radius_mm": 100.0,
+                    "subdivisions": 5,
                     "rotation_deg": 0.0,
-                    "draw_mode": "All edges",
-                    "deduplicate": True,
+                    "render_mode": "Edges Only",
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
                 },
             ),
             Preset(
                 name="Star Pattern",
                 params={
                     "initial_config": "Star",
-                    "depth": 5,
-                    "radius_mm": 100.0,
+                    "subdivisions": 5,
                     "rotation_deg": 0.0,
-                    "draw_mode": "All edges",
-                    "deduplicate": True,
+                    "render_mode": "Edges Only",
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
                 },
             ),
             Preset(
-                name="Thin Triangles Only",
+                name="Arc Decorations",
                 params={
                     "initial_config": "Sun",
-                    "depth": 5,
-                    "radius_mm": 100.0,
+                    "subdivisions": 4,
                     "rotation_deg": 0.0,
-                    "draw_mode": "Thin only",
-                    "deduplicate": True,
+                    "render_mode": "Edges + Arcs",
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="Arcs Only",
+                params={
+                    "initial_config": "Sun",
+                    "subdivisions": 4,
+                    "rotation_deg": 0.0,
+                    "render_mode": "Arcs Only",
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
                 },
             ),
         ]

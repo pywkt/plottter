@@ -1,4 +1,4 @@
-"""Tests for Penrose P2 tiling generator (Tasks 46.1 and 46.2)."""
+"""Tests for Penrose P2 tiling generator (Tasks 46.1, 46.2, and 46.3)."""
 
 from __future__ import annotations
 
@@ -255,8 +255,22 @@ class TestCountGrowth:
 
 
 # ---------------------------------------------------------------------------
-# Generator registration and integration
+# Generator registration and integration (Task 46.3)
 # ---------------------------------------------------------------------------
+
+def _make_params(**overrides) -> dict:
+    """Return default Task 46.3 parameters, optionally overridden."""
+    defaults = {
+        "initial_config": "Sun",
+        "subdivisions": 2,
+        "rotation_deg": 0.0,
+        "render_mode": "Edges Only",
+        "x_offset_mm": 0.0,
+        "y_offset_mm": 0.0,
+    }
+    defaults.update(overrides)
+    return defaults
+
 
 class TestRegistration:
     def test_registered(self):
@@ -272,11 +286,41 @@ class TestRegistration:
         gen = PenroseGenerator()
         names = {p.name for p in gen.get_parameters()}
         assert "initial_config" in names
-        assert "depth" in names
-        assert "radius_mm" in names
+        assert "subdivisions" in names
         assert "rotation_deg" in names
-        assert "draw_mode" in names
-        assert "deduplicate" in names
+        assert "render_mode" in names
+        assert "x_offset_mm" in names
+        assert "y_offset_mm" in names
+
+    def test_subdivisions_param_range(self):
+        from plottter.generators.penrose import PenroseGenerator
+        from plottter.generators.base import IntParam
+        gen = PenroseGenerator()
+        sub_param = next(p for p in gen.get_parameters() if p.name == "subdivisions")
+        assert isinstance(sub_param, IntParam)
+        assert sub_param.min == 1
+        assert sub_param.max == 8
+        assert sub_param.default == 5
+
+    def test_render_mode_choices(self):
+        from plottter.generators.penrose import PenroseGenerator
+        from plottter.generators.base import ChoiceParam
+        gen = PenroseGenerator()
+        rm_param = next(p for p in gen.get_parameters() if p.name == "render_mode")
+        assert isinstance(rm_param, ChoiceParam)
+        assert "Edges Only" in rm_param.choices
+        assert "Edges + Arcs" in rm_param.choices
+        assert "Arcs Only" in rm_param.choices
+        assert rm_param.default == "Edges Only"
+
+    def test_rotation_param_range(self):
+        from plottter.generators.penrose import PenroseGenerator
+        from plottter.generators.base import FloatParam
+        gen = PenroseGenerator()
+        rot_param = next(p for p in gen.get_parameters() if p.name == "rotation_deg")
+        assert isinstance(rot_param, FloatParam)
+        assert rot_param.min == 0.0
+        assert rot_param.max == 360.0
 
     def test_has_presets(self):
         from plottter.generators.penrose import PenroseGenerator
@@ -288,36 +332,17 @@ class TestRegistration:
         from plottter.models.canvas import Canvas
         gen = PenroseGenerator()
         canvas = Canvas.from_preset("A4", margin=10.0)
-        result = gen.generate(
-            {
-                "initial_config": "Sun",
-                "depth": 2,
-                "radius_mm": 80.0,
-                "rotation_deg": 0.0,
-                "draw_mode": "All edges",
-                "deduplicate": True,
-            },
-            canvas,
-        )
+        result = gen.generate(_make_params(), canvas)
         assert isinstance(result, list)
         assert len(result) > 0
 
-    def test_generate_polylines_have_two_points(self):
+    def test_generate_edges_only_polylines_have_two_points(self):
+        """'Edges Only' mode produces 2-point straight-edge polylines."""
         from plottter.generators.penrose import PenroseGenerator
         from plottter.models.canvas import Canvas
         gen = PenroseGenerator()
         canvas = Canvas.from_preset("A4", margin=10.0)
-        result = gen.generate(
-            {
-                "initial_config": "Sun",
-                "depth": 2,
-                "radius_mm": 80.0,
-                "rotation_deg": 0.0,
-                "draw_mode": "All edges",
-                "deduplicate": True,
-            },
-            canvas,
-        )
+        result = gen.generate(_make_params(render_mode="Edges Only"), canvas)
         for poly in result:
             assert len(poly) == 2
 
@@ -327,14 +352,7 @@ class TestRegistration:
         gen = PenroseGenerator()
         canvas = Canvas.from_preset("A4", margin=10.0)
         result = gen.generate(
-            {
-                "initial_config": "Star",
-                "depth": 3,
-                "radius_mm": 80.0,
-                "rotation_deg": 45.0,
-                "draw_mode": "Thin only",
-                "deduplicate": False,
-            },
+            _make_params(initial_config="Star", subdivisions=3, rotation_deg=45.0),
             canvas,
         )
         assert isinstance(result, list)
@@ -346,53 +364,83 @@ class TestRegistration:
         gen = PenroseGenerator()
         canvas = Canvas.from_preset("A4", margin=10.0)
         result = gen.generate(
-            {
-                "initial_config": "Dart",
-                "depth": 3,
-                "radius_mm": 80.0,
-                "rotation_deg": 0.0,
-                "draw_mode": "All edges",
-                "deduplicate": True,
-            },
+            _make_params(initial_config="Dart", subdivisions=3),
             canvas,
         )
         assert isinstance(result, list)
         assert len(result) > 0
 
-    def test_deduplicate_reduces_edge_count(self):
+    # (b) Higher subdivisions produce more tiles
+    def test_higher_subdivisions_produce_more_polylines(self):
+        """Higher subdivision depth produces more rhombs → more edge polylines."""
         from plottter.generators.penrose import PenroseGenerator
         from plottter.models.canvas import Canvas
         gen = PenroseGenerator()
         canvas = Canvas.from_preset("A4", margin=10.0)
-        base_params = {
-            "initial_config": "Sun",
-            "depth": 3,
-            "radius_mm": 80.0,
-            "rotation_deg": 0.0,
-            "draw_mode": "All edges",
-        }
-        with_dedup = gen.generate({**base_params, "deduplicate": True}, canvas)
-        without_dedup = gen.generate({**base_params, "deduplicate": False}, canvas)
-        assert len(with_dedup) < len(without_dedup)
+        result2 = gen.generate(_make_params(subdivisions=2), canvas)
+        result3 = gen.generate(_make_params(subdivisions=3), canvas)
+        assert len(result3) > len(result2)
 
-    def test_depth_zero_returns_initial_edges(self):
+    # (c) "Arcs Only" produces curved (multi-point) polylines
+    def test_arcs_only_produces_curved_polylines(self):
+        """'Arcs Only' mode must yield polylines with more than 2 points."""
         from plottter.generators.penrose import PenroseGenerator
         from plottter.models.canvas import Canvas
         gen = PenroseGenerator()
         canvas = Canvas.from_preset("A4", margin=10.0)
-        result = gen.generate(
-            {
-                "initial_config": "Sun",
-                "depth": 0,
-                "radius_mm": 80.0,
-                "rotation_deg": 0.0,
-                "draw_mode": "All edges",
-                "deduplicate": False,
-            },
-            canvas,
+        result = gen.generate(_make_params(render_mode="Arcs Only"), canvas)
+        assert len(result) > 0
+        assert any(len(poly) > 2 for poly in result), (
+            "Expected at least one arc polyline with >2 points"
         )
-        # 10 triangles × 3 edges each = 30 edges (no dedup)
-        assert len(result) == 30
+
+    def test_edges_plus_arcs_has_more_polylines_than_edges_only(self):
+        """'Edges + Arcs' must include at least as many polylines as 'Edges Only'."""
+        from plottter.generators.penrose import PenroseGenerator
+        from plottter.models.canvas import Canvas
+        gen = PenroseGenerator()
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        edges_only = gen.generate(_make_params(render_mode="Edges Only"), canvas)
+        edges_arcs = gen.generate(_make_params(render_mode="Edges + Arcs"), canvas)
+        assert len(edges_arcs) > len(edges_only)
+
+    # (d) Rotation rotates the pattern
+    def test_rotation_changes_coordinates(self):
+        """Different rotation_deg values must produce different coordinates."""
+        from plottter.generators.penrose import PenroseGenerator
+        from plottter.models.canvas import Canvas
+        gen = PenroseGenerator()
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        r0  = gen.generate(_make_params(rotation_deg=0.0),  canvas)
+        r45 = gen.generate(_make_params(rotation_deg=45.0), canvas)
+        coords0  = {(round(p[0], 3), round(p[1], 3)) for poly in r0  for p in poly}
+        coords45 = {(round(p[0], 3), round(p[1], 3)) for poly in r45 for p in poly}
+        assert coords0 != coords45
+
+    # (a) Parameter changes produce visibly different output
+    def test_different_initial_configs_produce_different_output(self):
+        """'Sun' and 'Star' initial configs must yield different edge sets."""
+        from plottter.generators.penrose import PenroseGenerator
+        from plottter.models.canvas import Canvas
+        gen = PenroseGenerator()
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        sun  = gen.generate(_make_params(initial_config="Sun"),  canvas)
+        star = gen.generate(_make_params(initial_config="Star"), canvas)
+        coords_sun  = {(round(p[0], 3), round(p[1], 3)) for poly in sun  for p in poly}
+        coords_star = {(round(p[0], 3), round(p[1], 3)) for poly in star for p in poly}
+        assert coords_sun != coords_star
+
+    def test_offset_shifts_center(self):
+        """x_offset_mm and y_offset_mm shift the tiling centre."""
+        from plottter.generators.penrose import PenroseGenerator
+        from plottter.models.canvas import Canvas
+        gen = PenroseGenerator()
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        r_center = gen.generate(_make_params(), canvas)
+        r_offset = gen.generate(_make_params(x_offset_mm=20.0, y_offset_mm=10.0), canvas)
+        coords_c = {(round(p[0], 3), round(p[1], 3)) for poly in r_center for p in poly}
+        coords_o = {(round(p[0], 3), round(p[1], 3)) for poly in r_offset for p in poly}
+        assert coords_c != coords_o
 
 
 # ---------------------------------------------------------------------------
@@ -613,31 +661,158 @@ class TestClipToCanvas:
 
 
 # ---------------------------------------------------------------------------
-# Task 46.2 — Rhombs draw mode integration
+# Task 46.3 — Arc decoration helpers
 # ---------------------------------------------------------------------------
 
-class TestRhombsDrawMode:
-    """Integration tests for the 'Rhombs' draw mode in PenroseGenerator."""
+class TestArcComplex:
+    """Tests for the _arc_complex helper."""
 
-    def _gen_rhombs(self, config="Sun", depth=3, radius_mm=80.0, rotation_deg=0.0):
+    def test_arc_returns_correct_number_of_points(self):
+        from plottter.generators.penrose import _arc_complex
+        center = 0 + 0j
+        p1 = 1 + 0j
+        p2 = 0 + 1j
+        inside = 0.5 + 0.5j
+        pts = _arc_complex(center, p1, p2, inside, n_segments=8)
+        assert len(pts) == 9  # n_segments + 1
+
+    def test_arc_starts_and_ends_at_p1_p2(self):
+        from plottter.generators.penrose import _arc_complex
+        center = 0 + 0j
+        p1 = 1 + 0j
+        p2 = 0 + 1j
+        inside = 0.5 + 0.5j
+        pts = _arc_complex(center, p1, p2, inside)
+        assert abs(pts[0] - p1) < 1e-9
+        assert abs(pts[-1] - p2) < 1e-9
+
+    def test_arc_points_on_circle(self):
+        from plottter.generators.penrose import _arc_complex
+        center = 1 + 2j
+        r = 3.0
+        p1 = center + r
+        p2 = center + r * cmath.exp(1j * math.pi / 2)
+        inside = center + r * cmath.exp(1j * math.pi / 4)
+        pts = _arc_complex(center, p1, p2, inside)
+        for z in pts:
+            assert abs(abs(z - center) - r) < 1e-6
+
+    def test_arc_midpoint_near_inside_ref(self):
+        from plottter.generators.penrose import _arc_complex
+        center = 0 + 0j
+        r = 1.0
+        # Arc from 0° to 90°, inside ref at 45° → CCW arc
+        p1 = r * cmath.exp(1j * 0)
+        p2 = r * cmath.exp(1j * math.pi / 2)
+        inside_ccw = r * cmath.exp(1j * math.pi / 4)  # 45° = midpoint of CCW arc
+        pts = _arc_complex(center, p1, p2, inside_ccw)
+        mid = pts[len(pts) // 2]
+        # Midpoint should be near 45°
+        angle = cmath.phase(mid - center) % (2 * math.pi)
+        expected = math.pi / 4
+        assert abs(angle - expected) < 0.2
+
+    def test_arc_degenerate_center_returns_empty(self):
+        from plottter.generators.penrose import _arc_complex
+        center = 1 + 0j
+        p1 = center  # zero distance → degenerate
+        p2 = 2 + 0j
+        inside = 1.5 + 0.5j
+        pts = _arc_complex(center, p1, p2, inside)
+        assert pts == []
+
+
+class TestGenerateRhombArcs:
+    """Tests for _generate_rhomb_arcs."""
+
+    def test_returns_list(self):
+        from plottter.generators.penrose import _generate_rhomb_arcs
+        tris = _initial_config("Sun", 1.0)
+        for _ in range(2):
+            tris = _subdivide(tris)
+        arcs = _generate_rhomb_arcs(tris)
+        assert isinstance(arcs, list)
+
+    def test_nonempty_for_sun_depth2(self):
+        from plottter.generators.penrose import _generate_rhomb_arcs
+        tris = _initial_config("Sun", 1.0)
+        for _ in range(2):
+            tris = _subdivide(tris)
+        arcs = _generate_rhomb_arcs(tris)
+        assert len(arcs) > 0
+
+    def test_each_arc_has_correct_point_count(self):
+        from plottter.generators.penrose import _generate_rhomb_arcs
+        tris = _initial_config("Sun", 1.0)
+        for _ in range(2):
+            tris = _subdivide(tris)
+        arcs = _generate_rhomb_arcs(tris, n_arc_segments=8)
+        for arc in arcs:
+            assert len(arc) == 9  # n_segments + 1
+
+    def test_arc_count_grows_with_subdivisions(self):
+        from plottter.generators.penrose import _generate_rhomb_arcs
+        tris2 = _initial_config("Sun", 1.0)
+        for _ in range(2):
+            tris2 = _subdivide(tris2)
+        tris3 = _initial_config("Sun", 1.0)
+        for _ in range(3):
+            tris3 = _subdivide(tris3)
+        assert len(_generate_rhomb_arcs(tris3)) > len(_generate_rhomb_arcs(tris2))
+
+    def test_two_arcs_per_rhomb(self):
+        """Each rhomb produces exactly two arcs."""
+        from plottter.generators.penrose import _generate_rhomb_arcs, _long_edge_keys
+        tris = _initial_config("Sun", 1.0)
+        for _ in range(2):
+            tris = _subdivide(tris)
+
+        # Count rhombs directly
+        long_edge_map: dict = {}
+        for i, (t, A, B, C) in enumerate(tris):
+            for key in _long_edge_keys(t, A, B, C):
+                long_edge_map.setdefault(key, []).append(i)
+        n_rhombs = sum(
+            1 for idxs in long_edge_map.values()
+            if len(idxs) == 2 and tris[idxs[0]][0] == tris[idxs[1]][0]
+        )
+
+        arcs = _generate_rhomb_arcs(tris)
+        assert len(arcs) == 2 * n_rhombs
+
+    def test_arc_points_are_complex(self):
+        from plottter.generators.penrose import _generate_rhomb_arcs
+        tris = _initial_config("Sun", 1.0)
+        tris = _subdivide(tris)
+        for arc in _generate_rhomb_arcs(tris):
+            for z in arc:
+                assert isinstance(z, complex)
+
+
+# ---------------------------------------------------------------------------
+# Task 46.2 — Rhombs draw mode integration (updated for 46.3 API)
+# ---------------------------------------------------------------------------
+
+class TestEdgesOnlyMode:
+    """Integration tests for the 'Edges Only' render mode in PenroseGenerator."""
+
+    def _gen_edges(self, config="Sun", subdivisions=3, rotation_deg=0.0):
         from plottter.generators.penrose import PenroseGenerator
         from plottter.models.canvas import Canvas
         gen = PenroseGenerator()
         canvas = Canvas.from_preset("A4", margin=10.0)
         return gen.generate(
-            {
-                "initial_config": config,
-                "depth": depth,
-                "radius_mm": radius_mm,
-                "rotation_deg": rotation_deg,
-                "draw_mode": "Rhombs",
-                "deduplicate": True,
-            },
+            _make_params(
+                initial_config=config,
+                subdivisions=subdivisions,
+                rotation_deg=rotation_deg,
+                render_mode="Edges Only",
+            ),
             canvas,
         )
 
     def test_returns_nonempty_list(self):
-        result = self._gen_rhombs()
+        result = self._gen_edges()
         assert isinstance(result, list)
         assert len(result) > 0
 
@@ -646,7 +821,7 @@ class TestRhombsDrawMode:
         from plottter.models.canvas import Canvas
         canvas = Canvas.from_preset("A4", margin=10.0)
         x1, y1, x2, y2 = canvas.drawing_area()
-        result = self._gen_rhombs()
+        result = self._gen_edges()
         for poly in result:
             for x, y in poly:
                 assert x1 - 1e-6 <= x <= x2 + 1e-6, f"x={x} out of [{x1},{x2}]"
@@ -654,24 +829,24 @@ class TestRhombsDrawMode:
 
     # (d) No zero-length edges
     def test_no_zero_length_polylines(self):
-        result = self._gen_rhombs()
+        result = self._gen_edges()
         for poly in result:
             (x0, y0), (x1, y1) = poly
             dist_sq = (x1 - x0) ** 2 + (y1 - y0) ** 2
             assert dist_sq > 1e-20, f"Zero-length polyline at ({x0},{y0})"
 
     def test_each_polyline_has_two_points(self):
-        result = self._gen_rhombs()
+        result = self._gen_edges()
         for poly in result:
             assert len(poly) == 2
 
-    def test_rhombs_star_config(self):
-        result = self._gen_rhombs(config="Star", depth=3)
+    def test_edges_star_config(self):
+        result = self._gen_edges(config="Star", subdivisions=3)
         assert len(result) > 0
 
-    def test_rhombs_with_rotation(self):
-        r0 = self._gen_rhombs(rotation_deg=0.0)
-        r45 = self._gen_rhombs(rotation_deg=45.0)
+    def test_edges_with_rotation(self):
+        r0 = self._gen_edges(rotation_deg=0.0)
+        r45 = self._gen_edges(rotation_deg=45.0)
         # Different rotations produce different edge sets
         assert len(r0) == len(r45)  # same count
         # But coordinates differ
