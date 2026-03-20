@@ -321,3 +321,138 @@ class TestVoronoiGenerateIntegration:
             progress_callback=calls.append,
         )
         assert 100 in calls
+
+
+# ---------------------------------------------------------------------------
+# _render_voronoi — Task 45.2 specific tests
+# ---------------------------------------------------------------------------
+
+
+class TestRenderVoronoi:
+    """Tests for _render_voronoi: closed interior cells, boundary clipping,
+    no out-of-bounds edges, and valid Polyline output."""
+
+    def setup_method(self):
+        from plottter.generators.voronoi import _render_voronoi
+        self._fn = _render_voronoi
+        self.canvas = make_canvas()
+        self.x1, self.y1, self.x2, self.y2 = self.canvas.drawing_area()
+        self.bbox = (self.x1, self.y1, self.x2, self.y2)
+
+    def _make_seeds(self, n: int, seed: int = 42) -> "np.ndarray":
+        rng = np.random.default_rng(seed)
+        seeds = rng.random((n, 2))
+        seeds[:, 0] = self.x1 + seeds[:, 0] * (self.x2 - self.x1)
+        seeds[:, 1] = self.y1 + seeds[:, 1] * (self.y2 - self.y1)
+        return seeds
+
+    # (d) output is a valid list of Polyline (list of list of 2-tuples of floats)
+    def test_returns_list_of_polylines(self):
+        seeds = self._make_seeds(100)
+        result = self._fn(seeds, self.bbox)
+        assert isinstance(result, list)
+        for pl in result:
+            assert isinstance(pl, list), "Each element must be a list (Polyline)"
+            assert len(pl) >= 2, "Each polyline must have at least 2 points"
+            for pt in pl:
+                assert len(pt) == 2, "Each point must be a 2-tuple"
+                assert isinstance(pt[0], float)
+                assert isinstance(pt[1], float)
+
+    # (c) no edges extend beyond canvas bounds
+    def test_no_edges_beyond_canvas_bounds(self):
+        seeds = self._make_seeds(200)
+        result = self._fn(seeds, self.bbox)
+        tol = 1e-6
+        for pl in result:
+            for x, y in pl:
+                assert x >= self.x1 - tol, f"x={x:.4f} < x_min={self.x1}"
+                assert x <= self.x2 + tol, f"x={x:.4f} > x_max={self.x2}"
+                assert y >= self.y1 - tol, f"y={y:.4f} < y_min={self.y1}"
+                assert y <= self.y2 + tol, f"y={y:.4f} > y_max={self.y2}"
+
+    # (b) boundary cells are clipped (some edges lie on bbox boundary)
+    def test_boundary_cells_clipped_to_canvas(self):
+        seeds = self._make_seeds(150)
+        result = self._fn(seeds, self.bbox)
+        tol = 1e-4
+        # At least some edges should have endpoints on the boundary
+        on_boundary = False
+        for pl in result:
+            for x, y in pl:
+                if (
+                    abs(x - self.x1) < tol
+                    or abs(x - self.x2) < tol
+                    or abs(y - self.y1) < tol
+                    or abs(y - self.y2) < tol
+                ):
+                    on_boundary = True
+                    break
+            if on_boundary:
+                break
+        assert on_boundary, "Expected some Voronoi edges to be clipped at canvas boundary"
+
+    # (a) interior cells produce many edges (sufficient coverage)
+    def test_produces_edges_for_interior_cells(self):
+        seeds = self._make_seeds(100)
+        result = self._fn(seeds, self.bbox)
+        # With 100 seeds, Voronoi diagram has ~100 cells → expect substantial edges
+        assert len(result) >= 50, f"Expected at least 50 edges, got {len(result)}"
+
+    def test_returns_empty_for_too_few_seeds(self):
+        seeds = self._make_seeds(3)
+        result = self._fn(seeds, self.bbox)
+        assert result == [], "Should return empty list for < 4 seeds"
+
+    def test_all_render_modes_produce_valid_polylines(self):
+        from plottter.generators.voronoi import VoronoiGenerator
+        gen = VoronoiGenerator()
+        canvas = make_canvas()
+        for mode in ["Voronoi Edges", "Delaunay Edges", "Both", "Voronoi + Centroids"]:
+            result = gen.generate(
+                {
+                    "render_mode": mode,
+                    "num_points": 50,
+                    "seed_method": "Random",
+                    "random_seed": 7,
+                },
+                canvas,
+            )
+            assert isinstance(result, list), f"render_mode={mode!r} did not return list"
+            for pl in result:
+                assert isinstance(pl, list)
+                assert len(pl) >= 2
+                for pt in pl:
+                    assert len(pt) == 2
+
+    def test_voronoi_and_both_modes_include_voronoi_edges(self):
+        """'Voronoi Edges' and 'Both' must include Voronoi output (non-empty)."""
+        from plottter.generators.voronoi import VoronoiGenerator
+        gen = VoronoiGenerator()
+        canvas = make_canvas()
+        for mode in ["Voronoi Edges", "Both"]:
+            result = gen.generate(
+                {
+                    "render_mode": mode,
+                    "num_points": 100,
+                    "seed_method": "Random",
+                    "random_seed": 1,
+                },
+                canvas,
+            )
+            assert len(result) > 0, f"render_mode={mode!r} produced no output"
+
+    def test_render_mode_param_present_with_correct_choices(self):
+        from plottter.generators.voronoi import VoronoiGenerator
+        from plottter.generators.base import ChoiceParam
+        gen = VoronoiGenerator()
+        params = gen.get_parameters()
+        render_params = [p for p in params if p.name == "render_mode"]
+        assert len(render_params) == 1
+        rp = render_params[0]
+        assert isinstance(rp, ChoiceParam)
+        assert "Voronoi Edges" in rp.choices
+        assert "Delaunay Edges" in rp.choices
+        assert "Both" in rp.choices
+        assert "Voronoi + Centroids" in rp.choices
+        assert rp.default == "Voronoi Edges"

@@ -1,7 +1,7 @@
-"""VoronoiGenerator — seed point strategies for Voronoi / Delaunay patterns.
+"""VoronoiGenerator — Voronoi / Delaunay pattern generation.
 
-Seed point generation is the first of several tasks for this generator;
-the actual Voronoi / Delaunay rendering is added in subsequent tasks.
+Supports Voronoi cell edges, Delaunay triangulation edges, combined output,
+and Voronoi cells with centroid markers.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import math
 from typing import Any
 
 import numpy as np
+from shapely.geometry import LineString, box as shapely_box
 
 from plottter.generators import register_generator
 from plottter.generators.base import (
@@ -161,15 +162,165 @@ def _seeds_phyllotaxis(n: int, w: float, h: float) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
+# Rendering helpers
+# ---------------------------------------------------------------------------
+
+
+def _render_voronoi(
+    seeds: np.ndarray, bbox: tuple[float, float, float, float]
+) -> list[Polyline]:
+    """Render Voronoi cell edges clipped to *bbox* using the mirror-point approach.
+
+    The mirror-point technique reflects every seed across each of the four
+    boundaries, creating 5× as many points.  This guarantees that all cells
+    belonging to the original ``n`` seeds are finite (no infinite rays), so
+    we never need to manually project infinite vertices.
+
+    Parameters
+    ----------
+    seeds:
+        Array of shape (N, 2) with seed coordinates in canvas mm.
+    bbox:
+        ``(x_min, y_min, x_max, y_max)`` clipping rectangle in canvas mm.
+    """
+    from scipy.spatial import Voronoi  # lazy import – optional heavy dep
+
+    x_min, y_min, x_max, y_max = bbox
+    n = len(seeds)
+    if n < 4:
+        return []
+
+    # Reflect seeds across all four boundaries → 4 extra copies
+    reflected = np.vstack(
+        [
+            seeds,  # original: indices 0 … n-1
+            np.column_stack([2.0 * x_min - seeds[:, 0], seeds[:, 1]]),  # left
+            np.column_stack([2.0 * x_max - seeds[:, 0], seeds[:, 1]]),  # right
+            np.column_stack([seeds[:, 0], 2.0 * y_min - seeds[:, 1]]),  # top
+            np.column_stack([seeds[:, 0], 2.0 * y_max - seeds[:, 1]]),  # bottom
+        ]
+    )
+
+    vor = Voronoi(reflected)
+    clip_rect = shapely_box(x_min, y_min, x_max, y_max)
+
+    # Collect all ridge edges that border at least one original seed
+    seen: set[tuple[int, int]] = set()
+    polylines: list[Polyline] = []
+
+    for (p, q), (v1, v2) in zip(vor.ridge_points, vor.ridge_vertices):
+        # Skip ridges whose both flanking sites are mirror copies
+        if p >= n and q >= n:
+            continue
+        # Infinite ridges should not exist with the mirror approach, but guard anyway
+        if v1 < 0 or v2 < 0:
+            continue
+
+        key = (min(v1, v2), max(v1, v2))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        a = vor.vertices[v1]
+        b = vor.vertices[v2]
+
+        line = LineString([a, b])
+        clipped = line.intersection(clip_rect)
+
+        if clipped.is_empty:
+            continue
+
+        if clipped.geom_type == "LineString":
+            coords = list(clipped.coords)
+            if len(coords) >= 2:
+                polylines.append([(float(x), float(y)) for x, y in coords])
+        elif clipped.geom_type == "MultiLineString":
+            for part in clipped.geoms:
+                coords = list(part.coords)
+                if len(coords) >= 2:
+                    polylines.append([(float(x), float(y)) for x, y in coords])
+
+    return polylines
+
+
+def _render_delaunay(
+    seeds: np.ndarray, bbox: tuple[float, float, float, float]
+) -> list[Polyline]:
+    """Render Delaunay triangulation edges clipped to *bbox*."""
+    from scipy.spatial import Delaunay  # lazy import
+
+    x_min, y_min, x_max, y_max = bbox
+    n = len(seeds)
+    if n < 3:
+        return []
+
+    tri = Delaunay(seeds)
+    clip_rect = shapely_box(x_min, y_min, x_max, y_max)
+
+    seen: set[tuple[int, int]] = set()
+    polylines: list[Polyline] = []
+
+    for simplex in tri.simplices:
+        for i in range(3):
+            a_idx = int(simplex[i])
+            b_idx = int(simplex[(i + 1) % 3])
+            key = (min(a_idx, b_idx), max(a_idx, b_idx))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            a = seeds[a_idx]
+            b = seeds[b_idx]
+
+            line = LineString([a, b])
+            clipped = line.intersection(clip_rect)
+
+            if clipped.is_empty:
+                continue
+
+            if clipped.geom_type == "LineString":
+                coords = list(clipped.coords)
+                if len(coords) >= 2:
+                    polylines.append([(float(x), float(y)) for x, y in coords])
+            elif clipped.geom_type == "MultiLineString":
+                for part in clipped.geoms:
+                    coords = list(part.coords)
+                    if len(coords) >= 2:
+                        polylines.append([(float(x), float(y)) for x, y in coords])
+
+    return polylines
+
+
+def _render_centroids(seeds: np.ndarray, radius: float) -> list[Polyline]:
+    """Render a small circle at each seed location to mark Voronoi centroids."""
+    n_pts = 12
+    angles = np.linspace(0.0, 2.0 * math.pi, n_pts, endpoint=False)
+    cos_a = np.cos(angles)
+    sin_a = np.sin(angles)
+
+    polylines: list[Polyline] = []
+    for cx, cy in seeds:
+        circle: Polyline = [
+            (float(cx + radius * ca), float(cy + radius * sa))
+            for ca, sa in zip(cos_a, sin_a)
+        ]
+        circle.append(circle[0])  # close the ring
+        polylines.append(circle)
+    return polylines
+
+
+# ---------------------------------------------------------------------------
 # Generator class
 # ---------------------------------------------------------------------------
 
 
 @register_generator
 class VoronoiGenerator(Generator):
-    """Seed point strategies for Voronoi / Delaunay pattern generation.
+    """Voronoi / Delaunay pattern generator.
 
-    Rendering (Voronoi cells, Delaunay edges, etc.) is added in subsequent tasks.
+    Supports multiple seed point strategies and render modes:
+    Voronoi cell edges, Delaunay triangulation edges, combined output,
+    and Voronoi edges with centroid markers.
     """
 
     name = "Voronoi / Delaunay"
@@ -177,6 +328,31 @@ class VoronoiGenerator(Generator):
 
     def get_parameters(self) -> list[Parameter]:
         return [
+            ChoiceParam(
+                name="render_mode",
+                label="Render Mode",
+                choices=[
+                    "Voronoi Edges",
+                    "Delaunay Edges",
+                    "Both",
+                    "Voronoi + Centroids",
+                ],
+                default="Voronoi Edges",
+                description=(
+                    "What to draw: Voronoi cell edges, Delaunay triangulation edges, "
+                    "both, or Voronoi edges with centroid markers."
+                ),
+            ),
+            FloatParam(
+                name="centroid_radius_mm",
+                label="Centroid Radius (mm)",
+                min=0.1,
+                max=5.0,
+                step=0.1,
+                default=0.5,
+                visible_when={"render_mode": ["Voronoi + Centroids"]},
+                description="Radius of the centroid marker circles in mm.",
+            ),
             IntParam(
                 name="num_points",
                 label="Number of Points",
@@ -299,6 +475,8 @@ class VoronoiGenerator(Generator):
         grid_spacing = float(params.get("grid_spacing_mm", 5.0))
         grid_jitter = float(params.get("grid_jitter", 0.5))
         random_seed = int(params.get("random_seed", 42))
+        render_mode = str(params.get("render_mode", "Voronoi Edges"))
+        centroid_radius = float(params.get("centroid_radius_mm", 0.5))
 
         draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
         draw_w = draw_x2 - draw_x1
@@ -307,22 +485,40 @@ class VoronoiGenerator(Generator):
         rng = np.random.default_rng(random_seed)
 
         if seed_method == "Poisson Disk":
-            _seeds = _seeds_poisson_disk(poisson_spacing, draw_w, draw_h, rng)
+            seeds = _seeds_poisson_disk(poisson_spacing, draw_w, draw_h, rng)
         elif seed_method == "Grid Jitter":
-            _seeds = _seeds_grid_jitter(grid_spacing, grid_jitter, draw_w, draw_h, rng)
+            seeds = _seeds_grid_jitter(grid_spacing, grid_jitter, draw_w, draw_h, rng)
         elif seed_method == "Phyllotaxis":
-            _seeds = _seeds_phyllotaxis(num_points, draw_w, draw_h)
+            seeds = _seeds_phyllotaxis(num_points, draw_w, draw_h)
         else:  # "Random" (default)
-            _seeds = _seeds_random(num_points, draw_w, draw_h, rng)
+            seeds = _seeds_random(num_points, draw_w, draw_h, rng)
 
-        # _seeds are relative to the drawing area; translate to canvas coordinates
-        # (x_offset_mm / y_offset_mm applied on top of the drawing area origin)
+        # Translate seed coordinates from drawing-area-local to canvas coordinates
         x_off = float(params.get("x_offset_mm", 0.0))
         y_off = float(params.get("y_offset_mm", 0.0))
-        _seeds = _seeds + np.array([draw_x1 + x_off, draw_y1 + y_off])  # noqa: F841
+        seeds = seeds + np.array([draw_x1 + x_off, draw_y1 + y_off])
+
+        if progress_callback:
+            progress_callback(20)
+
+        # Canvas drawing-area bounds used for Voronoi mirroring and clipping
+        bbox = (draw_x1, draw_y1, draw_x2, draw_y2)
+
+        polylines: list[Polyline] = []
+
+        if render_mode in ("Voronoi Edges", "Both", "Voronoi + Centroids"):
+            polylines.extend(_render_voronoi(seeds, bbox))
+
+        if progress_callback:
+            progress_callback(70)
+
+        if render_mode in ("Delaunay Edges", "Both"):
+            polylines.extend(_render_delaunay(seeds, bbox))
+
+        if render_mode == "Voronoi + Centroids":
+            polylines.extend(_render_centroids(seeds, centroid_radius))
 
         if progress_callback:
             progress_callback(100)
 
-        # Rendering (Voronoi cells, Delaunay edges, …) is added in subsequent tasks.
-        return []
+        return polylines
