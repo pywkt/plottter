@@ -2,7 +2,9 @@
 
 Image-to-Lines mode converts raster images (photos, illustrations, scans) into plotter-ready
 polyline paths. The workflow has two stages: **preprocessing** (adjusting the image) and
-**line generation** (choosing an algorithm to trace paths).
+**line generation** (choosing an algorithm to trace paths). There are **13 image algorithms**
+available, ranging from edge detection and hatching to stippling, halftone, and flow-based
+streamline art.
 
 ---
 
@@ -383,6 +385,169 @@ Generates tone-aware circular scribble marks across the image. Darker areas rece
 - Decrease `min_spacing_px` for denser coverage in dark areas
 - Increase `scribble_radius_mm` for more visible, expressive scribble marks
 - Use preprocessing blur (2–4) to smooth out noise before scribbling
+
+---
+
+### Line Integral Convolution (LIC)
+
+**Algorithm:** Line Integral Convolution
+
+Traces streamlines from a jittered seed grid along a dense vector field derived from the source
+image. Each streamline follows the local vector direction, producing long sweeping brush-stroke-like
+marks that follow the image structure. Darker areas are seeded more densely; brighter areas are
+thinned out when density modulation is enabled.
+
+Three **vector field modes** control how the flow direction is derived from the image:
+
+| Mode | Behaviour |
+|------|-----------|
+| `gradient` | Streamlines follow the Sobel brightness gradient — they cross edges perpendicularly |
+| `etf` | Streamlines follow the Edge Tangent Flow (ETF) — coherent alignment along image edges for a painterly look |
+| `perpendicular_gradient` | Sobel gradient rotated 90° — streamlines run parallel to edges (contour-like result) |
+
+| Parameter | Description |
+|-----------|-------------|
+| `vector_field` | Flow direction source: `gradient`, `etf`, or `perpendicular_gradient` (default `etf`) |
+| `kernel_length_mm` | Length of each streamline (2–50 mm, default 15) — longer = bolder strokes |
+| `seed_spacing_mm` | Distance between candidate seed points (0.5–10 mm, default 2) — smaller = denser coverage |
+| `separation_distance_mm` | Minimum distance between accepted streamlines (0.2–5 mm, default 0.8) |
+| `step_size_mm` | Euler integration step (0.1–2 mm, default 0.5) — smaller = smoother curves, more compute |
+| `density_modulation` | Remove seeds in bright image areas — thins streamlines in highlights |
+| `brightness_threshold` | Brightness above which seeds are removed (0–255, default 220; only when density modulation is on) |
+| `etf_kernel_radius` | Spatial scale for ETF smoothing in pixels (ETF mode only, default 5) |
+| `etf_iterations` | ETF smoothing passes — more = smoother, more coherent flow (ETF mode only, default 3) |
+
+**Presets:**
+- **Default** — ETF mode, balanced streamlines with density modulation
+- **Dense ETF Flow** — tighter seeds, longer strokes, high ETF smoothing for a dense painterly result
+- **Contour Lines** — `perpendicular_gradient` mode; streamlines run along iso-brightness contours
+
+| Default | Dense ETF Flow | Contour Lines |
+|---------|---------------|---------------|
+| ![LIC default](images/line-integral-convolution_default.png) | ![LIC dense ETF](images/line-integral-convolution_dense-etf-flow.png) | ![LIC contour](images/line-integral-convolution_contour-lines.png) |
+
+**Best for:** Portraits, organic subjects — produces an impressionistic, painterly feel where lines
+follow the image's structure rather than scanning across it.
+
+**Tips:**
+- ETF mode gives the most coherent, artistic results — start there and tune `etf_iterations`
+- Increase `etf_iterations` to 5+ for smoother, more unified flow direction
+- Use `perpendicular_gradient` for a topographic-contour look without a fixed level count
+- Lower `seed_spacing_mm` and raise `separation_distance_mm` to control how many lines survive
+
+---
+
+### Tonal Art Maps (TAM)
+
+**Algorithm:** Tonal Art Maps (TAM)
+
+Constructs multiple nested tone levels using grid-jittered short strokes, then selects which
+strokes to draw at each point based on local image brightness. Darker areas receive strokes from
+more tone levels (dense hatching); lighter areas receive fewer. The **nesting property** guarantees
+consistent tonal gradation: every stroke present at a lighter level is also present at all darker
+levels, so the artwork looks correct at any brightness.
+
+Three **orientation modes** control stroke direction:
+
+| Mode | Behaviour |
+|------|-----------|
+| `fixed` | All strokes use the constant angle set by Stroke Angle |
+| `gradient` | Strokes follow the Sobel brightness gradient — run across brightness transitions |
+| `etf` | Strokes follow the Edge Tangent Flow — coherent alignment with image edges |
+
+| Parameter | Description |
+|-----------|-------------|
+| `num_tone_levels` | Number of discrete tone levels (3–8, default 6) — more = smoother gradation |
+| `stroke_length_mm` | Length of each stroke in mm (1–20, default 5) |
+| `stroke_angle` | Primary stroke direction in degrees — used in `fixed` orientation mode (default 45°) |
+| `cross_hatch` | Add perpendicular strokes in darker regions for a cross-hatch texture |
+| `cross_hatch_threshold` | Tone-level fraction where cross-hatching begins (0 = everywhere, 1 = darkest shadows only) |
+| `orientation_mode` | `fixed`, `gradient`, or `etf` |
+| `stroke_density` | Strokes per mm² for the darkest tone level (0.5–5.0, default 1.5) |
+| `density_curve` | Brightness-to-tone mapping: `linear`, `quadratic` (emphasises shadows), or `logarithmic` |
+| `curvature` | Blend factor: 0 = straight 2-point strokes, 1 = fully curved streamlines following the field |
+
+**Presets:**
+- **Default** — fixed 45° strokes, 6 levels, linear density curve
+- **Cross-Hatch Portrait** — quadratic curve, cross-hatching enabled, higher density
+- **ETF Flow Strokes** — ETF orientation with slight curvature for an organic feel
+- **Fine Engraving** — 8 levels, short tight strokes, logarithmic curve, cross-hatching in shadows
+
+| Default | Cross-Hatch Portrait | ETF Flow Strokes | Fine Engraving |
+|---------|---------------------|-----------------|---------------|
+| ![TAM default](images/tonal-art-maps-tam_default.png) | ![TAM cross-hatch](images/tonal-art-maps-tam_cross-hatch-portrait.png) | ![TAM ETF](images/tonal-art-maps-tam_etf-flow-strokes.png) | ![TAM engraving](images/tonal-art-maps-tam_fine-engraving.png) |
+
+**Best for:** Portraits and illustrations — produces an engraving or pen-and-ink hatching style
+with accurate tonal reproduction across the full brightness range.
+
+**Tips:**
+- Start with `num_tone_levels = 6` and adjust `stroke_density` to control overall darkness
+- Use `quadratic` density curve for stronger tonal contrast in shadows
+- Enable `cross_hatch` with `cross_hatch_threshold = 0.5–0.7` to add depth only in shadows
+- ETF orientation + curvature 0.2–0.3 produces organic, hand-drawn-looking results
+- Pre-blur (radius 1–2) to smooth tone boundaries before generating
+
+---
+
+### Dot Grid Halftone
+
+**Algorithm:** Dot Grid Halftone
+
+Places dots on a regular grid and sizes each dot according to local image brightness. Dark areas
+receive large dots; bright areas receive small (or no) dots. Unlike the **Math Art › Dot Grid**
+generator — which uses Perlin noise to modulate dot sizes for abstract, pattern-based output —
+this generator directly maps pixel brightness to dot radius for faithful image reproduction.
+
+Three **grid layouts** are available:
+
+| Grid Type | Layout |
+|-----------|--------|
+| `Square` | Standard regular grid, optionally rotated |
+| `Hexagonal` | Close-packed offset rows for more uniform coverage |
+| `Diagonal` | Square grid rotated 45° |
+
+Six **dot shapes** are supported: **Circle** (outline ring), **Filled Circle** (concentric rings),
+**Spiral Fill** (single continuous Archimedean spiral), **Square**, **Diamond**, and **Cross**.
+
+| Parameter | Description |
+|-----------|-------------|
+| `grid_type` | Grid layout: `Square`, `Hexagonal`, or `Diagonal` |
+| `grid_spacing_mm` | Distance between dot centers (0.5–20 mm, default 3) |
+| `grid_angle_deg` | Grid rotation angle in degrees (0–90) |
+| `dot_shape` | Rendered shape: Circle, Filled Circle, Spiral Fill, Square, Diamond, Cross |
+| `max_dot_radius_mm` | Dot radius in darkest areas (0.2–10 mm, default 1.4) |
+| `min_dot_radius_mm` | Minimum dot radius in lightest areas — set to 0 to skip highlights entirely |
+| `size_curve` | Brightness-to-radius mapping: `Area-Proportional`, `Linear`, or `Logarithmic` |
+| `size_gamma` | Gamma — <1 emphasizes highlights, >1 emphasizes shadows (default 1.5) |
+| `fill_line_spacing_mm` | Ring/spiral spacing for Filled Circle and Spiral Fill shapes |
+| `circle_segments` | Circle polygon resolution for circle-based shapes (6–64, default 16) |
+
+**Presets:**
+- **Classic Halftone** — square grid at 45°, circle outlines
+- **Newspaper** — diagonal grid, filled circles, tight spacing
+- **Pop Art Dots** — hexagonal grid, large filled circles
+- **Fine Detail** — square grid, small circle outlines, high resolution
+- **Cross Halftone** — hexagonal grid, cross-shaped dots
+- **Diamond Grid** — square grid, diamond-shaped dots
+
+| Classic Halftone | Newspaper | Pop Art Dots | Cross Halftone |
+|-----------------|-----------|-------------|---------------|
+| ![Dot Grid Halftone classic](images/dot-grid-halftone_classic-halftone.png) | ![Dot Grid Halftone newspaper](images/dot-grid-halftone_newspaper.png) | ![Dot Grid Halftone pop art](images/dot-grid-halftone_pop-art-dots.png) | ![Dot Grid Halftone cross](images/dot-grid-halftone_cross-halftone.png) |
+
+**Best for:** Photos and portraits where you want a recognizable halftone or screen-printing
+aesthetic.
+
+**Difference from Dot Grid (Math Art):** The Math Art › Dot Grid generator uses Perlin noise to
+modulate dot sizes, producing abstract repeating patterns independent of any image. This generator
+(`Dot Grid Halftone`) reads pixel brightness directly, mapping each dot's radius to local image
+tonality for faithful reproduction of photographs.
+
+**Tips:**
+- Set `grid_spacing_mm` to 2–4× your actual pen width for clear dot separation
+- Use `Area-Proportional` size curve for the most visually accurate halftone (area ∝ darkness)
+- `Filled Circle` or `Spiral Fill` shapes produce bold, inked-looking dots at larger radii
+- For CMYK-style color separation, generate four layers (one per channel) at slightly different
+  `grid_angle_deg` values (e.g. 15°, 45°, 75°, 0°) to minimize moiré patterns
 
 ---
 
