@@ -1,8 +1,9 @@
 # Math Art Guide
 
 Math Art mode generates vector paths purely from mathematical equations and algorithms —
-no image input required. All generators produce output in millimeter coordinates that
-automatically scale to fit the canvas drawing area.
+no image input required. There are **12 math generators** covering parametric and polar
+curves, tilings, flow fields, fractals, and more. All generators produce output in
+millimeter coordinates that automatically scale to fit the canvas drawing area.
 
 ---
 
@@ -454,6 +455,150 @@ Creates tessellated grids (square, hexagonal, or triangular) where each cell con
 - **Subdivisions** add detail variation — some areas have large shapes, others have fine detail
 - **Random Fill** picks a different shape per cell using noise, creating organic variety
 - Combine with other generators on separate layers for complex compositions
+
+---
+
+## Voronoi / Delaunay
+
+**Generator:** Voronoi / Delaunay
+
+Distributes seed points across the canvas and computes either the Voronoi diagram
+(cell boundaries equidistant from neighbouring seeds) or the dual Delaunay
+triangulation (triangles whose circumcircles contain no other seeds). The choice of
+seed placement strategy — from uniform random to blue-noise to the phyllotaxis golden
+spiral — determines the character of the output.
+
+![Classic Voronoi](images/voronoi-delaunay_classic-voronoi.png)
+![Relaxed Hexagons](images/voronoi-delaunay_relaxed-hexagons.png)
+![Delaunay Mesh](images/voronoi-delaunay_delaunay-mesh.png)
+
+### Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `render_mode` | What to draw: **Voronoi Edges**, **Delaunay Edges**, **Both**, or **Voronoi + Centroids** |
+| `centroid_radius_mm` | Radius of small circle markers drawn at each seed (0.1–5.0 mm; visible in *Voronoi + Centroids* mode only) |
+| `num_points` | Number of seed points for *Random* and *Phyllotaxis* methods (50–10 000, default 500) |
+| `seed_method` | Seed placement strategy — see below |
+| `poisson_spacing_mm` | Minimum distance between *Poisson Disk* samples (0.5–20 mm, default 3.0) |
+| `grid_spacing_mm` | Cell size for *Grid Jitter* seeds (1–50 mm, default 5.0) |
+| `grid_jitter` | Offset magnitude for *Grid Jitter*, as a fraction of grid spacing (0 = no jitter, 1 = full spacing, default 0.5) |
+| `lloyd_iterations` | Rounds of Lloyd relaxation applied after seed generation (0 = none, higher = more regular cells) |
+| `random_seed` | RNG seed for reproducibility (0–99 999, default 42) |
+| `image_density` | When enabled, image brightness drives seed density — dark areas receive more seeds, bright areas fewer |
+| `brightness`, `contrast`, `invert` | Preprocessing adjustments applied to the density source image |
+| `x_offset_mm`, `y_offset_mm` | Translate the output on the canvas |
+
+### Seed Strategies
+
+| Method | Description |
+|--------|-------------|
+| **Random** | Uniformly random seed positions — fast and familiar |
+| **Poisson Disk** | Blue-noise sampling: every seed is at least `poisson_spacing_mm` from its neighbours, giving a natural, even distribution without clustering |
+| **Grid Jitter** | Regular grid with random per-point offsets — structured but not rigid |
+| **Phyllotaxis** | Golden-angle spiral (sunflower seed packing) — uniform area coverage and pleasing radial symmetry |
+
+### Lloyd Relaxation
+
+Setting `lloyd_iterations > 0` iteratively moves each seed to the centroid of its
+Voronoi cell. A few iterations (5–10) regularise cell sizes noticeably; 20+ iterations
+produce near-hexagonal grids. This is independent of the initial seed method.
+
+### Image Density Mode
+
+Enable **Image Density** and load a source image to make seed concentration follow
+image brightness. Combined with **Poisson Disk** seeding this replicates a stippling
+effect: dark portrait regions attract dense, tightly packed cells while light regions
+remain open.
+
+### Presets
+
+| Preset | Description |
+|--------|-------------|
+| Classic Voronoi | 500 random seeds, no relaxation |
+| Relaxed Hexagons | 300 random seeds, 20 Lloyd iterations — near-hexagonal cells |
+| Blue Noise Voronoi | Poisson disk seeds, 3 mm spacing |
+| Delaunay Mesh | 1 000 random seeds, Delaunay edges |
+| Golden Spiral | 500 phyllotaxis seeds, Voronoi edges |
+| Organic Cells | 200 random seeds, 10 Lloyd iterations |
+| Random Scatter | 500 random seeds, default render |
+| Blue Noise | Poisson disk, 5 mm spacing |
+| Jittered Grid | 8 mm grid spacing, 0.5 jitter |
+| Phyllotaxis Spiral | 500 phyllotaxis seeds |
+
+### Tips
+
+- **Random + Lloyd 0** gives an organic, irregular feel; **Random + Lloyd 20** gives a structured, honeycomb-like look
+- Combine **Voronoi Edges** on one layer with **Delaunay Edges** on another for a dual-mesh composition
+- Use **Voronoi + Centroids** to visualise both the cells and their seed locations
+- Increase `poisson_spacing_mm` for a sparse, airy result; decrease for a dense mosaic
+
+---
+
+## Penrose Tiling
+
+**Generator:** Penrose Tiling
+
+Generates a non-periodic Penrose tiling using Robinson triangle subdivision. Starting
+from a small seed configuration, each subdivision level inflates the triangle count
+by approximately φ² ≈ 2.618 (the square of the golden ratio), producing finer and
+finer P3-style rhombs that tile the plane without ever repeating.
+
+![Classic P3](images/penrose-tiling_classic-p3.png)
+![Arc Pattern](images/penrose-tiling_arc-pattern.png)
+![Full Decoration](images/penrose-tiling_full-decoration.png)
+
+### Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `initial_config` | Starting seed: **Sun** (10-fold decagonal wheel), **Star** (10-fold star wheel), or **Dart** (4-fold dart arrangement) |
+| `subdivisions` | Subdivision depth (1–8, default 5) — each level multiplies tile count by ~2.618; depth 7–8 produces very fine tilings |
+| `rotation_deg` | Rotate the entire tiling around the canvas centre (0–360°) |
+| `render_mode` | What to draw — see below |
+| `x_offset_mm`, `y_offset_mm` | Translate the tiling centre from canvas centre |
+
+### Render Modes
+
+| Mode | Description |
+|------|-------------|
+| **Edges Only** | Draws the rhomb outlines — clean, geometric tiling |
+| **Edges + Arcs** | Rhomb outlines plus the classic arc matching-rule decorations inside each rhomb |
+| **Arcs Only** | Arc decorations only — the rhombs disappear and the overlapping circular arcs reveal the hidden pentagonal symmetry of the tiling |
+
+### Arc Decoration
+
+Each rhomb in a Penrose tiling carries two circular arc markings — a convention due to
+Conway that encodes the matching rules preventing periodic repetition. Two arcs are
+inscribed in each thick (fat) rhomb and each thin (narrow) rhomb; neighbouring rhombs
+that share an edge will have arcs of matching radius meeting at that edge. Plotting
+**Arcs Only** produces a striking pattern of overlapping curves with 5-fold symmetry.
+
+### Initial Configurations
+
+| Config | Description |
+|--------|-------------|
+| **Sun** | 10 thick (fat) triangles arranged in a decagonal wheel — the most common starting point; produces a sun-like radial centre |
+| **Star** | 10 thin triangles in a star wheel — produces a star-shaped hole at the centre |
+| **Dart** | 4 thin triangles in a 4-fold arrangement — smaller seed, useful for off-centre compositions |
+
+### Presets
+
+| Preset | Config | Subdivisions | Mode | Description |
+|--------|--------|-------------|------|-------------|
+| Classic P3 | Sun | 5 | Edges Only | Standard Penrose rhomb tiling |
+| Penrose Stars | Star | 4 | Edges Only | Star-centred variant |
+| Arc Pattern | Sun | 5 | Arcs Only | Pure arc decoration |
+| Full Decoration | Sun | 6 | Edges + Arcs | Rhombs with arc markings |
+| Dense Tiling | Sun | 7 | Edges Only | Very fine tile grid |
+| Dart Origin | Dart | 5 | Edges Only | 4-fold dart seed |
+
+### Tips
+
+- Subdivisions 5–6 is a good balance — enough detail without excessive line count
+- **Arcs Only** with a light pen weight produces a delicate, lace-like pattern
+- Rotate by 18° increments to align a different axis of pentagonal symmetry with the canvas
+- Layer **Edges Only** (dark pen) and **Arcs Only** (light pen) as separate layers for a richly decorated composition
 
 ---
 
