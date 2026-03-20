@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from ..path3d import Path3D
     from ..bbox import BBox
     from ..ray import Ray, Hit
+    from ..vector3 import Vec3
 
 
 class Shape(ABC):
@@ -18,6 +19,9 @@ class Shape(ABC):
     - paths(): generate the 3D polylines to render
     - intersect(): ray intersection for hidden line removal
     - bbox(): axis-aligned bounding box for BVH construction
+
+    Shapes that support surface fill rendering may also implement:
+    - surface_triangles(): world-space triangles for surface fill
     """
 
     @abstractmethod
@@ -29,6 +33,14 @@ class Shape(ABC):
     def intersect(self, ray: "Ray") -> "Hit | None":
         """Test for ray intersection. Return Hit or None."""
         ...
+
+    def surface_triangles(self) -> "list[tuple[Vec3, Vec3, Vec3]]":
+        """Return world-space triangles for surface fill rendering.
+
+        Each element is a tuple of three Vec3 vertices forming a triangle.
+        Shapes that don't override this fall back to wireframe-only rendering.
+        """
+        return []
 
     def intersect_any(self, ray: "Ray", t_max: float) -> bool:
         """Return True if ray hits this shape within t_max.

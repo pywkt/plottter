@@ -79,6 +79,49 @@ class Cube(Shape):
                 edges.append(p)
         return edges
 
+    def surface_triangles(self) -> list[tuple]:
+        """Return 12 world-space triangles (6 faces × 2 triangles each)."""
+        h = self.size / 2
+        c = self.center
+        # 8 corners indexed by (sx, sy, sz) in {-1, +1}^3
+        # Index mapping: (sx+1)//2*4 + (sy+1)//2*2 + (sz+1)//2
+        def corner(sx: int, sy: int, sz: int):
+            return c + vec3(sx * h, sy * h, sz * h)
+
+        # Each face: 4 corners → 2 triangles (consistent winding: outward normal)
+        triangles = []
+        # +X face (sx=+1): normal points +X
+        triangles += [
+            (corner(+1, -1, -1), corner(+1, +1, -1), corner(+1, +1, +1)),
+            (corner(+1, -1, -1), corner(+1, +1, +1), corner(+1, -1, +1)),
+        ]
+        # -X face (sx=-1): normal points -X
+        triangles += [
+            (corner(-1, -1, +1), corner(-1, +1, +1), corner(-1, +1, -1)),
+            (corner(-1, -1, +1), corner(-1, +1, -1), corner(-1, -1, -1)),
+        ]
+        # +Y face (sy=+1): normal points +Y
+        triangles += [
+            (corner(-1, +1, -1), corner(-1, +1, +1), corner(+1, +1, +1)),
+            (corner(-1, +1, -1), corner(+1, +1, +1), corner(+1, +1, -1)),
+        ]
+        # -Y face (sy=-1): normal points -Y
+        triangles += [
+            (corner(-1, -1, +1), corner(-1, -1, -1), corner(+1, -1, -1)),
+            (corner(-1, -1, +1), corner(+1, -1, -1), corner(+1, -1, +1)),
+        ]
+        # +Z face (sz=+1): normal points +Z
+        triangles += [
+            (corner(-1, -1, +1), corner(+1, -1, +1), corner(+1, +1, +1)),
+            (corner(-1, -1, +1), corner(+1, +1, +1), corner(-1, +1, +1)),
+        ]
+        # -Z face (sz=-1): normal points -Z
+        triangles += [
+            (corner(+1, -1, -1), corner(-1, -1, -1), corner(-1, +1, -1)),
+            (corner(+1, -1, -1), corner(-1, +1, -1), corner(+1, +1, -1)),
+        ]
+        return triangles
+
     def intersect(self, ray: Ray) -> Hit | None:
         from ..bbox import BBox
         box = self.bbox()

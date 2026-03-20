@@ -242,6 +242,14 @@ class Mesh(Shape):
 
         return chains
 
+    def surface_triangles(self) -> list[tuple]:
+        """Return one world-space triangle per mesh face."""
+        verts = self.vertices
+        return [
+            (verts[f[0]], verts[f[1]], verts[f[2]])
+            for f in self.faces
+        ]
+
     def paths(self) -> list[Path3D]:
         edges = self._edges()
         chains = self._chain_edges(edges)

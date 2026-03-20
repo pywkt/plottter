@@ -2696,3 +2696,101 @@ class TestFaceNormalShadowClassification:
             f"Total points differ: no-light={pts_no_light}, "
             f"lit+shadow={pts_lit + pts_shadow}"
         )
+
+
+# ---------------------------------------------------------------------------
+# surface_triangles() tests (task 52.1)
+# ---------------------------------------------------------------------------
+
+class TestSurfaceTriangles:
+    def test_base_shape_default_returns_empty(self):
+        """The default surface_triangles() on a Shape with no override returns []."""
+        from plottter.scene3d.shapes.sphere import Sphere
+        # Sphere does not override surface_triangles — exercises the base default
+        s = Sphere(radius=1.0)
+        tris = s.surface_triangles()
+        assert tris == []
+
+    def test_cube_returns_12_triangles(self):
+        """Cube.surface_triangles() returns exactly 12 triangles (6 faces × 2)."""
+        from plottter.scene3d.shapes.cube import Cube
+        cube = Cube(size=2.0)
+        tris = cube.surface_triangles()
+        assert len(tris) == 12
+
+    def test_cube_triangles_are_3_tuples(self):
+        """Each triangle is a tuple of three Vec3 vertices."""
+        from plottter.scene3d.shapes.cube import Cube
+        cube = Cube(size=1.0)
+        for tri in cube.surface_triangles():
+            assert len(tri) == 3
+            for v in tri:
+                assert len(v) == 3
+
+    def test_cube_vertices_in_world_space(self):
+        """Cube vertices are offset by center position."""
+        from plottter.scene3d.shapes.cube import Cube
+        from plottter.scene3d.vector3 import vec3
+        center = vec3(5.0, 0.0, 0.0)
+        cube = Cube(center=center, size=2.0)
+        tris = cube.surface_triangles()
+        all_verts = [v for tri in tris for v in tri]
+        xs = [float(v[0]) for v in all_verts]
+        # With center.x=5 and half=1, all x coords must be in [4, 6]
+        assert all(4.0 <= x <= 6.0 for x in xs)
+
+    def test_cube_covers_all_faces(self):
+        """Triangles span all 6 axis-aligned face positions."""
+        from plottter.scene3d.shapes.cube import Cube
+        cube = Cube(size=2.0)
+        tris = cube.surface_triangles()
+        all_verts = [v for tri in tris for v in tri]
+        for axis in range(3):
+            vals = {round(float(v[axis]), 6) for v in all_verts}
+            assert -1.0 in vals and 1.0 in vals, (
+                f"Axis {axis} does not reach both ±1.0: {sorted(vals)}"
+            )
+
+    def test_mesh_returns_one_triangle_per_face(self):
+        """Mesh.surface_triangles() returns exactly one triangle per face."""
+        from plottter.scene3d.shapes.mesh import Mesh
+        vertices = np.array([
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ], dtype=np.float64)
+        faces = np.array([
+            [0, 1, 2],
+            [0, 1, 3],
+            [0, 2, 3],
+            [1, 2, 3],
+        ], dtype=np.int32)
+        mesh = Mesh(vertices=vertices, faces=faces)
+        tris = mesh.surface_triangles()
+        assert len(tris) == 4
+
+    def test_mesh_triangle_vertices_match_faces(self):
+        """Each mesh triangle's vertices match the indexed face vertices."""
+        from plottter.scene3d.shapes.mesh import Mesh
+        vertices = np.array([
+            [0.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+        ], dtype=np.float64)
+        faces = np.array([[0, 1, 2]], dtype=np.int32)
+        mesh = Mesh(vertices=vertices, faces=faces)
+        tris = mesh.surface_triangles()
+        assert len(tris) == 1
+        v0, v1, v2 = tris[0]
+        np.testing.assert_allclose(v0, [0.0, 0.0, 0.0])
+        np.testing.assert_allclose(v1, [1.0, 0.0, 0.0])
+        np.testing.assert_allclose(v2, [0.0, 1.0, 0.0])
+
+    def test_mesh_empty_faces_returns_empty(self):
+        """Mesh with no faces returns an empty list."""
+        from plottter.scene3d.shapes.mesh import Mesh
+        vertices = np.array([[0.0, 0.0, 0.0]], dtype=np.float64)
+        faces = np.zeros((0, 3), dtype=np.int32)
+        mesh = Mesh(vertices=vertices, faces=faces)
+        assert mesh.surface_triangles() == []
