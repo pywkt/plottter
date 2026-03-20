@@ -1,4 +1,4 @@
-"""Tests for Penrose P2 tiling generator (Task 46.1)."""
+"""Tests for Penrose P2 tiling generator (Tasks 46.1 and 46.2)."""
 
 from __future__ import annotations
 
@@ -12,8 +12,11 @@ from plottter.generators.penrose import (
     PSI,
     TYPE_THICK,
     TYPE_THIN,
+    _clip_to_canvas,
+    _edge_key,
     _initial_config,
     _subdivide,
+    _triangles_to_edges,
 )
 
 
@@ -390,3 +393,288 @@ class TestRegistration:
         )
         # 10 triangles × 3 edges each = 30 edges (no dedup)
         assert len(result) == 30
+
+
+# ---------------------------------------------------------------------------
+# Task 46.2 — _triangles_to_edges: rhomb grouping and deduplication
+# ---------------------------------------------------------------------------
+
+def _count_rhombs(triangles) -> int:
+    """Count rhombs by finding same-type triangle pairs sharing a long edge."""
+    from plottter.generators.penrose import _long_edge_keys
+
+    long_edge_map: dict = {}
+    for i, (t, A, B, C) in enumerate(triangles):
+        for key in _long_edge_keys(t, A, B, C):
+            long_edge_map.setdefault(key, []).append(i)
+
+    count = 0
+    for indices in long_edge_map.values():
+        if len(indices) == 2:
+            i, j = indices
+            if triangles[i][0] == triangles[j][0]:
+                count += 1
+    return count
+
+
+class TestTrianglesToEdges:
+    """Tests for _triangles_to_edges (task 46.2-A)."""
+
+    def test_returns_list(self):
+        tris = _initial_config("Sun", 1.0)
+        edges = _triangles_to_edges(tris)
+        assert isinstance(edges, list)
+
+    def test_nonempty_for_sun_depth0(self):
+        tris = _initial_config("Sun", 1.0)
+        edges = _triangles_to_edges(tris)
+        assert len(edges) > 0
+
+    # (a) Edge count consistent with rhomb count: <= 4 * n_rhombs
+    def test_edge_count_consistent_with_rhomb_count(self):
+        tris = _initial_config("Sun", 1.0)
+        for _ in range(3):
+            tris = _subdivide(tris)
+        edges = _triangles_to_edges(tris)
+        n_rhombs = _count_rhombs(tris)
+        # Each rhomb contributes at most 4 edges; deduplication can only reduce this
+        assert len(edges) <= 4 * n_rhombs
+        # At least 1 edge per rhomb (some edges must appear)
+        assert len(edges) >= n_rhombs
+
+    def test_edge_count_less_than_4_per_rhomb_due_to_sharing(self):
+        """Deduplication across adjacent rhombs reduces the total."""
+        tris = _initial_config("Sun", 1.0)
+        for _ in range(3):
+            tris = _subdivide(tris)
+        edges = _triangles_to_edges(tris)
+        n_rhombs = _count_rhombs(tris)
+        # For a non-trivial tiling many rhombs share outer edges → strictly less
+        assert len(edges) < 4 * n_rhombs
+
+    # (b) Deduplication removes exactly the shared edges — no duplicate in output
+    def test_no_duplicate_edges(self):
+        tris = _initial_config("Sun", 1.0)
+        for _ in range(3):
+            tris = _subdivide(tris)
+        edges = _triangles_to_edges(tris)
+        keys = [_edge_key(v1, v2) for v1, v2 in edges]
+        assert len(keys) == len(set(keys)), "Duplicate edges in output"
+
+    def test_no_duplicate_edges_star_depth4(self):
+        tris = _initial_config("Star", 1.0)
+        for _ in range(4):
+            tris = _subdivide(tris)
+        edges = _triangles_to_edges(tris)
+        keys = [_edge_key(v1, v2) for v1, v2 in edges]
+        assert len(keys) == len(set(keys)), "Duplicate edges in Star output"
+
+    def test_internal_diagonals_not_in_output(self):
+        """Shared long edges (rhomb diagonals) must not appear in the output."""
+        from plottter.generators.penrose import _long_edge_keys
+
+        tris = _initial_config("Sun", 1.0)
+        for _ in range(2):
+            tris = _subdivide(tris)
+        edges = _triangles_to_edges(tris)
+        output_keys = {_edge_key(v1, v2) for v1, v2 in edges}
+
+        # Build shared long edge keys
+        long_edge_map: dict = {}
+        for i, (t, A, B, C) in enumerate(tris):
+            for key in _long_edge_keys(t, A, B, C):
+                long_edge_map.setdefault(key, []).append(i)
+
+        for key, indices in long_edge_map.items():
+            if len(indices) == 2:
+                i, j = indices
+                if tris[i][0] == tris[j][0]:
+                    assert key not in output_keys, (
+                        "Shared long edge (rhomb diagonal) appears in output"
+                    )
+
+    # (d) No zero-length edges
+    def test_no_zero_length_edges(self):
+        tris = _initial_config("Sun", 1.0)
+        for _ in range(3):
+            tris = _subdivide(tris)
+        edges = _triangles_to_edges(tris)
+        for v1, v2 in edges:
+            assert abs(v1 - v2) > 1e-10, f"Zero-length edge: {v1} → {v2}"
+
+    def test_no_zero_length_edges_dart(self):
+        tris = _initial_config("Dart", 1.0)
+        for _ in range(4):
+            tris = _subdivide(tris)
+        edges = _triangles_to_edges(tris)
+        for v1, v2 in edges:
+            assert abs(v1 - v2) > 1e-10, f"Zero-length edge: {v1} → {v2}"
+
+    def test_each_edge_is_complex_pair(self):
+        tris = _initial_config("Sun", 1.0)
+        tris = _subdivide(tris)
+        edges = _triangles_to_edges(tris)
+        for item in edges:
+            v1, v2 = item
+            assert isinstance(v1, complex)
+            assert isinstance(v2, complex)
+
+
+# ---------------------------------------------------------------------------
+# Task 46.2 — _clip_to_canvas
+# ---------------------------------------------------------------------------
+
+class TestClipToCanvas:
+    """Tests for _clip_to_canvas (task 46.2-B/C)."""
+
+    # Canvas: 200×150 mm, margin 10 mm → drawing area [10, 10, 190, 140]
+
+    def _canvas_params(self):
+        return dict(canvas_w=200.0, canvas_h=150.0, margin=10.0)
+
+    # (c) All output edges within canvas bounds
+    def test_edge_fully_inside_passes_through(self):
+        edges = [((20.0, 20.0), (80.0, 60.0))]
+        clipped = _clip_to_canvas(edges, **self._canvas_params())
+        assert len(clipped) == 1
+        (x0, y0), (x1, y1) = clipped[0]
+        assert x0 == pytest.approx(20.0)
+        assert y0 == pytest.approx(20.0)
+        assert x1 == pytest.approx(80.0)
+        assert y1 == pytest.approx(60.0)
+
+    def test_edge_fully_outside_discarded(self):
+        # Edge in the margin zone (x < 10)
+        edges = [((1.0, 20.0), (5.0, 50.0))]
+        clipped = _clip_to_canvas(edges, **self._canvas_params())
+        assert len(clipped) == 0
+
+    def test_edge_above_canvas_discarded(self):
+        edges = [((50.0, 1.0), (100.0, 5.0))]
+        clipped = _clip_to_canvas(edges, **self._canvas_params())
+        assert len(clipped) == 0
+
+    def test_horizontal_crossing_edge_clipped(self):
+        # Horizontal line from x=0 to x=200 at y=75 (centre)
+        edges = [((0.0, 75.0), (200.0, 75.0))]
+        clipped = _clip_to_canvas(edges, **self._canvas_params())
+        assert len(clipped) == 1
+        (x0, y0), (x1, y1) = clipped[0]
+        assert x0 == pytest.approx(10.0)
+        assert x1 == pytest.approx(190.0)
+        assert y0 == pytest.approx(75.0)
+        assert y1 == pytest.approx(75.0)
+
+    def test_all_output_within_bounds(self):
+        """All clipped edge endpoints must lie within the drawing area."""
+        tris = _initial_config("Sun", 1.0)
+        for _ in range(3):
+            tris = _subdivide(tris)
+        # Transform to mm (centre 100, 75; scale 80)
+        cx, cy, scale = 100.0, 75.0, 80.0
+        mm_edges = [
+            ((cx + v1.real * scale, cy - v1.imag * scale),
+             (cx + v2.real * scale, cy - v2.imag * scale))
+            for v1, v2 in _triangles_to_edges(tris)
+        ]
+        clipped = _clip_to_canvas(mm_edges, 200.0, 150.0, 10.0)
+        xmin, ymin, xmax, ymax = 10.0, 10.0, 190.0, 140.0
+        for (x0, y0), (x1, y1) in clipped:
+            assert xmin - 1e-6 <= x0 <= xmax + 1e-6
+            assert ymin - 1e-6 <= y0 <= ymax + 1e-6
+            assert xmin - 1e-6 <= x1 <= xmax + 1e-6
+            assert ymin - 1e-6 <= y1 <= ymax + 1e-6
+
+    def test_no_zero_length_after_clipping(self):
+        """Clipped output must contain no zero-length segments."""
+        tris = _initial_config("Sun", 1.0)
+        for _ in range(3):
+            tris = _subdivide(tris)
+        cx, cy, scale = 100.0, 75.0, 80.0
+        mm_edges = [
+            ((cx + v1.real * scale, cy - v1.imag * scale),
+             (cx + v2.real * scale, cy - v2.imag * scale))
+            for v1, v2 in _triangles_to_edges(tris)
+        ]
+        clipped = _clip_to_canvas(mm_edges, 200.0, 150.0, 10.0)
+        for (x0, y0), (x1, y1) in clipped:
+            assert (x1 - x0) ** 2 + (y1 - y0) ** 2 > 1e-20, (
+                f"Zero-length segment at ({x0},{y0})"
+            )
+
+    def test_empty_input_returns_empty(self):
+        assert _clip_to_canvas([], 200.0, 150.0, 10.0) == []
+
+    def test_returns_polylines(self):
+        edges = [((20.0, 20.0), (80.0, 60.0))]
+        clipped = _clip_to_canvas(edges, **self._canvas_params())
+        assert len(clipped) == 1
+        assert len(clipped[0]) == 2  # 2-point polyline
+
+
+# ---------------------------------------------------------------------------
+# Task 46.2 — Rhombs draw mode integration
+# ---------------------------------------------------------------------------
+
+class TestRhombsDrawMode:
+    """Integration tests for the 'Rhombs' draw mode in PenroseGenerator."""
+
+    def _gen_rhombs(self, config="Sun", depth=3, radius_mm=80.0, rotation_deg=0.0):
+        from plottter.generators.penrose import PenroseGenerator
+        from plottter.models.canvas import Canvas
+        gen = PenroseGenerator()
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        return gen.generate(
+            {
+                "initial_config": config,
+                "depth": depth,
+                "radius_mm": radius_mm,
+                "rotation_deg": rotation_deg,
+                "draw_mode": "Rhombs",
+                "deduplicate": True,
+            },
+            canvas,
+        )
+
+    def test_returns_nonempty_list(self):
+        result = self._gen_rhombs()
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+    # (c) All output edges within canvas bounds
+    def test_all_edges_within_canvas(self):
+        from plottter.models.canvas import Canvas
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        x1, y1, x2, y2 = canvas.drawing_area()
+        result = self._gen_rhombs()
+        for poly in result:
+            for x, y in poly:
+                assert x1 - 1e-6 <= x <= x2 + 1e-6, f"x={x} out of [{x1},{x2}]"
+                assert y1 - 1e-6 <= y <= y2 + 1e-6, f"y={y} out of [{y1},{y2}]"
+
+    # (d) No zero-length edges
+    def test_no_zero_length_polylines(self):
+        result = self._gen_rhombs()
+        for poly in result:
+            (x0, y0), (x1, y1) = poly
+            dist_sq = (x1 - x0) ** 2 + (y1 - y0) ** 2
+            assert dist_sq > 1e-20, f"Zero-length polyline at ({x0},{y0})"
+
+    def test_each_polyline_has_two_points(self):
+        result = self._gen_rhombs()
+        for poly in result:
+            assert len(poly) == 2
+
+    def test_rhombs_star_config(self):
+        result = self._gen_rhombs(config="Star", depth=3)
+        assert len(result) > 0
+
+    def test_rhombs_with_rotation(self):
+        r0 = self._gen_rhombs(rotation_deg=0.0)
+        r45 = self._gen_rhombs(rotation_deg=45.0)
+        # Different rotations produce different edge sets
+        assert len(r0) == len(r45)  # same count
+        # But coordinates differ
+        coords0 = {(round(p[0], 3), round(p[1], 3)) for poly in r0 for p in poly}
+        coords45 = {(round(p[0], 3), round(p[1], 3)) for poly in r45 for p in poly}
+        assert coords0 != coords45

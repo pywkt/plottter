@@ -122,6 +122,204 @@ def _initial_config(config_name: str, radius: float) -> list[Triangle]:
 
 
 # ---------------------------------------------------------------------------
+# Rhomb edge extraction helpers
+# ---------------------------------------------------------------------------
+
+def _round_v(v: complex, decimals: int = 6) -> tuple[float, float]:
+    """Round a complex vertex to a hashable tuple for set/dict keys."""
+    return (round(v.real, decimals), round(v.imag, decimals))
+
+
+def _edge_key(v1: complex, v2: complex) -> tuple:
+    """Sorted vertex-pair key for edge deduplication (order-independent)."""
+    r1, r2 = _round_v(v1), _round_v(v2)
+    return (min(r1, r2), max(r1, r2))
+
+
+def _long_edge_keys(t: int, A: complex, B: complex, C: complex) -> list[tuple]:
+    """Return edge keys for the long edge(s) of a Robinson triangle.
+
+    Type 0 (thin, 36°-108°-36°): A is the 108° apex; BC is the long edge.
+    Type 1 (thick, 72°-72°-36°): A is the 36° apex; AB and AC are the long edges.
+    """
+    if t == TYPE_THIN:
+        return [_edge_key(B, C)]
+    else:  # TYPE_THICK
+        return [_edge_key(A, B), _edge_key(A, C)]
+
+
+def _triangles_to_edges(triangles: list[Triangle]) -> list[tuple[complex, complex]]:
+    """Group Robinson triangles into rhombs and extract deduplicated outer edges.
+
+    A rhomb is formed by two same-type triangles sharing a long edge:
+      - Two thick (Type 1) triangles sharing a long edge → kite rhomb
+      - Two thin  (Type 0) triangles sharing a long edge → dart rhomb
+
+    Steps:
+      1. Build a map from each long-edge key to the triangles that own it.
+      2. Pairs of same-type triangles sharing a key form one rhomb; the shared
+         edge is the internal diagonal and is excluded from the output.
+      3. All remaining triangle edges are emitted once (deduplicated across
+         adjacent rhombs via a seen-edges set).
+
+    Parameters
+    ----------
+    triangles:
+        Robinson triangles in complex-plane coordinates (origin-centred).
+
+    Returns
+    -------
+    List of (v1, v2) complex vertex pairs for the outer edges of all rhombs,
+    with no duplicate edges.
+    """
+    # Map long-edge key → list of triangle indices that own that edge
+    long_edge_map: dict[tuple, list[int]] = {}
+    for i, (t, A, B, C) in enumerate(triangles):
+        for key in _long_edge_keys(t, A, B, C):
+            long_edge_map.setdefault(key, []).append(i)
+
+    # Identify the shared internal diagonals (long edges owned by exactly two
+    # same-type triangles) and collect all triangle indices that belong to rhombs.
+    shared_long_edges: set[tuple] = set()
+    rhomb_tris: set[int] = set()
+    for key, indices in long_edge_map.items():
+        if len(indices) == 2:
+            i, j = indices
+            if triangles[i][0] == triangles[j][0]:  # same type → valid rhomb
+                shared_long_edges.add(key)
+                rhomb_tris.add(i)
+                rhomb_tris.add(j)
+
+    # Emit each outer edge once (skip shared internal diagonals; deduplicate
+    # edges shared between adjacent rhombs).
+    seen_edges: set[tuple] = set()
+    result: list[tuple[complex, complex]] = []
+    for i in rhomb_tris:
+        _, A, B, C = triangles[i]
+        for v1, v2 in ((A, B), (B, C), (C, A)):
+            ek = _edge_key(v1, v2)
+            if ek in shared_long_edges:
+                continue  # internal diagonal — skip
+            if ek in seen_edges:
+                continue  # already emitted from a neighbouring rhomb
+            seen_edges.add(ek)
+            result.append((v1, v2))
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Canvas clipping
+# ---------------------------------------------------------------------------
+
+def _liang_barsky(
+    x0: float, y0: float, x1: float, y1: float,
+    xmin: float, ymin: float, xmax: float, ymax: float,
+) -> tuple[float, float, float, float] | None:
+    """Liang-Barsky line-segment clip against axis-aligned rectangle.
+
+    Returns the clipped (x0, y0, x1, y1) or None if the segment lies
+    entirely outside the rectangle.
+    """
+    dx, dy = x1 - x0, y1 - y0
+    p = [-dx, dx, -dy, dy]
+    q = [x0 - xmin, xmax - x0, y0 - ymin, ymax - y0]
+
+    t0, t1 = 0.0, 1.0
+    for pi, qi in zip(p, q):
+        if abs(pi) < 1e-15:       # segment parallel to this edge
+            if qi < 0:
+                return None       # outside on this axis
+        elif pi < 0:
+            t0 = max(t0, qi / pi)
+        else:
+            t1 = min(t1, qi / pi)
+
+    if t0 > t1 + 1e-10:
+        return None
+
+    return x0 + t0 * dx, y0 + t0 * dy, x0 + t1 * dx, y0 + t1 * dy
+
+
+def _clip_to_canvas(
+    edges: list[tuple[tuple[float, float], tuple[float, float]]],
+    canvas_w: float,
+    canvas_h: float,
+    margin: float,
+) -> list[Polyline]:
+    """Clip edges (mm coordinates) to the canvas drawing area.
+
+    The drawing area is the rectangle [margin, margin, canvas_w-margin,
+    canvas_h-margin].  Edges that lie entirely outside are discarded;
+    edges that cross the boundary are trimmed.  Zero-length clipped
+    segments are dropped.
+
+    Parameters
+    ----------
+    edges:
+        Sequence of ((x1, y1), (x2, y2)) pairs in mm.
+    canvas_w, canvas_h:
+        Full canvas dimensions in mm.
+    margin:
+        Uniform margin in mm on all four sides.
+
+    Returns
+    -------
+    List of 2-point Polylines for every edge that intersects the drawing area.
+    """
+    xmin, ymin = margin, margin
+    xmax, ymax = canvas_w - margin, canvas_h - margin
+
+    result: list[Polyline] = []
+    for (px, py), (qx, qy) in edges:
+        clipped = _liang_barsky(px, py, qx, qy, xmin, ymin, xmax, ymax)
+        if clipped is None:
+            continue
+        cx0, cy0, cx1, cy1 = clipped
+        # Discard zero-length segments
+        if abs(cx1 - cx0) < 1e-10 and abs(cy1 - cy0) < 1e-10:
+            continue
+        result.append([(cx0, cy0), (cx1, cy1)])
+    return result
+
+
+def _generate_rhombs(
+    triangles: list[Triangle],
+    cx: float,
+    cy: float,
+    scale: float,
+    rotation: float,
+    canvas_w: float,
+    canvas_h: float,
+    margin: float,
+) -> list[Polyline]:
+    """Render the Penrose tiling as kite-and-dart (rhomb) outlines.
+
+    Coordinate transform: complex-plane → canvas mm
+        x_mm = cx + Re(z * rot) * scale
+        y_mm = cy − Im(z * rot) * scale   (y-axis flipped for screen/canvas)
+
+    Parameters
+    ----------
+    triangles:           Robinson triangles in normalised complex coordinates.
+    cx, cy:              Canvas centre in mm.
+    scale:               Multiply complex magnitude by this to get mm distance.
+    rotation:            Rotation angle in radians.
+    canvas_w, canvas_h:  Full canvas dimensions in mm.
+    margin:              Uniform margin in mm on all four sides.
+    """
+    rot_factor = cmath.exp(1j * rotation)
+
+    def to_mm(z: complex) -> tuple[float, float]:
+        z2 = z * rot_factor
+        return (cx + z2.real * scale, cy - z2.imag * scale)
+
+    complex_edges = _triangles_to_edges(triangles)
+    mm_edges = [(to_mm(v1), to_mm(v2)) for v1, v2 in complex_edges]
+    return _clip_to_canvas(mm_edges, canvas_w, canvas_h, margin)
+
+
+# ---------------------------------------------------------------------------
 # Triangle → polyline conversion
 # ---------------------------------------------------------------------------
 
@@ -234,9 +432,12 @@ class PenroseGenerator(Generator):
             ChoiceParam(
                 name="draw_mode",
                 label="Draw Mode",
-                choices=["All edges", "Thin only", "Thick only"],
+                choices=["All edges", "Thin only", "Thick only", "Rhombs"],
                 default="All edges",
-                description="Which triangle type edges to render.",
+                description=(
+                    "Which triangle type edges to render. 'Rhombs' draws "
+                    "kite-and-dart outlines (internal diagonals omitted)."
+                ),
             ),
             BoolParam(
                 name="deduplicate",
@@ -274,12 +475,25 @@ class PenroseGenerator(Generator):
             if progress_callback:
                 progress_callback(int(100 * (i + 1) / max(depth, 1)))
 
-        # Canvas centre in mm
+        # Canvas centre and drawing area in mm
         x1, y1, x2, y2 = canvas.drawing_area()
         cx = (x1 + x2) / 2
         cy = (y1 + y2) / 2
 
         rotation_rad = math.radians(rotation_deg)
+
+        if draw_mode == "Rhombs":
+            return _generate_rhombs(
+                triangles,
+                cx=cx,
+                cy=cy,
+                scale=radius_mm,
+                rotation=rotation_rad,
+                canvas_w=canvas.width_mm,
+                canvas_h=canvas.height_mm,
+                margin=canvas.margin_mm,
+            )
+
         return _triangles_to_polylines(
             triangles,
             cx=cx,
