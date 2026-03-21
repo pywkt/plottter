@@ -3923,14 +3923,24 @@ class SettingsPanel(QScrollArea):
             masked_gray = mask.copy()
 
         gen = self._lines_gen_cls()
-        default_params: dict = {}
-        for p in gen.get_parameters():
-            if hasattr(p, "default"):
-                default_params[p.name] = p.default
-        default_params["_source_image"] = masked_gray
+
+        # Check if a preset is selected in the color sep preset combo
+        preset_params = self._color_sep_preset_combo.currentData()
+        if preset_params is not None:
+            # Use preset params as base (copy to avoid mutation)
+            gen_params: dict = dict(preset_params)
+        else:
+            # Default: build params from generator defaults
+            gen_params = {}
+            for p in gen.get_parameters():
+                if hasattr(p, "default"):
+                    gen_params[p.name] = p.default
+
+        # Always set _source_image regardless of preset
+        gen_params["_source_image"] = masked_gray
 
         from plottter.gui.generator_worker import GeneratorWorker
-        worker = GeneratorWorker(gen, default_params, self._lines_canvas)
+        worker = GeneratorWorker(gen, gen_params, self._lines_canvas)
 
         def on_finished(paths, lid=layer_id):
             self._controller.set_layer_paths(lid, paths, "Generate Lines")
