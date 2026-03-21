@@ -3677,7 +3677,19 @@ class SettingsPanel(QScrollArea):
         try:
             from plottter.io.image_import import preprocess
             params = self._get_preprocessing_params()
-            preprocessed = preprocess(self._raw_image, params)
+            # If AI BG removal is active, composite onto white before
+            # preprocessing — same logic as _update_image_preview().
+            source = self._raw_image
+            if (
+                self._ai_bg_check.isChecked()
+                and self._ai_bg_rgba is not None
+            ):
+                rgba = self._ai_bg_rgba
+                alpha = rgba[:, :, 3:4].astype(np.float32) / 255.0
+                rgb = rgba[:, :, :3].astype(np.float32)
+                white = np.full_like(rgb, 255.0)
+                source = (rgb * alpha + white * (1.0 - alpha)).astype(np.uint8)
+            preprocessed = preprocess(source, params)
         except Exception as exc:
             QMessageBox.critical(self, "Preprocessing Error", str(exc))
             return
@@ -3702,7 +3714,7 @@ class SettingsPanel(QScrollArea):
                 )
                 return
 
-            source_img = self._raw_image
+            source_img = source
             if source_img.ndim == 2:
                 source_img = np.stack([source_img] * 3, axis=-1)
             elif source_img.ndim == 3 and source_img.shape[2] == 4:
@@ -3738,7 +3750,7 @@ class SettingsPanel(QScrollArea):
                     k: v for k, v in params.items()
                     if k in ("crop_width", "crop_height")
                 }
-                raw_rgb = preprocess(self._raw_image, spatial_params)
+                raw_rgb = preprocess(source, spatial_params)
                 if raw_rgb.ndim == 2:
                     raw_rgb = np.stack([raw_rgb] * 3, axis=-1)
                 elif raw_rgb.ndim == 3 and raw_rgb.shape[2] == 4:
@@ -3752,9 +3764,9 @@ class SettingsPanel(QScrollArea):
                 layer_names = [band_names[i] if i < len(band_names) else f"Band {i + 1}" for i in range(len(results))]
             elif method == "RGB":
                 from plottter.color import rgb_separate
-                # RGB/CMYK separation requires the original RGB image, not the
-                # grayscale-preprocessed one.  Use _raw_image directly.
-                raw_rgb = self._raw_image
+                # RGB/CMYK separation requires an RGB image, not the
+                # grayscale-preprocessed one.  Use source (with BG removal applied).
+                raw_rgb = source
                 if raw_rgb.ndim == 2:
                     raw_rgb = np.stack([raw_rgb] * 3, axis=-1)
                 elif raw_rgb.ndim == 3 and raw_rgb.shape[2] == 4:
@@ -3773,8 +3785,8 @@ class SettingsPanel(QScrollArea):
                 layer_names = filtered_names
             elif method == "CMYK":
                 from plottter.color import cmyk_separate
-                # CMYK separation requires the original RGB image.
-                raw_rgb = self._raw_image
+                # CMYK separation requires an RGB image.
+                raw_rgb = source
                 if raw_rgb.ndim == 2:
                     raw_rgb = np.stack([raw_rgb] * 3, axis=-1)
                 elif raw_rgb.ndim == 3 and raw_rgb.shape[2] == 4:
