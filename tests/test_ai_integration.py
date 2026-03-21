@@ -917,7 +917,11 @@ class TestRemoveBackgroundDiskCache:
         assert result.dtype == np.uint8
 
     def test_loads_bg_removal_from_disk_on_second_call(self, tmp_path) -> None:
-        """Second remove_background() with same image loads from disk, not the API."""
+        """Second remove_background() with same image loads from disk, not the API.
+
+        Mocks _replicate_run and verifies it is NOT called a second time when
+        the result is already cached on disk.
+        """
         import plottter.ai.replicate_client as rc_mod
 
         h, w = 8, 8
@@ -925,15 +929,19 @@ class TestRemoveBackgroundDiskCache:
         rgba_result = self._make_rgba_result(h, w)
 
         client = self._make_client(cache_dir=str(tmp_path))
-        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/output.png"):
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/output.png") as mock_run:
             with patch.object(rc_mod, "_fetch_url_as_rgba", return_value=rgba_result) as mock_fetch:
                 r1 = client.remove_background(image)
                 assert mock_fetch.call_count == 1
+                assert mock_run.call_count == 1
 
                 client._cache.clear()
                 r2 = client.remove_background(image)
                 assert mock_fetch.call_count == 1, (
                     "API should not be called a second time when disk cache exists"
+                )
+                assert mock_run.call_count == 1, (
+                    "_replicate_run must not be called a second time on disk cache hit"
                 )
 
         assert r1.shape == r2.shape
