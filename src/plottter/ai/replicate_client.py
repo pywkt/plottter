@@ -49,10 +49,12 @@ class ReplicateClient:
         self._api_key = api_key
         # In-memory response cache keyed by (operation, image object id)
         self._cache: dict[tuple, object] = {}
-        # Disk-based depth map cache directory (None = disabled)
+        # Disk-based cache directory (None = disabled)
         self._cache_dir: str | None = cache_dir
         if cache_dir is not None:
             pathlib.Path(cache_dir).mkdir(parents=True, exist_ok=True)
+            pathlib.Path(cache_dir, "depth").mkdir(parents=True, exist_ok=True)
+            pathlib.Path(cache_dir, "bg_removal").mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Availability
@@ -87,6 +89,31 @@ class ReplicateClient:
         if cache_key in self._cache:
             return self._cache[cache_key]  # type: ignore[return-value]
 
+        # --- Disk cache lookup ---
+        bg_disk_cache_path: str | None = None
+        if self._cache_dir is not None:
+            img_hash = hashlib.sha256(image.tobytes()).hexdigest()[:16]
+            bg_disk_cache_path = os.path.join(
+                self._cache_dir, "bg_removal", f"{img_hash}.png"
+            )
+            if os.path.exists(bg_disk_cache_path):
+                try:
+                    from PIL import Image as _PIL_Image
+                    pil = _PIL_Image.open(bg_disk_cache_path).convert("RGBA")
+                    result = np.array(pil)
+                    if result.shape[:2] != image.shape[:2]:
+                        pil = pil.resize(
+                            (image.shape[1], image.shape[0]),
+                            _PIL_Image.LANCZOS,
+                        )
+                        result = np.array(pil)
+                    self._cache[cache_key] = result
+                    if progress_callback:
+                        progress_callback(100)
+                    return result
+                except Exception:
+                    pass  # Corrupt cache file — fall through to API call
+
         try:
             if progress_callback:
                 progress_callback(10)
@@ -107,6 +134,15 @@ class ReplicateClient:
                     _PIL_Image.LANCZOS,
                 )
                 result = np.array(pil)
+
+            # --- Disk cache write ---
+            if bg_disk_cache_path is not None:
+                try:
+                    from PIL import Image as _PIL_Image
+                    pil = _PIL_Image.fromarray(result, mode="RGBA")
+                    pil.save(str(bg_disk_cache_path))
+                except Exception:
+                    pass  # Cache write failure is non-fatal
 
             self._cache[cache_key] = result
             if progress_callback:
@@ -148,7 +184,13 @@ class ReplicateClient:
         disk_cache_path: str | None = None
         if self._cache_dir is not None:
             img_hash = hashlib.sha256(image.tobytes()).hexdigest()[:16]
-            disk_cache_path = os.path.join(self._cache_dir, f"{img_hash}.png")
+            # Backward compat: check flat (old) path first, then subdirectory
+            flat_path = os.path.join(self._cache_dir, f"{img_hash}.png")
+            subdir_path = os.path.join(self._cache_dir, "depth", f"{img_hash}.png")
+            if os.path.exists(flat_path):
+                disk_cache_path = flat_path
+            else:
+                disk_cache_path = subdir_path
             if os.path.exists(disk_cache_path):
                 try:
                     from PIL import Image as _PIL_Image
@@ -202,12 +244,14 @@ class ReplicateClient:
                 depth_gray = np.array(pil).astype(np.float32) / 255.0
 
             # --- Disk cache write (16-bit grayscale PNG for precision) ---
-            if disk_cache_path is not None:
+            # Always write to the subdirectory path (not the flat legacy path)
+            if self._cache_dir is not None:
+                write_path = os.path.join(self._cache_dir, "depth", f"{img_hash}.png")
                 try:
                     from PIL import Image as _PIL_Image
                     import cv2 as _cv2
                     uint16_arr = (depth_gray * 65535).astype(np.uint16)
-                    _cv2.imwrite(str(disk_cache_path), uint16_arr)
+                    _cv2.imwrite(str(write_path), uint16_arr)
                 except Exception:
                     pass  # Cache write failure is non-fatal
 

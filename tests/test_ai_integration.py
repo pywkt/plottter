@@ -738,8 +738,8 @@ class TestDepthMapDiskCache:
         val = int(0.5 * 255)
         return np.full((h, w, 3), val, dtype=np.uint8)
 
-    def test_saves_png_to_cache_dir_after_api_call(self, tmp_path) -> None:
-        """estimate_depth() saves a 16-bit PNG to the cache dir after an API call."""
+    def test_saves_png_to_depth_subdir_after_api_call(self, tmp_path) -> None:
+        """estimate_depth() saves a 16-bit PNG to the depth/ subdirectory after an API call."""
         import plottter.ai.replicate_client as rc_mod
 
         h, w = 8, 8
@@ -751,16 +751,20 @@ class TestDepthMapDiskCache:
             with patch.object(rc_mod, "_fetch_url_as_rgb", return_value=depth_response):
                 result = client.estimate_depth(image)
 
-        # Should have produced exactly one PNG in the cache dir
-        pngs = list(tmp_path.glob("*.png"))
-        assert len(pngs) == 1, f"Expected 1 PNG, got {len(pngs)}"
+        # Should have produced exactly one PNG in the depth/ subdirectory
+        pngs = list((tmp_path / "depth").glob("*.png"))
+        assert len(pngs) == 1, f"Expected 1 PNG in depth/, got {len(pngs)}"
+        # No PNGs should be written to the flat cache dir
+        assert list(tmp_path.glob("*.png")) == [], "No PNGs should be in the flat cache dir"
         # The saved PNG should be readable and contain the same depth data
         from PIL import Image as _PIL
         arr = np.array(_PIL.open(pngs[0])).astype(np.float32)
         assert arr.max() <= 65535.0  # 16-bit range
-        # Normalised values should be close to the computed depth
         assert result.shape == (h, w)
         assert result.dtype == np.float32
+
+    # Keep old name as an alias so existing test runs don't break
+    test_saves_png_to_cache_dir_after_api_call = test_saves_png_to_depth_subdir_after_api_call
 
     def test_loads_from_cache_on_second_call(self, tmp_path) -> None:
         """Second estimate_depth() call with the same image hits the disk cache,
@@ -815,9 +819,9 @@ class TestDepthMapDiskCache:
                     "Different image should cause a cache miss and new API call"
                 )
 
-        # Two different PNGs should be in the cache
-        pngs = list(tmp_path.glob("*.png"))
-        assert len(pngs) == 2, f"Expected 2 cached PNGs, got {len(pngs)}"
+        # Two different PNGs should be in the depth/ subdirectory
+        pngs = list((tmp_path / "depth").glob("*.png"))
+        assert len(pngs) == 2, f"Expected 2 cached PNGs in depth/, got {len(pngs)}"
 
     def test_cache_disabled_when_cache_dir_is_none(self, tmp_path) -> None:
         """When cache_dir=None, no files are written and the API is always called."""
@@ -843,8 +847,112 @@ class TestDepthMapDiskCache:
         assert list(tmp_path.glob("*.png")) == []
 
     def test_cache_dir_created_on_init(self, tmp_path) -> None:
-        """ReplicateClient creates the cache directory on init if it doesn't exist."""
+        """ReplicateClient creates the cache directory and subdirs on init if they don't exist."""
         new_dir = tmp_path / "nested" / "cache"
         assert not new_dir.exists()
         self._make_client(cache_dir=str(new_dir))
         assert new_dir.is_dir(), "Cache directory should be created by __init__"
+        assert (new_dir / "depth").is_dir(), "depth/ subdir should be created by __init__"
+        assert (new_dir / "bg_removal").is_dir(), "bg_removal/ subdir should be created by __init__"
+
+    def test_flat_depth_cache_loaded_as_backward_compat(self, tmp_path) -> None:
+        """Old flat-directory depth cache files are loaded as backward compatibility fallback."""
+        import hashlib
+        import plottter.ai.replicate_client as rc_mod
+        import cv2
+
+        h, w = 8, 8
+        image = np.zeros((h, w, 3), dtype=np.uint8)
+
+        # Write a fake depth PNG to the flat (old) cache location
+        img_hash = hashlib.sha256(image.tobytes()).hexdigest()[:16]
+        flat_cache_path = tmp_path / f"{img_hash}.png"
+        expected_depth = np.full((h, w), 0.75, dtype=np.float32)
+        uint16_arr = (expected_depth * 65535).astype(np.uint16)
+        cv2.imwrite(str(flat_cache_path), uint16_arr)
+        assert flat_cache_path.exists()
+
+        client = self._make_client(cache_dir=str(tmp_path))
+        with patch.object(rc_mod, "_replicate_run") as mock_run:
+            result = client.estimate_depth(image)
+
+        # API should NOT have been called — flat cache was found
+        assert mock_run.call_count == 0, "Flat cache should have been loaded without API call"
+        assert result.shape == (h, w)
+        assert result.dtype == np.float32
+        np.testing.assert_allclose(result, expected_depth, atol=1.0 / 65535)
+
+
+# ---------------------------------------------------------------------------
+# Background removal disk cache tests (task 53.1)
+# ---------------------------------------------------------------------------
+
+class TestRemoveBackgroundDiskCache:
+    """Tests for disk caching in ReplicateClient.remove_background()."""
+
+    def _make_client(self, cache_dir=None):
+        from plottter.ai.replicate_client import ReplicateClient
+        return ReplicateClient(api_key="r8_test", cache_dir=cache_dir)
+
+    def _make_rgba_result(self, h: int, w: int) -> np.ndarray:
+        return np.full((h, w, 4), [100, 150, 200, 255], dtype=np.uint8)
+
+    def test_saves_png_to_bg_removal_subdir(self, tmp_path) -> None:
+        """remove_background() saves RGBA PNG to bg_removal/ subdir after an API call."""
+        import plottter.ai.replicate_client as rc_mod
+
+        h, w = 8, 8
+        image = np.zeros((h, w, 3), dtype=np.uint8)
+        rgba_result = self._make_rgba_result(h, w)
+
+        client = self._make_client(cache_dir=str(tmp_path))
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/output.png"):
+            with patch.object(rc_mod, "_fetch_url_as_rgba", return_value=rgba_result):
+                result = client.remove_background(image)
+
+        pngs = list((tmp_path / "bg_removal").glob("*.png"))
+        assert len(pngs) == 1, f"Expected 1 PNG in bg_removal/, got {len(pngs)}"
+        assert list(tmp_path.glob("*.png")) == [], "No PNGs should be in the flat dir"
+        assert result.shape == (h, w, 4)
+        assert result.dtype == np.uint8
+
+    def test_loads_bg_removal_from_disk_on_second_call(self, tmp_path) -> None:
+        """Second remove_background() with same image loads from disk, not the API."""
+        import plottter.ai.replicate_client as rc_mod
+
+        h, w = 8, 8
+        image = np.zeros((h, w, 3), dtype=np.uint8)
+        rgba_result = self._make_rgba_result(h, w)
+
+        client = self._make_client(cache_dir=str(tmp_path))
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/output.png"):
+            with patch.object(rc_mod, "_fetch_url_as_rgba", return_value=rgba_result) as mock_fetch:
+                r1 = client.remove_background(image)
+                assert mock_fetch.call_count == 1
+
+                client._cache.clear()
+                r2 = client.remove_background(image)
+                assert mock_fetch.call_count == 1, (
+                    "API should not be called a second time when disk cache exists"
+                )
+
+        assert r1.shape == r2.shape
+        np.testing.assert_array_equal(r1, r2)
+
+    def test_bg_removal_no_disk_cache_when_cache_dir_none(self, tmp_path) -> None:
+        """When cache_dir=None, no files are written for remove_background()."""
+        import plottter.ai.replicate_client as rc_mod
+
+        h, w = 8, 8
+        image = np.zeros((h, w, 3), dtype=np.uint8)
+        rgba_result = self._make_rgba_result(h, w)
+
+        client = self._make_client(cache_dir=None)
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/output.png"):
+            with patch.object(rc_mod, "_fetch_url_as_rgba", return_value=rgba_result) as mock_fetch:
+                client.remove_background(image)
+                client._cache.clear()
+                client.remove_background(image)
+                assert mock_fetch.call_count == 2, "API always called when no cache dir"
+
+        assert list(tmp_path.glob("**/*.png")) == []
