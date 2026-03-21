@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import copy
+import io
 import uuid
 from dataclasses import dataclass, field
+
+import numpy as np
+from PIL import Image
 
 from plottter.models.canvas import Canvas
 from plottter.models.layer import Layer
@@ -19,6 +23,7 @@ class Project:
     registration_marks: bool = True
     reg_mark_style: str = "corners"
     metadata: dict = field(default_factory=dict)
+    masks: dict[str, bytes] = field(default_factory=dict)
 
     # ------------------------------------------------------------------
     # Layer management
@@ -95,3 +100,29 @@ class Project:
             if layer.id == layer_id:
                 return i
         return None
+
+    # ------------------------------------------------------------------
+    # Mask management
+    # ------------------------------------------------------------------
+
+    def save_mask(self, name: str, mask_array: np.ndarray) -> None:
+        """Convert float32 [0,1] mask to PNG bytes and store under *name*."""
+        uint8 = (np.clip(mask_array, 0.0, 1.0) * 255).astype(np.uint8)
+        img = Image.fromarray(uint8, mode="L")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        self.masks[name] = buf.getvalue()
+
+    def load_mask(self, name: str) -> np.ndarray:
+        """Decode stored PNG bytes back to a float32 [0,1] array."""
+        png_bytes = self.masks[name]
+        img = Image.open(io.BytesIO(png_bytes))
+        return np.asarray(img, dtype=np.float32) / 255.0
+
+    def delete_mask(self, name: str) -> None:
+        """Remove mask entry; silently ignores unknown names."""
+        self.masks.pop(name, None)
+
+    def rename_mask(self, old: str, new: str) -> None:
+        """Rename a mask key, preserving its data."""
+        self.masks[new] = self.masks.pop(old)

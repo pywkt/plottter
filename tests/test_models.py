@@ -245,3 +245,61 @@ class TestProject:
     def test_active_layer_none_when_empty(self):
         p = self._make_project()
         assert p.active_layer is None
+
+    # ------------------------------------------------------------------
+    # Mask management
+    # ------------------------------------------------------------------
+
+    def test_masks_default_empty(self):
+        p = self._make_project()
+        assert p.masks == {}
+
+    def test_save_load_roundtrip(self):
+        import numpy as np
+        p = self._make_project()
+        arr = np.random.rand(64, 64).astype(np.float32)
+        p.save_mask("alpha", arr)
+        result = p.load_mask("alpha")
+        assert result.dtype == np.float32
+        assert result.shape == arr.shape
+        np.testing.assert_allclose(result, arr, atol=1 / 255)
+
+    def test_saved_png_is_smaller_than_raw(self):
+        import numpy as np
+        p = self._make_project()
+        arr = np.random.rand(100, 100).astype(np.float32)
+        p.save_mask("m", arr)
+        raw_size = arr.nbytes  # 100*100*4 bytes
+        assert len(p.masks["m"]) < raw_size
+
+    def test_saved_bytes_are_valid_png(self):
+        import io
+        import numpy as np
+        from PIL import Image
+        p = self._make_project()
+        arr = (np.ones((10, 10), dtype=np.float32) * 0.5)
+        p.save_mask("gray", arr)
+        img = Image.open(io.BytesIO(p.masks["gray"]))
+        assert img.mode == "L"
+        assert img.size == (10, 10)
+
+    def test_delete_mask(self):
+        import numpy as np
+        p = self._make_project()
+        p.save_mask("x", np.zeros((4, 4), dtype=np.float32))
+        p.delete_mask("x")
+        assert "x" not in p.masks
+
+    def test_delete_unknown_is_noop(self):
+        p = self._make_project()
+        p.delete_mask("nonexistent")  # should not raise
+
+    def test_rename_mask(self):
+        import numpy as np
+        p = self._make_project()
+        arr = np.ones((4, 4), dtype=np.float32) * 0.3
+        p.save_mask("old", arr)
+        original_bytes = p.masks["old"]
+        p.rename_mask("old", "new")
+        assert "old" not in p.masks
+        assert p.masks["new"] == original_bytes
