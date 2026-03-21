@@ -62,6 +62,19 @@ class TransformedShape(Shape):
         world_point = transform_point(self.transform, hit.point)
         return Hit(shape=self, t=t_world, point=world_point)
 
+    def surface_triangles(self) -> list:
+        """Return world-space triangles by transforming the wrapped shape's local triangles."""
+        local_tris = self.shape.surface_triangles()
+        if not local_tris:
+            return []
+        result = []
+        for v0, v1, v2 in local_tris:
+            w0 = transform_point(self.transform, np.asarray(v0, dtype=np.float64))
+            w1 = transform_point(self.transform, np.asarray(v1, dtype=np.float64))
+            w2 = transform_point(self.transform, np.asarray(v2, dtype=np.float64))
+            result.append((w0, w1, w2))
+        return result
+
     def bbox(self) -> BBox:
         inner = self.shape.bbox()
         # Transform all 8 corners

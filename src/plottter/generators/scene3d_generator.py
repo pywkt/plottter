@@ -355,6 +355,129 @@ def _generate_shadow_ground_hatching(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Per-face hatching visibility (task 52.4)
+# ---------------------------------------------------------------------------
+
+def _compute_hatching_faces(
+    shape,
+    scene,
+    light_dir_norm: "np.ndarray",
+    camera: Any,
+    canvas_w_mm: float,
+    canvas_h_mm: float,
+    offset_mm: tuple[float, float] = (0.0, 0.0),
+) -> "list[tuple[list[tuple[float, float]], float]]":
+    """Return visible, front-facing surface triangles of *shape* with brightness.
+
+    Unlike ``Scene._compute_visible_faces()``, this function:
+    - Only processes triangles from *shape* (not sibling shapes that are present
+      solely for occlusion).
+    - Offsets the occlusion ray origin along the face normal so that centroids
+      which are geometrically *inside* the surface (e.g. triangles on a sphere
+      where the centroid lies at radius < sphere_radius) do not self-occlude.
+    - Applies *offset_mm* directly in the 2D projection so the hatching aligns
+      with the wireframe output.
+
+    Parameters
+    ----------
+    shape:           The TransformedShape (or bare shape) to generate faces for.
+    scene:           The compiled Scene whose BVH is used for occlusion testing.
+    light_dir_norm:  Normalised directional light vector (unit length).
+    camera:          Camera defining the viewpoint and projection.
+    canvas_w_mm:     Canvas width in millimetres.
+    canvas_h_mm:     Canvas height in millimetres.
+    offset_mm:       (x_off, y_off) canvas offset applied to 2D projections.
+
+    Returns
+    -------
+    List of ``(projected_vertices, brightness)`` tuples.
+    """
+    from plottter.scene3d.ray import Ray, EPSILON as _EPS
+
+    eye = np.asarray(camera.eye, dtype=np.float64)
+    vp_matrix = camera.view_proj_matrix()
+    bvh = scene._bvh
+    x_off, y_off = offset_mm
+
+    # 1e-2 world-unit offset along the face normal when shooting the occlusion ray.
+    # This ensures that faces on curved surfaces (sphere, cylinder, cone) whose
+    # triangle centroids lie slightly inside the surface do not self-occlude.
+    _NORMAL_OFFSET = 1e-2
+
+    tris = shape.surface_triangles()
+    if not tris:
+        return []
+
+    result: list[tuple[list[tuple[float, float]], float]] = []
+
+    for raw_v0, raw_v1, raw_v2 in tris:
+        v0 = np.asarray(raw_v0, dtype=np.float64)
+        v1 = np.asarray(raw_v1, dtype=np.float64)
+        v2 = np.asarray(raw_v2, dtype=np.float64)
+
+        # Face normal via cross product.
+        edge1 = v1 - v0
+        edge2 = v2 - v0
+        normal = np.cross(edge1, edge2)
+        normal_len = float(np.linalg.norm(normal))
+        if normal_len < _EPS:
+            continue  # degenerate triangle
+        normal = normal / normal_len
+
+        # View direction: from centroid toward camera eye.
+        centroid = (v0 + v1 + v2) / 3.0
+        to_eye = eye - centroid
+        to_eye_len = float(np.linalg.norm(to_eye))
+        if to_eye_len < _EPS:
+            continue
+        view_dir = to_eye / to_eye_len
+
+        # Back-face cull.
+        if float(np.dot(normal, view_dir)) <= 0.0:
+            continue
+
+        # Occlusion test: cast from a point offset along the face normal so
+        # that curved-surface centroids (which lie inside the surface) do not
+        # incorrectly self-occlude.  We use bvh.intersect() (not intersect_any)
+        # so we can check the hit shape — shapes that use bbox-based intersection
+        # (Cylinder, Cone) would otherwise always self-occlude since the bbox
+        # boundary is at the surface and the offset ray immediately re-enters it.
+        ray_origin = centroid + normal * _NORMAL_OFFSET
+        ray = Ray(origin=ray_origin, direction=view_dir)
+        t_max = to_eye_len - _NORMAL_OFFSET
+        if t_max > _EPS and bvh is not None:
+            occluder = bvh.intersect(ray)
+            if occluder is not None and _EPS < occluder.t < t_max and occluder.shape is not shape:
+                continue  # occluded by a different shape
+
+        # Diffuse brightness.
+        brightness = float(max(0.0, np.dot(normal, light_dir_norm)))
+
+        # Project all 3 vertices to 2D canvas coordinates (mm) + offset.
+        projected: list[tuple[float, float]] = []
+        skip = False
+        for vert in (v0, v1, v2):
+            h = np.array([vert[0], vert[1], vert[2], 1.0], dtype=np.float64)
+            clip = h @ vp_matrix
+            w = clip[3]
+            if abs(w) < _EPS:
+                skip = True
+                break
+            ndc_x = clip[0] / w
+            ndc_y = clip[1] / w
+            x_mm = (ndc_x + 1.0) * 0.5 * canvas_w_mm + x_off
+            y_mm = (1.0 - (ndc_y + 1.0) * 0.5) * canvas_h_mm + y_off
+            projected.append((float(x_mm), float(y_mm)))
+
+        if skip or len(projected) != 3:
+            continue
+
+        result.append((projected, brightness))
+
+    return result
+
+
 _SHAPE_TYPES = [
     "Sphere",
     "Shaded Sphere",
@@ -623,6 +746,46 @@ class Scene3DGenerator(Generator):
                     "Lit Only renders only the visible lit wireframe edges without shadow hatching — "
                     "useful for plotting wireframes in a separate pen color."
                 ),
+            ),
+            # ── Render style / hatched fill (task 52.4) ──────────────────
+            ChoiceParam(
+                name="render_style",
+                label="Render Style",
+                choices=["Wireframe", "Hatched", "Wireframe + Hatched"],
+                default="Wireframe",
+                description=(
+                    "Wireframe: render only visible edges (default). "
+                    "Hatched: fill visible faces with brightness-mapped hatching lines. "
+                    "Wireframe + Hatched: combine wireframe edges and hatching fill."
+                ),
+            ),
+            FloatParam(
+                name="hatch_density_min",
+                label="Hatch Density Min",
+                min=0.0, max=5.0, step=0.1, default=0.5,
+                visible_when={"render_style": ["Hatched", "Wireframe + Hatched"]},
+                description="Hatching density for fully lit faces — 0 = no lines on lit faces",
+            ),
+            FloatParam(
+                name="hatch_density_max",
+                label="Hatch Density Max",
+                min=1.0, max=20.0, step=0.5, default=4.0,
+                visible_when={"render_style": ["Hatched", "Wireframe + Hatched"]},
+                description="Hatching density for faces in shadow",
+            ),
+            FloatParam(
+                name="hatch_angle_deg",
+                label="Hatch Angle (°)",
+                min=0.0, max=180.0, step=5.0, default=45.0,
+                visible_when={"render_style": ["Hatched", "Wireframe + Hatched"]},
+                description="Angle of hatching lines in degrees",
+            ),
+            BoolParam(
+                name="hatch_cross",
+                label="Cross-Hatch",
+                default=False,
+                visible_when={"render_style": ["Hatched", "Wireframe + Hatched"]},
+                description="Add perpendicular cross-hatching for darker areas (brightness < 0.3)",
             ),
         ]
 
@@ -958,7 +1121,59 @@ class Scene3DGenerator(Generator):
         else:
             polylines = render_result
 
-        return polylines
+        # ── Hatched fill (task 52.4) ──────────────────────────────────────────
+        # When render_style includes "Hatched", compute visible faces and fill
+        # them with brightness-mapped hatching lines.
+        render_style = params.get("render_style", "Wireframe")
+        hatch_polylines: list[Polyline] = []
+
+        if render_style in ("Hatched", "Wireframe + Hatched"):
+            from plottter.scene3d.hatching import (
+                _fill_triangle_with_hatching,
+                brightness_to_density,
+            )
+
+            hatch_density_min = float(params.get("hatch_density_min", 0.5))
+            hatch_density_max = float(params.get("hatch_density_max", 4.0))
+            hatch_angle = float(params.get("hatch_angle_deg", 45.0))
+            hatch_cross = bool(params.get("hatch_cross", False))
+
+            # Use the scene light direction if shadows are enabled; otherwise use
+            # a sensible default directional light for brightness computation.
+            if light_dir is not None:
+                face_light_dir: tuple[float, float, float] = light_dir
+            else:
+                # Upper-right directional light (will be normalised inside _compute_visible_faces)
+                face_light_dir = (1.0, 1.0, -1.0)
+
+            face_light_norm = np.array(face_light_dir, dtype=np.float64)
+            fln_len = float(np.linalg.norm(face_light_norm))
+            if fln_len > 1e-9:
+                face_light_norm = face_light_norm / fln_len
+
+            visible_faces = _compute_hatching_faces(
+                current_shape, scene, face_light_norm, camera,
+                canvas.width_mm, canvas.height_mm,
+                offset_mm=(x_off, y_off),
+            )
+
+            for verts_2d, brightness in visible_faces:
+                density = brightness_to_density(
+                    brightness, hatch_density_min, hatch_density_max
+                )
+                # Cross-hatch only for deep-shadow faces (brightness < 0.3).
+                cross_for_face = hatch_cross and (brightness < 0.3)
+                face_lines = _fill_triangle_with_hatching(
+                    verts_2d, density, hatch_angle, cross_for_face
+                )
+                hatch_polylines.extend(face_lines)
+
+        if render_style == "Wireframe":
+            return polylines
+        elif render_style == "Hatched":
+            return hatch_polylines
+        else:  # "Wireframe + Hatched"
+            return polylines + hatch_polylines
 
     def get_presets(self) -> list[Preset]:
         return [
@@ -1054,6 +1269,45 @@ class Scene3DGenerator(Generator):
                     "shadow_style": "Thicken",
                     "shadow_ground_plane": False,
                     "shadow_render_mode": "Combined",
+                },
+            ),
+            # ── Hatching presets (task 52.4) ──────────────────────────────
+            Preset(
+                name="Hatched Sphere",
+                params={
+                    "shape_type": "Sphere",
+                    "sphere_radius": 1.5,
+                    "sphere_lat_lines": 10,
+                    "sphere_lng_lines": 10,
+                    "render_style": "Hatched",
+                    "hatch_density_min": 0.5,
+                    "hatch_density_max": 4.0,
+                    "hatch_angle_deg": 45.0,
+                    "hatch_cross": False,
+                },
+            ),
+            Preset(
+                name="Cross-Hatched Cube",
+                params={
+                    "shape_type": "Cube",
+                    "cube_size": 2.0,
+                    "render_style": "Wireframe + Hatched",
+                    "hatch_density_min": 0.5,
+                    "hatch_density_max": 4.0,
+                    "hatch_angle_deg": 30.0,
+                    "hatch_cross": True,
+                },
+            ),
+            Preset(
+                name="Pen & Ink Portrait",
+                params={
+                    "shape_type": "Mesh Import",
+                    "mesh_file": "",
+                    "render_style": "Hatched",
+                    "hatch_density_min": 0.0,
+                    "hatch_density_max": 6.0,
+                    "hatch_angle_deg": 45.0,
+                    "hatch_cross": False,
                 },
             ),
         ]

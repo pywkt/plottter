@@ -114,8 +114,9 @@ class Sphere(Shape):
                 v10 = vertex(i + 1, j)
                 v11 = vertex(i + 1, (j + 1) % n_lon)
                 v01 = vertex(i, (j + 1) % n_lon)
-                triangles.append((v00, v10, v11))
-                triangles.append((v00, v11, v01))
+                # CCW winding from outside → outward-facing normals.
+                triangles.append((v00, v11, v10))
+                triangles.append((v00, v01, v11))
         return triangles
 
     def bbox(self) -> BBox:
