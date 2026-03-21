@@ -468,10 +468,6 @@ triangulation (triangles whose circumcircles contain no other seeds). The choice
 seed placement strategy — from uniform random to blue-noise to the phyllotaxis golden
 spiral — determines the character of the output.
 
-![Classic Voronoi](images/voronoi-delaunay_classic-voronoi.png)
-![Relaxed Hexagons](images/voronoi-delaunay_relaxed-hexagons.png)
-![Delaunay Mesh](images/voronoi-delaunay_delaunay-mesh.png)
-
 ### Parameters
 
 | Parameter | Description |
@@ -543,10 +539,6 @@ Generates a non-periodic Penrose tiling using Robinson triangle subdivision. Sta
 from a small seed configuration, each subdivision level inflates the triangle count
 by approximately φ² ≈ 2.618 (the square of the golden ratio), producing finer and
 finer P3-style rhombs that tile the plane without ever repeating.
-
-![Classic P3](images/penrose-tiling_classic-p3.png)
-![Arc Pattern](images/penrose-tiling_arc-pattern.png)
-![Full Decoration](images/penrose-tiling_full-decoration.png)
 
 ### Parameters
 

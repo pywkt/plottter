@@ -422,10 +422,6 @@ Three **vector field modes** control how the flow direction is derived from the 
 - **Dense ETF Flow** — tighter seeds, longer strokes, high ETF smoothing for a dense painterly result
 - **Contour Lines** — `perpendicular_gradient` mode; streamlines run along iso-brightness contours
 
-| Default | Dense ETF Flow | Contour Lines |
-|---------|---------------|---------------|
-| ![LIC default](images/line-integral-convolution_default.png) | ![LIC dense ETF](images/line-integral-convolution_dense-etf-flow.png) | ![LIC contour](images/line-integral-convolution_contour-lines.png) |
-
 **Best for:** Portraits, organic subjects — produces an impressionistic, painterly feel where lines
 follow the image's structure rather than scanning across it.
 
@@ -472,10 +468,6 @@ Three **orientation modes** control stroke direction:
 - **Cross-Hatch Portrait** — quadratic curve, cross-hatching enabled, higher density
 - **ETF Flow Strokes** — ETF orientation with slight curvature for an organic feel
 - **Fine Engraving** — 8 levels, short tight strokes, logarithmic curve, cross-hatching in shadows
-
-| Default | Cross-Hatch Portrait | ETF Flow Strokes | Fine Engraving |
-|---------|---------------------|-----------------|---------------|
-| ![TAM default](images/tonal-art-maps-tam_default.png) | ![TAM cross-hatch](images/tonal-art-maps-tam_cross-hatch-portrait.png) | ![TAM ETF](images/tonal-art-maps-tam_etf-flow-strokes.png) | ![TAM engraving](images/tonal-art-maps-tam_fine-engraving.png) |
 
 **Best for:** Portraits and illustrations — produces an engraving or pen-and-ink hatching style
 with accurate tonal reproduction across the full brightness range.
@@ -529,10 +521,6 @@ Six **dot shapes** are supported: **Circle** (outline ring), **Filled Circle** (
 - **Fine Detail** — square grid, small circle outlines, high resolution
 - **Cross Halftone** — hexagonal grid, cross-shaped dots
 - **Diamond Grid** — square grid, diamond-shaped dots
-
-| Classic Halftone | Newspaper | Pop Art Dots | Cross Halftone |
-|-----------------|-----------|-------------|---------------|
-| ![Dot Grid Halftone classic](images/dot-grid-halftone_classic-halftone.png) | ![Dot Grid Halftone newspaper](images/dot-grid-halftone_newspaper.png) | ![Dot Grid Halftone pop art](images/dot-grid-halftone_pop-art-dots.png) | ![Dot Grid Halftone cross](images/dot-grid-halftone_cross-halftone.png) |
 
 **Best for:** Photos and portraits where you want a recognizable halftone or screen-printing
 aesthetic.
