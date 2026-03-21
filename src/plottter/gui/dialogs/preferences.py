@@ -2,6 +2,7 @@
 
 Currently contains:
 - AI Integration: Replicate.com API key entry and connection test.
+- AI Results Cache: unified cache directory for depth maps, background removal, and masks.
 """
 
 from __future__ import annotations
@@ -26,6 +27,57 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+_DEFAULT_CACHE_DIR = str(pathlib.Path.home() / ".plottter" / "ai_cache")
+_CACHE_SUBDIRS = ("depth", "bg_removal", "masks")
+
+
+def _cache_dir_from_settings(settings: QSettings) -> str:
+    """Return the configured cache dir, migrating the old key if needed."""
+    # New key takes priority
+    value = settings.value("ai/cache_dir", "") or ""
+    if value:
+        return value
+    # Fall back to old key (migration)
+    old = settings.value("ai/depth_cache_dir", "") or ""
+    if old:
+        # Migrate: write under the new key and remove the old one
+        settings.setValue("ai/cache_dir", old)
+        settings.remove("ai/depth_cache_dir")
+        return old
+    return ""
+
+
+def _compute_cache_size(cache_dir: str) -> int:
+    """Return total bytes of all PNG files under cache_dir (all subdirs)."""
+    if not os.path.isdir(cache_dir):
+        return 0
+    total = 0
+    for subdir in _CACHE_SUBDIRS:
+        subpath = os.path.join(cache_dir, subdir)
+        if os.path.isdir(subpath):
+            for f in glob.glob(os.path.join(subpath, "*.png")):
+                try:
+                    total += os.path.getsize(f)
+                except OSError:
+                    pass
+    # Also count PNGs directly in the root (legacy depth_cache layout)
+    for f in glob.glob(os.path.join(cache_dir, "*.png")):
+        try:
+            total += os.path.getsize(f)
+        except OSError:
+            pass
+    return total
+
+
+def _format_size(bytes_: int) -> str:
+    if bytes_ < 1024:
+        return f"{bytes_} B"
+    if bytes_ < 1024 ** 2:
+        return f"{bytes_ / 1024:.1f} KB"
+    if bytes_ < 1024 ** 3:
+        return f"{bytes_ / 1024 ** 2:.1f} MB"
+    return f"{bytes_ / 1024 ** 3:.2f} GB"
+
 
 class PreferencesDialog(QDialog):
     """Modal preferences dialog with AI Integration settings."""
@@ -47,6 +99,7 @@ class PreferencesDialog(QDialog):
         layout.addWidget(buttons)
 
         self._load_settings()
+        self._update_cache_size_label()
 
     # ------------------------------------------------------------------
     # UI builders
@@ -89,7 +142,7 @@ class PreferencesDialog(QDialog):
         return group
 
     def _build_cache_group(self) -> QGroupBox:
-        group = QGroupBox("Depth Map Cache")
+        group = QGroupBox("AI Results Cache")
         form = QFormLayout(group)
 
         # Path picker row
@@ -98,11 +151,10 @@ class PreferencesDialog(QDialog):
         cache_layout.setContentsMargins(0, 0, 0, 0)
 
         self._cache_dir_edit = QLineEdit()
-        self._cache_dir_edit.setPlaceholderText(
-            str(pathlib.Path.home() / ".plottter" / "depth_cache")
-        )
+        self._cache_dir_edit.setPlaceholderText(_DEFAULT_CACHE_DIR)
         self._cache_dir_edit.setToolTip(
-            "Directory where AI depth maps are cached as 16-bit PNG files.\n"
+            "Directory where AI results are cached as PNG files.\n"
+            "Subdirectories: depth/, bg_removal/, masks/\n"
             "Leave blank to use the default location."
         )
         cache_layout.addWidget(self._cache_dir_edit)
@@ -114,6 +166,10 @@ class PreferencesDialog(QDialog):
 
         form.addRow("Cache Directory:", cache_row)
 
+        # Cache size label
+        self._cache_size_label = QLabel("Cache size: —")
+        form.addRow("", self._cache_size_label)
+
         # Clear cache button
         clear_row = QWidget()
         clear_layout = QHBoxLayout(clear_row)
@@ -121,7 +177,8 @@ class PreferencesDialog(QDialog):
 
         self._clear_cache_btn = QPushButton("Clear Cache")
         self._clear_cache_btn.setToolTip(
-            "Delete all cached depth map PNG files from the cache directory."
+            "Delete all cached AI result PNG files from all subdirectories "
+            "(depth/, bg_removal/, masks/)."
         )
         self._clear_cache_btn.clicked.connect(self._on_clear_cache)
         clear_layout.addWidget(self._clear_cache_btn)
@@ -130,9 +187,10 @@ class PreferencesDialog(QDialog):
         form.addRow("", clear_row)
 
         note = QLabel(
-            "Depth maps are cached to avoid repeated Replicate API calls when "
-            "only contour parameters change.  Cache entries are keyed by source "
-            "image content (SHA-256)."
+            "AI results (depth maps, background removal, segmentation masks) are "
+            "cached to avoid repeated Replicate API calls when only rendering "
+            "parameters change.  Cache entries are keyed by source image content "
+            "(SHA-256)."
         )
         note.setWordWrap(True)
         form.addRow(note)
@@ -147,13 +205,28 @@ class PreferencesDialog(QDialog):
         settings = QSettings("Plottter", "Plottter")
         key = settings.value("replicate/api_key", "") or ""
         self._api_key_edit.setText(key)
-        cache_dir = settings.value("ai/depth_cache_dir", "") or ""
+        cache_dir = _cache_dir_from_settings(settings)
         self._cache_dir_edit.setText(cache_dir)
 
     def _save_settings(self) -> None:
         settings = QSettings("Plottter", "Plottter")
         settings.setValue("replicate/api_key", self._api_key_edit.text().strip())
-        settings.setValue("ai/depth_cache_dir", self._cache_dir_edit.text().strip())
+        settings.setValue("ai/cache_dir", self._cache_dir_edit.text().strip())
+        # Remove old key if present
+        settings.remove("ai/depth_cache_dir")
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _resolved_cache_dir(self) -> str:
+        d = self._cache_dir_edit.text().strip()
+        return d if d else _DEFAULT_CACHE_DIR
+
+    def _update_cache_size_label(self) -> None:
+        cache_dir = self._resolved_cache_dir()
+        size = _compute_cache_size(cache_dir)
+        self._cache_size_label.setText(f"Cache size: {_format_size(size)}")
 
     # ------------------------------------------------------------------
     # Slots
@@ -164,23 +237,20 @@ class PreferencesDialog(QDialog):
         self.accept()
 
     def _on_browse_cache_dir(self) -> None:
-        """Open a directory picker for the depth map cache directory."""
-        current = self._cache_dir_edit.text().strip()
-        if not current:
-            current = str(pathlib.Path.home() / ".plottter" / "depth_cache")
+        """Open a directory picker for the AI cache directory."""
+        current = self._cache_dir_edit.text().strip() or _DEFAULT_CACHE_DIR
         chosen = QFileDialog.getExistingDirectory(
             self,
-            "Select Depth Map Cache Directory",
+            "Select AI Cache Directory",
             current,
         )
         if chosen:
             self._cache_dir_edit.setText(chosen)
+            self._update_cache_size_label()
 
     def _on_clear_cache(self) -> None:
-        """Delete all .png files from the configured cache directory."""
-        cache_dir = self._cache_dir_edit.text().strip()
-        if not cache_dir:
-            cache_dir = str(pathlib.Path.home() / ".plottter" / "depth_cache")
+        """Delete all .png files from all subdirectories of the cache directory."""
+        cache_dir = self._resolved_cache_dir()
 
         if not os.path.isdir(cache_dir):
             QMessageBox.information(
@@ -190,38 +260,64 @@ class PreferencesDialog(QDialog):
             )
             return
 
-        png_files = glob.glob(os.path.join(cache_dir, "*.png"))
-        if not png_files:
+        # Gather files per category
+        categories: dict[str, list[str]] = {}
+        for subdir in _CACHE_SUBDIRS:
+            subpath = os.path.join(cache_dir, subdir)
+            if os.path.isdir(subpath):
+                files = glob.glob(os.path.join(subpath, "*.png"))
+                if files:
+                    categories[subdir] = files
+        # Also root-level PNGs (legacy)
+        root_pngs = glob.glob(os.path.join(cache_dir, "*.png"))
+        if root_pngs:
+            categories["(root)"] = root_pngs
+
+        total_files = sum(len(v) for v in categories.values())
+        if total_files == 0:
             QMessageBox.information(
                 self,
                 "Clear Cache",
-                "No cached depth maps found.",
+                "No cached AI result files found.",
             )
             return
 
+        summary_lines = "\n".join(
+            f"  {name}/: {len(files)} file(s)"
+            for name, files in sorted(categories.items())
+        )
         reply = QMessageBox.question(
             self,
             "Clear Cache",
-            f"Delete {len(png_files)} cached depth map file(s) from:\n{cache_dir}?",
+            f"Delete {total_files} cached file(s) from:\n{cache_dir}\n\n{summary_lines}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        removed = 0
-        for f in png_files:
-            try:
-                os.remove(f)
-                removed += 1
-            except OSError:
-                pass
+        removed_by_cat: dict[str, int] = {}
+        for name, files in categories.items():
+            count = 0
+            for f in files:
+                try:
+                    os.remove(f)
+                    count += 1
+                except OSError:
+                    pass
+            removed_by_cat[name] = count
 
+        result_lines = "\n".join(
+            f"  {name}/: {count} removed"
+            for name, count in sorted(removed_by_cat.items())
+        )
+        total_removed = sum(removed_by_cat.values())
         QMessageBox.information(
             self,
             "Clear Cache",
-            f"Removed {removed} cached depth map file(s).",
+            f"Removed {total_removed} cached file(s):\n\n{result_lines}",
         )
+        self._update_cache_size_label()
 
     def _on_test_connection(self) -> None:
         """Test the Replicate API key by calling is_available() and a lightweight check."""

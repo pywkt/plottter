@@ -1459,11 +1459,14 @@ class SettingsPanel(QScrollArea):
         from PyQt6.QtCore import QSettings
         settings = QSettings("Plottter", "Plottter")
         api_key = str(settings.value("replicate/api_key", "") or "")
-        raw_cache_dir = settings.value("ai/depth_cache_dir", "") or ""
+        raw_cache_dir = (
+            settings.value("ai/cache_dir", "") or
+            settings.value("ai/depth_cache_dir", "") or ""
+        )
         cache_dir: "str | None" = raw_cache_dir.strip() or None
         if cache_dir is None:
             import pathlib
-            cache_dir = str(pathlib.Path.home() / ".plottter" / "depth_cache")
+            cache_dir = str(pathlib.Path.home() / ".plottter" / "ai_cache")
 
         if not api_key:
             from PyQt6.QtWidgets import QMessageBox
