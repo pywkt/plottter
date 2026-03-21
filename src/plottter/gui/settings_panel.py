@@ -802,7 +802,18 @@ class SettingsPanel(QScrollArea):
         if self._color_sep_gen_combo.count() == 0:
             self._color_sep_gen_combo.addItem("(no generators)")
         gen_form.addRow(QLabel("Line-Art Algorithm"), self._color_sep_gen_combo)
+
+        # Preset combo for the selected line-art algorithm
+        self._color_sep_preset_combo = QComboBox()
+        gen_form.addRow(QLabel("Preset"), self._color_sep_preset_combo)
+
         color_sep_layout.addLayout(gen_form)
+
+        # Connect algorithm change to rebuild preset combo, then populate it
+        self._color_sep_gen_combo.currentIndexChanged.connect(
+            self._rebuild_color_sep_preset_combo
+        )
+        self._rebuild_color_sep_preset_combo()
 
         # Separate and Generate Lines buttons
         self._separate_btn = QPushButton("Separate into Layers")
@@ -3503,6 +3514,62 @@ class SettingsPanel(QScrollArea):
                 cb.setChecked(True)
                 layout.addWidget(cb)
                 self._channel_checks[ch] = cb
+
+    def _rebuild_color_sep_preset_combo(self) -> None:
+        """Rebuild the color separation preset combo based on the selected generator."""
+        self._color_sep_preset_combo.blockSignals(True)
+        self._color_sep_preset_combo.clear()
+
+        # Always add "Default" as first item with None data
+        self._color_sep_preset_combo.addItem("Default", None)
+
+        # Get the currently selected generator class
+        gen_cls = self._color_sep_gen_combo.currentData()
+        if gen_cls is None:
+            self._color_sep_preset_combo.blockSignals(False)
+            return
+
+        try:
+            # Instantiate the generator to get its presets
+            gen_instance = gen_cls()
+            presets = gen_instance.get_presets()
+
+            # Add built-in presets
+            for preset in presets:
+                self._color_sep_preset_combo.addItem(preset.name, preset.params)
+
+            # Load and add user presets
+            try:
+                from plottter.presets.user_presets import load_user_presets
+
+                user_presets = load_user_presets(gen_cls.name)
+                if user_presets:
+                    self._color_sep_preset_combo.insertSeparator(
+                        self._color_sep_preset_combo.count()
+                    )
+                    self._color_sep_preset_combo.addItem("— User Presets —")
+                    # Make the section header non-selectable
+                    header_idx = self._color_sep_preset_combo.count() - 1
+                    model = self._color_sep_preset_combo.model()
+                    if model is not None:
+                        header_item = model.item(header_idx)
+                        if header_item is not None:
+                            header_item.setFlags(
+                                header_item.flags()
+                                & ~Qt.ItemFlag.ItemIsEnabled
+                                & ~Qt.ItemFlag.ItemIsSelectable
+                            )
+                    for user_preset in user_presets:
+                        self._color_sep_preset_combo.addItem(
+                            user_preset.name, user_preset.params
+                        )
+            except Exception:
+                pass  # User presets are optional; ignore failures
+
+        except Exception:
+            pass  # If generator instantiation fails, just show Default
+
+        self._color_sep_preset_combo.blockSignals(False)
 
     def _on_ai_bg_changed(self, state: int) -> None:
         """Handle AI Background Removal toggle: disable manual BG removal when AI is on."""
