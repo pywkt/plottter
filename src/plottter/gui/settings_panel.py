@@ -942,7 +942,8 @@ class SettingsPanel(QScrollArea):
 
         # Instructions label (updated based on mode)
         self._ai_mask_instructions = _VisibilityTrackedLabel(
-            "Left-click = positive point (green)\nRight-click = negative point (red)"
+            "Left-click to mark areas to include.\n"
+            "Right-click to mark areas to exclude from the selection."
         )
         self._ai_mask_instructions.setWordWrap(True)
         self._ai_mask_instructions.setStyleSheet("color: #666; font-size: 11px;")
@@ -978,6 +979,38 @@ class SettingsPanel(QScrollArea):
 
         self._layout.addWidget(self._ai_mask_group)
         self._ai_mask_group.setVisible(False)
+
+        # ----------------------------------------------------------------
+        # Mask Refinement group (Mask Paint mode only)
+        # ----------------------------------------------------------------
+        self._mask_refine_group = QGroupBox("Mask Refinement")
+        refine_form = QFormLayout(self._mask_refine_group)
+
+        self._feather_spin = QDoubleSpinBox()
+        self._feather_spin.setRange(0.0, 5.0)
+        self._feather_spin.setSingleStep(0.1)
+        self._feather_spin.setValue(0.0)
+        self._feather_spin.setSuffix(" mm")
+        self._feather_spin.setToolTip(
+            "Blur the mask edges by this radius — softens the selection boundary"
+        )
+        refine_form.addRow(QLabel("Feather"), self._feather_spin)
+
+        self._grow_shrink_spin = QDoubleSpinBox()
+        self._grow_shrink_spin.setRange(-5.0, 5.0)
+        self._grow_shrink_spin.setSingleStep(0.1)
+        self._grow_shrink_spin.setValue(0.0)
+        self._grow_shrink_spin.setSuffix(" mm")
+        self._grow_shrink_spin.setToolTip(
+            "Positive = expand mask outward, Negative = contract mask inward"
+        )
+        refine_form.addRow(QLabel("Grow / Shrink"), self._grow_shrink_spin)
+
+        self._apply_refinement_btn = QPushButton("Apply Refinement")
+        refine_form.addRow(self._apply_refinement_btn)
+
+        self._layout.addWidget(self._mask_refine_group)
+        self._mask_refine_group.setVisible(False)
 
         # ----------------------------------------------------------------
         # Shape Drawing group (Shape Drawing mode only)
@@ -1603,6 +1636,7 @@ class SettingsPanel(QScrollArea):
         self._mask_paint_group.setVisible(is_mask_paint)
         self._saved_masks_group.setVisible(is_mask_paint)
         self._ai_mask_group.setVisible(is_mask_paint)
+        self._mask_refine_group.setVisible(is_mask_paint)
 
         if is_mask_paint:
             self._update_ai_mask_image_label()
@@ -1720,6 +1754,9 @@ class SettingsPanel(QScrollArea):
         # Mask tool combo → canvas + brush control visibility
         self._mask_tool_combo.currentIndexChanged.connect(self._on_mask_tool_changed)
 
+        # Mask refinement
+        self._apply_refinement_btn.clicked.connect(self._on_apply_refinement)
+
         # AI mask controls → canvas and handlers
         self._ai_mask_clear_btn.clicked.connect(self._on_ai_mask_clear)
         self._ai_mask_generate_btn.clicked.connect(self._on_ai_mask_generate)
@@ -1777,6 +1814,61 @@ class SettingsPanel(QScrollArea):
         description = f"Mask {tool_text}"
         cmd = MaskPaintCommand(self._canvas_ref, before, after, description)
         self._controller.undo_stack.push(cmd)
+
+    def _on_apply_refinement(self) -> None:
+        """Apply feather and grow/shrink refinement to the current mask."""
+        if self._canvas_ref is None:
+            return
+        mask = self._canvas_ref.get_mask()
+        if mask is None or not mask.any():
+            QMessageBox.warning(
+                self, "Apply Refinement", "No mask to refine. Paint a mask first."
+            )
+            return
+
+        from scipy.ndimage import gaussian_filter, maximum_filter, minimum_filter
+
+        # PX_PER_MM must match canvas_widget._MASK_PX_PER_MM
+        PX_PER_MM = 5
+
+        feather_mm = self._feather_spin.value()
+        grow_shrink_mm = self._grow_shrink_spin.value()
+
+        # Nothing to do if both are zero
+        if feather_mm == 0.0 and grow_shrink_mm == 0.0:
+            return
+
+        before = mask.copy()
+        refined = mask.astype(np.float32)
+
+        # Apply grow/shrink BEFORE feather so feathering softens the grown/shrunk edge
+        if grow_shrink_mm > 0:
+            # Grow: dilate with maximum filter then re-threshold
+            size = int(abs(grow_shrink_mm) * PX_PER_MM * 2 + 1)
+            refined = maximum_filter(refined, size=size)
+            refined = (refined > 0.5).astype(np.float32)
+        elif grow_shrink_mm < 0:
+            # Shrink: erode with minimum filter then re-threshold
+            size = int(abs(grow_shrink_mm) * PX_PER_MM * 2 + 1)
+            refined = minimum_filter(refined, size=size)
+            refined = (refined > 0.5).astype(np.float32)
+
+        # Apply feather (Gaussian blur)
+        if feather_mm > 0:
+            sigma = feather_mm * PX_PER_MM
+            refined = gaussian_filter(refined, sigma=sigma)
+
+        # Set the refined mask
+        self._canvas_ref.set_mask(refined)
+        after = refined.copy()
+
+        # Push undo command
+        from plottter.gui.commands import MaskPaintCommand
+        cmd = MaskPaintCommand(self._canvas_ref, before, after, "Refine Mask")
+        self._controller.undo_stack.push(cmd)
+
+        # Update status
+        self._mask_status_label.setText("Mask refinement applied.")
 
     def _refresh_mask_list(self, *_args: Any) -> None:
         """Repopulate the saved-masks list from the controller."""
@@ -1980,7 +2072,8 @@ class SettingsPanel(QScrollArea):
 
         if is_point:
             self._ai_mask_instructions.setText(
-                "Left-click = positive point (green)\nRight-click = negative point (red)"
+                "Left-click to mark areas to include.\n"
+                "Right-click to mark areas to exclude from the selection."
             )
             self._ai_mask_instructions.setVisible(True)
         elif is_box:
