@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 from typing import TYPE_CHECKING
 
+import numpy as np
 from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtGui import QUndoStack
 
@@ -37,6 +38,8 @@ class ProjectController(QObject):
     active_layer_changed = pyqtSignal(str)
     # Emitted with layer_id when a layer's generator_info changes (e.g. after move sync)
     generator_info_changed = pyqtSignal(str)
+    # Emitted when the project's saved masks change (save, delete, rename)
+    masks_changed = pyqtSignal()
 
     def __init__(self, project: Project, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -150,6 +153,30 @@ class ProjectController(QObject):
         self._project.canvas = canvas
         self._set_modified(True)
         self.canvas_changed.emit()
+
+    def _raw_save_mask(self, name: str, mask_array: np.ndarray) -> None:
+        """Save a mask without pushing an undo command."""
+        self._project.save_mask(name, mask_array)
+        self._set_modified(True)
+        self.masks_changed.emit()
+
+    def _raw_restore_mask_bytes(self, name: str, png_bytes: bytes) -> None:
+        """Restore raw PNG bytes for a mask directly (used by undo to avoid re-encoding)."""
+        self._project.masks[name] = png_bytes
+        self._set_modified(True)
+        self.masks_changed.emit()
+
+    def _raw_delete_mask(self, name: str) -> None:
+        """Delete a mask without pushing an undo command."""
+        self._project.delete_mask(name)
+        self._set_modified(True)
+        self.masks_changed.emit()
+
+    def _raw_rename_mask(self, old: str, new: str) -> None:
+        """Rename a mask without pushing an undo command."""
+        self._project.rename_mask(old, new)
+        self._set_modified(True)
+        self.masks_changed.emit()
 
     # ------------------------------------------------------------------
     # Layer management (undo-aware public API)
@@ -268,6 +295,36 @@ class ProjectController(QObject):
             from plottter.gui.commands import SetLayerPathsCommand
             cmd = SetLayerPathsCommand(self, layer_id, paths, old_paths, description)
             self._undo_stack.push(cmd)
+
+    # ------------------------------------------------------------------
+    # Mask management (undo-aware public API)
+    # ------------------------------------------------------------------
+
+    def save_mask(self, name: str, mask_array: np.ndarray) -> None:
+        """Save a named mask (undoable)."""
+        from plottter.gui.commands import SaveMaskCommand
+        cmd = SaveMaskCommand(self, name, mask_array)
+        self._undo_stack.push(cmd)
+
+    def load_mask(self, name: str) -> np.ndarray:
+        """Load a named mask as a float32 [0,1] array."""
+        return self._project.load_mask(name)
+
+    def delete_mask(self, name: str) -> None:
+        """Delete a named mask (undoable)."""
+        from plottter.gui.commands import DeleteMaskCommand
+        cmd = DeleteMaskCommand(self, name)
+        self._undo_stack.push(cmd)
+
+    def rename_mask(self, old: str, new: str) -> None:
+        """Rename a mask (undoable)."""
+        from plottter.gui.commands import RenameMaskCommand
+        cmd = RenameMaskCommand(self, old, new)
+        self._undo_stack.push(cmd)
+
+    def mask_names(self) -> list[str]:
+        """Return a sorted list of saved mask names."""
+        return sorted(self._project.masks.keys())
 
     # ------------------------------------------------------------------
     # Canvas management (undo-aware)

@@ -290,6 +290,92 @@ class MergeLayersCommand(QUndoCommand):
             self._controller._raw_insert_layer(layer, idx)
 
 
+class SaveMaskCommand(QUndoCommand):
+    """Save (or overwrite) a named mask.
+
+    redo: encodes and stores the mask array.
+    undo: restores the previous PNG bytes (or deletes the mask if it was new).
+    """
+
+    def __init__(
+        self,
+        controller: ProjectController,
+        name: str,
+        mask_array: object,  # np.ndarray — loosely typed to avoid import at module level
+        parent: QUndoCommand | None = None,
+    ) -> None:
+        super().__init__(f"Save Mask '{name}'", parent)
+        self._controller = controller
+        self._name = name
+        # Deep-copy the array so that mutations by the caller after save_mask()
+        # don't affect subsequent redo operations.
+        self._mask_array = copy.deepcopy(mask_array)
+        # Capture old state so undo can restore it
+        self._old_png: bytes | None = controller.current_project.masks.get(name)
+
+    def redo(self) -> None:
+        self._controller._raw_save_mask(self._name, self._mask_array)
+
+    def undo(self) -> None:
+        if self._old_png is None:
+            self._controller._raw_delete_mask(self._name)
+        else:
+            self._controller._raw_restore_mask_bytes(self._name, self._old_png)
+
+
+class DeleteMaskCommand(QUndoCommand):
+    """Delete a named mask.
+
+    redo: removes the mask.
+    undo: restores the mask from the captured PNG bytes.
+    """
+
+    def __init__(
+        self,
+        controller: ProjectController,
+        name: str,
+        parent: QUndoCommand | None = None,
+    ) -> None:
+        super().__init__(f"Delete Mask '{name}'", parent)
+        self._controller = controller
+        self._name = name
+        # Snapshot the PNG bytes before deletion
+        self._saved_png: bytes | None = controller.current_project.masks.get(name)
+
+    def redo(self) -> None:
+        self._controller._raw_delete_mask(self._name)
+
+    def undo(self) -> None:
+        if self._saved_png is not None:
+            self._controller._raw_restore_mask_bytes(self._name, self._saved_png)
+
+
+class RenameMaskCommand(QUndoCommand):
+    """Rename a mask from *old* to *new*.
+
+    redo: renames old → new.
+    undo: renames new → old.
+    """
+
+    def __init__(
+        self,
+        controller: ProjectController,
+        old: str,
+        new: str,
+        parent: QUndoCommand | None = None,
+    ) -> None:
+        super().__init__(f"Rename Mask '{old}' → '{new}'", parent)
+        self._controller = controller
+        self._old = old
+        self._new = new
+
+    def redo(self) -> None:
+        self._controller._raw_rename_mask(self._old, self._new)
+
+    def undo(self) -> None:
+        self._controller._raw_rename_mask(self._new, self._old)
+
+
 class MoveLayerCommand(QUndoCommand):
     """Translate a layer's paths and optionally sync generator offset params.
 
