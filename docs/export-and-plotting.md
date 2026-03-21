@@ -72,6 +72,8 @@ significantly for dense images.
 4. **Merge** — connects path endpoints within a configurable distance
 5. **Reorder (nearest-neighbor)** — re-sequences paths to minimize pen-up travel
 6. **2-opt improvement** — iterative swap pass to improve on the nearest-neighbor result
+7. **3-opt improvement** (optional, disabled by default) — finds route improvements that 2-opt cannot by reconnecting three edges at a time. Recommended for stipple/dot art with 1000+ paths
+8. **Or-opt improvement** — relocates short subsequences (1–3 paths) to better positions
 
 After optimization, a summary dialog shows:
 

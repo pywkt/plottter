@@ -118,7 +118,27 @@ Large images with many paths can take hours to plot if not optimized:
 4. For stipple paths, enable **connect_tsp** to produce a single continuous polyline (zero pen lifts)
 5. For edge detection results, try increasing `close_gaps_mm` to connect more contour segments
 
+The Optimize dialog includes an optional **3-opt** step (disabled by default). Enable it for stipple or dot art with 1000+ paths — 3-opt finds route improvements that 2-opt cannot, at the cost of longer computation time.
+
 Typical optimization improvement: 30–60% reduction in pen-up travel distance.
+
+---
+
+## Path Effects
+
+**Tools › Taper Paths** — adds stroke width variation along each path, fading in at the start and out at the end. Choose "Outline" for just the two edge curves, or "Filled" for parallel strokes between the edges. Adjust the fade fraction (how much of the path fades) and maximum width.
+
+**Tools › Offset Paths** — generates parallel offset curves at a specified distance from the original paths. Use this for multi-pen-width effects, outline doubling, or creating inset/outset decorations. Configure the number of copies, which side(s), and the join style (round, mitre, or bevel).
+
+---
+
+## Mask Painting Tips
+
+- Use **AI point prompt** with left-click (foreground) and right-click (background/exclude) to quickly segment complex objects
+- After generating an AI mask, switch to Manual Brush to clean up edges
+- Use **Feather** (0.5–1.0 mm) to soften mask edges for more natural transitions
+- Use **Grow** (positive) to expand the mask slightly, or **Shrink** (negative) to pull it inward
+- Save masks to the project with **Save Current** — you can create multiple masks and switch between them without losing work
 
 ---
 

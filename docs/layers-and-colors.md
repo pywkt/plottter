@@ -193,6 +193,30 @@ with the same algorithm settings.
 
 ---
 
+## Mask Painting and Mask Library
+
+The **Mask Paint** mode lets you create custom masks to selectively apply line art to regions of an image. Paint with the brush, rectangle, ellipse, polygon, or pen tools, or use AI-powered segmentation (point, box, or text prompts via Replicate SAM-2).
+
+### Mask refinement
+
+After creating a mask, use the refinement controls to adjust it:
+
+- **Feather** — blur the mask edges to soften the selection boundary
+- **Grow / Shrink** — expand or contract the mask boundary
+
+### Saving and reusing masks
+
+Masks can be saved to the project under a name and restored later. This is useful when you need multiple masks for the same project — for example, one mask for the foreground and another for the background.
+
+1. Paint or generate a mask
+2. Click **Save Current** and enter a name
+3. Clear the mask and create a new one
+4. To restore a saved mask, select it in the **Saved Masks** list and click **Load** (or double-click)
+
+Saved masks are persisted in the `.plottter` project file and survive save/reload. Each mask appears with a thumbnail preview.
+
+---
+
 ## Tips for Multi-Layer Workflows
 
 - Use **K-Means with 3–4 clusters** for most full-color photos

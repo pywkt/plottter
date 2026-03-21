@@ -220,6 +220,15 @@ inactivity may take 30–60 seconds.
 **Fix:** Wait for the first request to complete — subsequent requests in the same session are
 faster. If a request times out, click the AI button again to retry.
 
+### AI results cache
+
+Plottter caches AI results (depth maps, background removal, masks) on disk in `~/.plottter/ai_cache/` with subdirectories for each operation type. When you load the same source image again, cached results are restored automatically without an API call. A "(cached)" indicator appears next to the feature when a cached result is available.
+
+To manage the cache:
+1. Open **Edit › Preferences**
+2. The **AI Cache** section shows the current cache size and directory
+3. Click **Clear Cache** to remove all cached results
+
 ---
 
 ## AxiDraw USB Issues

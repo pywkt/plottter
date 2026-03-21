@@ -87,13 +87,32 @@ using AI-powered segmentation (via the [Replicate.com](https://replicate.com) AP
 
 | Prompt type | How to use |
 |-------------|-----------|
-| **Point prompt** | Click on the canvas to place a foreground point; the model segments the object at that location |
+| **Point prompt** | Left-click to place foreground points (include in mask); right-click to place background points (exclude from mask). Use negative points to refine — e.g. exclude ears from a background selection |
 | **Box prompt** | Drag a rectangle on the canvas; the model segments content inside the box |
 | **Text prompt** | Type a description (e.g. "person", "background") and the model generates a matching mask |
+
+After generating an AI mask, the mode switches to Manual Brush so you can refine the result by painting.
 
 > **Requirement:** A Replicate API key must be configured in **Edit › Preferences** before AI
 > mask generation is available. No additional Python packages are required. All AI controls are
 > automatically disabled when no API key is set.
+
+### Mask refinement
+
+After creating a mask (manually or via AI), use the **Mask Refinement** controls:
+
+- **Feather** — blur the mask edges by a configurable radius (mm) to soften the selection boundary
+- **Grow / Shrink** — expand (positive) or contract (negative) the mask boundary by a distance in mm
+
+### Mask library
+
+Masks can be saved to the project for reuse:
+
+- **Save Current** — save the current mask under a name
+- **Load** — restore a previously saved mask to the canvas (double-click also works)
+- **Delete / Rename** — manage saved masks
+
+Saved masks are stored in the project file and persist across save/load. Each mask appears in the list with a thumbnail preview.
 
 ---
 
@@ -245,12 +264,14 @@ The status bar at the bottom of the window shows:
 
 | Item | Description |
 |------|-------------|
-| Optimize Current Layer | Full optimization pipeline on the active layer |
+| Optimize Current Layer | Full optimization pipeline on the active layer (nearest-neighbor + 2-opt + optional 3-opt + Or-opt) |
 | Optimize All Layers | Full optimization on every unlocked layer |
 | Simplify Paths | RDP simplification only |
 | Merge Nearby Paths | Connect nearby endpoints |
 | Clip to Canvas | Remove paths outside the margin boundary |
 | Weld Overlapping Paths | Remove duplicate overlapping segments |
+| Taper Paths | Vary stroke width along paths — fade in/out at endpoints for an organic brush feel |
+| Offset Paths | Generate parallel offset curves at a distance — enables multi-pen-width effects and outline doubling |
 | Apply Brush to Layer | Apply stylized brush effects (stippled, multi-stroke, calligraphic) |
 | Plot with AxiDraw… | Send to AxiDraw plotter via USB |
 | Manage Plugins… | Load custom generator plugins |

@@ -632,6 +632,23 @@ Camera settings are shared across all 3D layers. You can orbit, zoom, and pan in
 - **FOV** — field of view
 - **Projection** — Perspective or Orthographic
 
+### Render Style
+
+The `render_style` parameter controls how surfaces are drawn:
+
+- **Wireframe** (default) — classic wireframe edges only
+- **Hatched** — fills visible surfaces with parallel hatching lines whose density varies based on light angle. Darker (shadow-facing) surfaces get denser hatching, producing a traditional pen-and-ink illustration look
+- **Wireframe + Hatched** — both wireframe edges and surface hatching combined
+
+When hatching is enabled, configure:
+
+| Parameter | Description |
+|-----------|-------------|
+| `hatch_density_min` | Lines per mm for fully lit faces (0 = no lines on lit surfaces) |
+| `hatch_density_max` | Lines per mm for faces in shadow |
+| `hatch_angle_deg` | Direction of hatching lines |
+| `hatch_cross` | Add perpendicular cross-hatching on deep shadow faces (brightness < 0.3) |
+
 ### Shadows
 
 When shadows are enabled, the scene supports:
