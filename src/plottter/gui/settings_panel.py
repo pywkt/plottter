@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+from PIL import Image as _PilImage
 
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtCore import Qt, QSize, QTimer, pyqtSignal
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -20,6 +21,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMenu,
     QMessageBox,
     QPlainTextEdit,
@@ -895,7 +897,8 @@ class SettingsPanel(QScrollArea):
         saved_masks_layout = QVBoxLayout(self._saved_masks_group)
 
         self._mask_list = QListWidget()
-        self._mask_list.setMaximumHeight(120)
+        self._mask_list.setMaximumHeight(140)
+        self._mask_list.setIconSize(QSize(32, 32))
         saved_masks_layout.addWidget(self._mask_list)
 
         saved_masks_btn_row = QWidget()
@@ -903,8 +906,12 @@ class SettingsPanel(QScrollArea):
         saved_masks_btn_layout.setContentsMargins(0, 0, 0, 0)
         self._save_mask_btn = QPushButton("Save Current")
         self._load_mask_btn = QPushButton("Load")
+        self._rename_mask_btn = QPushButton("Rename")
+        self._delete_mask_btn = QPushButton("Delete")
         saved_masks_btn_layout.addWidget(self._save_mask_btn)
         saved_masks_btn_layout.addWidget(self._load_mask_btn)
+        saved_masks_btn_layout.addWidget(self._rename_mask_btn)
+        saved_masks_btn_layout.addWidget(self._delete_mask_btn)
         saved_masks_layout.addWidget(saved_masks_btn_row)
 
         self._layout.addWidget(self._saved_masks_group)
@@ -1700,6 +1707,8 @@ class SettingsPanel(QScrollArea):
         # Saved masks list buttons and double-click
         self._save_mask_btn.clicked.connect(self._on_save_mask)
         self._load_mask_btn.clicked.connect(self._on_load_mask)
+        self._rename_mask_btn.clicked.connect(self._on_rename_mask)
+        self._delete_mask_btn.clicked.connect(self._on_delete_mask)
         self._mask_list.itemDoubleClicked.connect(self._on_load_mask)
 
         # Canvas stroke-done signal → status label
@@ -1776,7 +1785,18 @@ class SettingsPanel(QScrollArea):
         current_name = current.text() if current else None
         self._mask_list.clear()
         for name in self._controller.mask_names():
-            self._mask_list.addItem(name)
+            item = QListWidgetItem(name)
+            # Build a 32x32 thumbnail icon from the mask array
+            try:
+                mask_arr = self._controller.load_mask(name)
+                pil_img = _PilImage.fromarray((mask_arr * 255).astype(np.uint8), mode="L")
+                pil_img = pil_img.resize((32, 32), _PilImage.LANCZOS)
+                data = pil_img.tobytes()
+                qimg = QImage(data, 32, 32, 32, QImage.Format.Format_Grayscale8)
+                item.setIcon(QPixmap.fromImage(qimg))
+            except Exception:  # noqa: BLE001
+                pass
+            self._mask_list.addItem(item)
         # Restore selection
         if current_name is not None:
             items = self._mask_list.findItems(current_name, Qt.MatchFlag.MatchExactly)
@@ -1813,6 +1833,35 @@ class SettingsPanel(QScrollArea):
             # Activate mask paint mode so the overlay is visible
             self._canvas_ref.set_mask_paint_active(True)
         self._mask_status_label.setText(f"Loaded mask: {name}")
+
+    def _on_delete_mask(self) -> None:
+        """Delete the selected mask after confirmation."""
+        item = self._mask_list.currentItem()
+        if item is None:
+            return
+        name = item.text()
+        reply = QMessageBox.question(
+            self,
+            "Delete Mask",
+            f"Delete mask '{name}'?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._controller.delete_mask(name)
+
+    def _on_rename_mask(self) -> None:
+        """Rename the selected mask via a text prompt."""
+        item = self._mask_list.currentItem()
+        if item is None:
+            return
+        old_name = item.text()
+        new_name, ok = QInputDialog.getText(
+            self, "Rename Mask", "New name:", text=old_name
+        )
+        if not ok or not new_name.strip() or new_name.strip() == old_name:
+            return
+        self._controller.rename_mask(old_name, new_name.strip())
 
     _MASK_TOOL_MAP: dict[str, str] = {
         "Brush": "brush",
