@@ -43,16 +43,19 @@ class _AiBgWorker(QThread):
     finished = _pyqtSignal(object)  # emits RGBA np.ndarray
     error = _pyqtSignal(str)
 
-    def __init__(self, api_key: str, image: "np.ndarray", parent: Any = None) -> None:
+    def __init__(
+        self, api_key: str, image: "np.ndarray", cache_dir: "str | None" = None, parent: Any = None
+    ) -> None:
         super().__init__(parent)
         self._api_key = api_key
         self._image = image
+        self._cache_dir = cache_dir
 
     def run(self) -> None:
         try:
             from plottter.ai.replicate_client import ReplicateClient
 
-            client = ReplicateClient(api_key=self._api_key)
+            client = ReplicateClient(api_key=self._api_key, cache_dir=self._cache_dir)
             result = client.remove_background(
                 self._image, progress_callback=self.progress.emit
             )
@@ -664,11 +667,16 @@ class SettingsPanel(QScrollArea):
         self._apply_ai_bg_btn.setEnabled(False)
         self._apply_ai_bg_btn.setToolTip("Call AI to remove background from the current image")
         self._apply_ai_bg_btn.clicked.connect(self._on_apply_ai_bg)
+        self._ai_bg_cached_label = _VisibilityTrackedLabel("(cached)")
+        self._ai_bg_cached_label.setStyleSheet("color: #4CAF50; font-size: 11px;")
+        self._ai_bg_cached_label.setToolTip("Result loaded from cache — no API call needed")
+        self._ai_bg_cached_label.setVisible(False)
         ai_bg_row = QWidget()
         ai_bg_row_layout = QHBoxLayout(ai_bg_row)
         ai_bg_row_layout.setContentsMargins(0, 0, 0, 0)
         ai_bg_row_layout.addWidget(self._ai_bg_check)
         ai_bg_row_layout.addWidget(self._apply_ai_bg_btn)
+        ai_bg_row_layout.addWidget(self._ai_bg_cached_label)
         prep_form.addRow(QLabel(""), ai_bg_row)
 
         # Crop to canvas: resize/crop image to match canvas aspect ratio
@@ -3285,8 +3293,8 @@ class SettingsPanel(QScrollArea):
         if ai_on:
             self._remove_bg_check.setChecked(False)
             self._bg_tolerance_spin.setEnabled(False)
-        # Enable Apply button only when checkbox is on and AI is available
-        self._apply_ai_bg_btn.setEnabled(ai_on and self._ai_bg_check.isEnabled())
+        # Enable Apply button only when checkbox is on and API key is available
+        self._apply_ai_bg_btn.setEnabled(ai_on and self._ai_key_available)
         self._on_preprocessing_changed()
 
     def update_ai_availability(self) -> None:
@@ -3304,6 +3312,10 @@ class SettingsPanel(QScrollArea):
         _no_key_tip = "Enter a Replicate API key in Preferences > AI Integration to enable"
 
         self._ai_key_available = ai_available
+        has_cached_bg = self._ai_bg_rgba is not None
+
+        # Update cached indicator visibility
+        self._ai_bg_cached_label.setVisible(has_cached_bg)
 
         if ai_available:
             self._ai_bg_check.setEnabled(True)
@@ -3314,9 +3326,17 @@ class SettingsPanel(QScrollArea):
             self._ai_mask_generate_btn.setEnabled(not is_manual_mode)
             self._ai_mask_generate_btn.setToolTip("")
         else:
-            self._ai_bg_check.setChecked(False)
-            self._ai_bg_check.setEnabled(False)
-            self._ai_bg_check.setToolTip(_no_key_tip)
+            # When no API key, allow enabling the checkbox if a cached result is available
+            # so the user can activate BG removal without an API call.
+            if has_cached_bg:
+                self._ai_bg_check.setEnabled(True)
+                self._ai_bg_check.setToolTip(
+                    "Cached result available — no API key needed to use it"
+                )
+            else:
+                self._ai_bg_check.setChecked(False)
+                self._ai_bg_check.setEnabled(False)
+                self._ai_bg_check.setToolTip(_no_key_tip)
             self._apply_ai_bg_btn.setEnabled(False)
             # AI mask generation
             self._ai_mask_generate_btn.setEnabled(False)
@@ -3341,21 +3361,23 @@ class SettingsPanel(QScrollArea):
         elif source_img.ndim == 3 and source_img.shape[2] == 4:
             source_img = source_img[:, :, :3]
 
+        cache_dir = self._get_cache_dir()
         self._apply_ai_bg_btn.setEnabled(False)
-        self._ai_bg_worker = _AiBgWorker(api_key=api_key, image=source_img)
+        self._ai_bg_worker = _AiBgWorker(api_key=api_key, image=source_img, cache_dir=cache_dir)
         self._ai_bg_worker.finished.connect(self._on_ai_bg_result)
         self._ai_bg_worker.error.connect(self._on_ai_bg_error)
         self._ai_bg_worker.finished.connect(
-            lambda _: self._apply_ai_bg_btn.setEnabled(self._ai_bg_check.isEnabled() and self._ai_bg_check.isChecked())
+            lambda _: self._apply_ai_bg_btn.setEnabled(self._ai_key_available and self._ai_bg_check.isChecked())
         )
         self._ai_bg_worker.error.connect(
-            lambda _: self._apply_ai_bg_btn.setEnabled(self._ai_bg_check.isEnabled() and self._ai_bg_check.isChecked())
+            lambda _: self._apply_ai_bg_btn.setEnabled(self._ai_key_available and self._ai_bg_check.isChecked())
         )
         self._ai_bg_worker.start()
 
     def _on_ai_bg_result(self, rgba: "np.ndarray") -> None:
         """Store the AI background removal result and refresh the preview."""
         self._ai_bg_rgba = rgba
+        self._ai_bg_cached_label.setVisible(True)
         self._update_image_preview()
 
     def _on_ai_bg_error(self, msg: str) -> None:
@@ -3671,6 +3693,64 @@ class SettingsPanel(QScrollArea):
     # Image source and preprocessing
     # ------------------------------------------------------------------
 
+    def _get_cache_dir(self) -> str:
+        """Return the AI disk cache directory path (creates default path if not configured)."""
+        import pathlib
+        from PyQt6.QtCore import QSettings
+
+        settings = QSettings("Plottter", "Plottter")
+        raw_cache_dir = (
+            settings.value("ai/cache_dir", "") or
+            settings.value("ai/depth_cache_dir", "") or ""
+        )
+        cache_dir = raw_cache_dir.strip() or str(pathlib.Path.home() / ".plottter" / "ai_cache")
+        return cache_dir
+
+    def _check_ai_cache_for_image(self, image: "np.ndarray", path: str) -> None:
+        """Pre-load AI results from disk cache for *image* without applying them.
+
+        Populates ``self._ai_bg_rgba`` if a cached BG-removal result exists, and
+        ``self._depth_map_cache[path]`` if a cached depth map exists.  Updates the
+        UI indicators accordingly.  Does NOT auto-apply or auto-enable checkboxes.
+        """
+        import hashlib
+        import os
+
+        cache_dir = self._get_cache_dir()
+        img_hash = hashlib.sha256(image.tobytes()).hexdigest()[:16]
+
+        # --- BG removal cache ---
+        bg_cache_path = os.path.join(cache_dir, "bg_removal", f"{img_hash}.png")
+        if os.path.exists(bg_cache_path):
+            try:
+                from PIL import Image as _PIL_Image
+
+                pil = _PIL_Image.open(bg_cache_path).convert("RGBA")
+                result = np.array(pil)
+                if result.shape[:2] == image.shape[:2]:
+                    self._ai_bg_rgba = result
+                    self._ai_bg_cached_label.setVisible(True)
+            except Exception:
+                pass
+
+        # --- Depth map cache ---
+        flat_path = os.path.join(cache_dir, f"{img_hash}.png")
+        subdir_path = os.path.join(cache_dir, "depth", f"{img_hash}.png")
+        depth_cache_path = flat_path if os.path.exists(flat_path) else subdir_path
+        if os.path.exists(depth_cache_path):
+            try:
+                from PIL import Image as _PIL_Image
+
+                pil = _PIL_Image.open(depth_cache_path)
+                arr = np.array(pil).astype(np.float32)
+                if arr.max() > 1.0:
+                    arr = arr / 65535.0
+                if arr.shape == tuple(image.shape[:2]):
+                    self._depth_map_cache[path] = arr
+                    self._depth_status_label.setText("Depth map ready (cached)")
+            except Exception:
+                pass
+
     def _on_load_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -3690,8 +3770,21 @@ class SettingsPanel(QScrollArea):
 
         self._image_source_path = path
 
-        # Invalidate any cached AI background removal result for the previous image
+        # Invalidate any cached AI background removal result for the previous image.
+        # Also uncheck the AI BG checkbox so that cached results are NOT auto-applied
+        # when the preview renders — the user must explicitly re-enable it.
         self._ai_bg_rgba = None
+        self._ai_bg_cached_label.setVisible(False)
+        self._ai_bg_check.blockSignals(True)
+        self._ai_bg_check.setChecked(False)
+        self._ai_bg_check.blockSignals(False)
+        self._depth_status_label.setText("No depth map generated")
+
+        # Pre-load any existing AI cache results for this image (without auto-applying)
+        self._check_ai_cache_for_image(self._raw_image, path)
+
+        # Update the AI BG checkbox enabled state in case cached result availability changed
+        self.update_ai_availability()
 
         # Update custom size spinboxes to match the canvas drawing area by default
         self._reset_image_size_to_canvas()
