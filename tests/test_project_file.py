@@ -5,6 +5,7 @@ import json
 import os
 import tempfile
 
+import numpy as np
 import pytest
 
 from plottter.models.canvas import Canvas
@@ -185,3 +186,86 @@ class TestForwardCompatibility:
         assert loaded.canvas.margin_mm == 10.0  # default
         assert loaded.registration_marks is True  # default
         assert loaded.reg_mark_style == "corners"  # default
+        assert loaded.masks == {}  # default — no masks key in file
+
+
+class TestMaskRoundTrip:
+    def _make_mask(self, h: int = 10, w: int = 12) -> np.ndarray:
+        rng = np.random.default_rng(42)
+        return rng.random((h, w), dtype=np.float32)
+
+    def test_single_mask_round_trip(self, tmp_path):
+        proj = _make_project()
+        mask = self._make_mask()
+        proj.save_mask("my_mask", mask)
+
+        filepath = str(tmp_path / "masks.plottter")
+        save_project(proj, filepath)
+        loaded = load_project(filepath)
+
+        assert "my_mask" in loaded.masks
+        restored = loaded.load_mask("my_mask")
+        assert restored.shape == mask.shape
+        np.testing.assert_allclose(restored, mask, atol=1 / 255.0)
+
+    def test_multiple_masks_round_trip(self, tmp_path):
+        proj = _make_project()
+        mask_a = self._make_mask(8, 10)
+        mask_b = self._make_mask(15, 20)
+        proj.save_mask("alpha", mask_a)
+        proj.save_mask("beta", mask_b)
+
+        filepath = str(tmp_path / "multi_masks.plottter")
+        save_project(proj, filepath)
+        loaded = load_project(filepath)
+
+        assert set(loaded.masks.keys()) == {"alpha", "beta"}
+        np.testing.assert_allclose(loaded.load_mask("alpha"), mask_a, atol=1 / 255.0)
+        np.testing.assert_allclose(loaded.load_mask("beta"), mask_b, atol=1 / 255.0)
+
+    def test_no_masks_key_backward_compat(self, tmp_path):
+        """Old project files without a 'masks' key load fine with empty dict."""
+        minimal = {
+            "version": 1,
+            "name": "OldProject",
+            "canvas": {"width_mm": 210.0, "height_mm": 297.0},
+            "layers": [],
+        }
+        filepath = str(tmp_path / "old.plottter")
+        with open(filepath, "w", encoding="utf-8") as fh:
+            json.dump(minimal, fh)
+        loaded = load_project(filepath)
+        assert loaded.masks == {}
+
+    def test_masks_survive_gzip_compression(self, tmp_path):
+        import plottter.io.project_file as pf_module
+        original = pf_module._GZIP_THRESHOLD_BYTES
+        pf_module._GZIP_THRESHOLD_BYTES = 0  # force gzip
+        try:
+            proj = _make_project()
+            mask = self._make_mask(30, 40)
+            proj.save_mask("gz_mask", mask)
+
+            filepath = str(tmp_path / "gzip_masks.plottter")
+            save_project(proj, filepath)
+            with open(filepath, "rb") as fh:
+                assert fh.read(2) == b"\x1f\x8b", "Expected gzip"
+
+            loaded = load_project(filepath)
+            assert "gz_mask" in loaded.masks
+            np.testing.assert_allclose(loaded.load_mask("gz_mask"), mask, atol=1 / 255.0)
+        finally:
+            pf_module._GZIP_THRESHOLD_BYTES = original
+
+    def test_mask_dimensions_preserved(self, tmp_path):
+        proj = _make_project()
+        # A4 at ~72 dpi: ~595×842; use a smaller representative size
+        mask = self._make_mask(100, 70)
+        proj.save_mask("big_mask", mask)
+
+        filepath = str(tmp_path / "dim.plottter")
+        save_project(proj, filepath)
+        loaded = load_project(filepath)
+
+        restored = loaded.load_mask("big_mask")
+        assert restored.shape == (100, 70)

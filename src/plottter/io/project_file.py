@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import gzip
 import json
 from typing import Any
@@ -49,6 +50,10 @@ def load_project(filepath: str) -> Project:
 
 
 def _project_to_dict(project: Project) -> dict[str, Any]:
+    masks = [
+        {"name": name, "data": base64.b64encode(png_bytes).decode("ascii")}
+        for name, png_bytes in project.masks.items()
+    ]
     return {
         "version": _FORMAT_VERSION,
         "name": project.name,
@@ -57,6 +62,7 @@ def _project_to_dict(project: Project) -> dict[str, Any]:
         "registration_marks": project.registration_marks,
         "reg_mark_style": project.reg_mark_style,
         "metadata": project.metadata,
+        "masks": masks,
     }
 
 
@@ -90,6 +96,10 @@ def _layer_to_dict(layer: Layer) -> dict[str, Any]:
 def _dict_to_project(data: dict[str, Any]) -> Project:
     canvas = _dict_to_canvas(data["canvas"])
     layers = [_dict_to_layer(l) for l in data.get("layers", [])]
+    masks: dict[str, bytes] = {
+        entry["name"]: base64.b64decode(entry["data"])
+        for entry in data.get("masks", [])
+    }
     return Project(
         name=data.get("name", "Untitled"),
         canvas=canvas,
@@ -97,6 +107,7 @@ def _dict_to_project(data: dict[str, Any]) -> Project:
         registration_marks=data.get("registration_marks", True),
         reg_mark_style=data.get("reg_mark_style", "corners"),
         metadata=dict(data.get("metadata", {})),
+        masks=masks,
     )
 
 
