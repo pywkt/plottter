@@ -55,6 +55,7 @@ class ReplicateClient:
             pathlib.Path(cache_dir).mkdir(parents=True, exist_ok=True)
             pathlib.Path(cache_dir, "depth").mkdir(parents=True, exist_ok=True)
             pathlib.Path(cache_dir, "bg_removal").mkdir(parents=True, exist_ok=True)
+            pathlib.Path(cache_dir, "masks").mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
     # Availability
@@ -380,6 +381,29 @@ class ReplicateClient:
         if cache_key in self._cache:
             return self._cache[cache_key]  # type: ignore[return-value]
 
+        # --- Disk cache lookup ---
+        point_disk_cache_path: str | None = None
+        if self._cache_dir is not None:
+            img_hash = hashlib.sha256(image.tobytes()).hexdigest()[:16]
+            coords_data = json.dumps(
+                {"pos": list(positive_points), "neg": list(neg)}
+            ).encode()
+            coords_hash = hashlib.sha256(coords_data).hexdigest()[:16]
+            point_disk_cache_path = os.path.join(
+                self._cache_dir, "masks", f"{img_hash}_point_{coords_hash}.png"
+            )
+            if os.path.exists(point_disk_cache_path):
+                try:
+                    from PIL import Image as _PIL_Image
+                    pil = _PIL_Image.open(point_disk_cache_path).convert("L")
+                    mask = np.array(pil)
+                    self._cache[cache_key] = mask
+                    if progress_callback:
+                        progress_callback(100)
+                    return mask
+                except Exception:
+                    pass  # Corrupt cache file — fall through to API call
+
         try:
             if progress_callback:
                 progress_callback(10)
@@ -418,6 +442,15 @@ class ReplicateClient:
 
             mask = _extract_first_mask(output, image.shape[:2])
 
+            # --- Disk cache write ---
+            if point_disk_cache_path is not None:
+                try:
+                    from PIL import Image as _PIL_Image
+                    pil = _PIL_Image.fromarray(mask, mode="L")
+                    pil.save(str(point_disk_cache_path))
+                except Exception:
+                    pass  # Cache write failure is non-fatal
+
             self._cache[cache_key] = mask
             if progress_callback:
                 progress_callback(100)
@@ -455,6 +488,26 @@ class ReplicateClient:
         if cache_key in self._cache:
             return self._cache[cache_key]  # type: ignore[return-value]
 
+        # --- Disk cache lookup ---
+        box_disk_cache_path: str | None = None
+        if self._cache_dir is not None:
+            img_hash = hashlib.sha256(image.tobytes()).hexdigest()[:16]
+            box_hash = hashlib.sha256(str(box_xyxy).encode()).hexdigest()[:16]
+            box_disk_cache_path = os.path.join(
+                self._cache_dir, "masks", f"{img_hash}_box_{box_hash}.png"
+            )
+            if os.path.exists(box_disk_cache_path):
+                try:
+                    from PIL import Image as _PIL_Image
+                    pil = _PIL_Image.open(box_disk_cache_path).convert("L")
+                    mask = np.array(pil)
+                    self._cache[cache_key] = mask
+                    if progress_callback:
+                        progress_callback(100)
+                    return mask
+                except Exception:
+                    pass  # Corrupt cache file — fall through to API call
+
         try:
             if progress_callback:
                 progress_callback(10)
@@ -483,6 +536,15 @@ class ReplicateClient:
                 progress_callback(70)
 
             mask = _extract_first_mask(output, image.shape[:2])
+
+            # --- Disk cache write ---
+            if box_disk_cache_path is not None:
+                try:
+                    from PIL import Image as _PIL_Image
+                    pil = _PIL_Image.fromarray(mask, mode="L")
+                    pil.save(str(box_disk_cache_path))
+                except Exception:
+                    pass  # Cache write failure is non-fatal
 
             self._cache[cache_key] = mask
             if progress_callback:
@@ -525,6 +587,26 @@ class ReplicateClient:
         if cache_key in self._cache:
             return self._cache[cache_key]  # type: ignore[return-value]
 
+        # --- Disk cache lookup ---
+        text_disk_cache_path: str | None = None
+        if self._cache_dir is not None:
+            img_hash = hashlib.sha256(image.tobytes()).hexdigest()[:16]
+            prompt_hash = hashlib.sha256(text_prompt.strip().encode()).hexdigest()[:16]
+            text_disk_cache_path = os.path.join(
+                self._cache_dir, "masks", f"{img_hash}_text_{prompt_hash}.png"
+            )
+            if os.path.exists(text_disk_cache_path):
+                try:
+                    from PIL import Image as _PIL_Image
+                    pil = _PIL_Image.open(text_disk_cache_path).convert("L")
+                    mask = np.array(pil)
+                    self._cache[cache_key] = mask
+                    if progress_callback:
+                        progress_callback(100)
+                    return mask
+                except Exception:
+                    pass  # Corrupt cache file — fall through to API call
+
         try:
             if progress_callback:
                 progress_callback(10)
@@ -544,6 +626,15 @@ class ReplicateClient:
 
             # schananas/grounded_sam returns a list of mask image URLs
             mask = _extract_first_mask(output, image.shape[:2])
+
+            # --- Disk cache write ---
+            if text_disk_cache_path is not None:
+                try:
+                    from PIL import Image as _PIL_Image
+                    pil = _PIL_Image.fromarray(mask, mode="L")
+                    pil.save(str(text_disk_cache_path))
+                except Exception:
+                    pass  # Cache write failure is non-fatal
 
             self._cache[cache_key] = mask
             if progress_callback:

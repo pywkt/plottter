@@ -956,3 +956,208 @@ class TestRemoveBackgroundDiskCache:
                 assert mock_fetch.call_count == 2, "API always called when no cache dir"
 
         assert list(tmp_path.glob("**/*.png")) == []
+
+
+# ---------------------------------------------------------------------------
+# Mask segmentation disk cache tests (task 53.1b)
+# ---------------------------------------------------------------------------
+
+class TestSegmentByTextDiskCache:
+    """Tests for disk caching in ReplicateClient.segment_by_text()."""
+
+    def _make_client(self, cache_dir=None):
+        from plottter.ai.replicate_client import ReplicateClient
+        return ReplicateClient(api_key="r8_test", cache_dir=cache_dir)
+
+    def _make_mask(self, h: int, w: int) -> np.ndarray:
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mask[1:h - 1, 1:w - 1] = 255
+        return mask
+
+    def test_saves_png_to_masks_subdir(self, tmp_path) -> None:
+        """segment_by_text() saves binary mask PNG to masks/ subdir after an API call."""
+        import plottter.ai.replicate_client as rc_mod
+
+        h, w = 8, 8
+        image = np.zeros((h, w, 3), dtype=np.uint8)
+        mask = self._make_mask(h, w)
+
+        client = self._make_client(cache_dir=str(tmp_path))
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
+            with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=mask):
+                result = client.segment_by_text(image, text_prompt="the object")
+
+        pngs = list((tmp_path / "masks").glob("*.png"))
+        assert len(pngs) == 1, f"Expected 1 PNG in masks/, got {len(pngs)}"
+        assert pngs[0].name.startswith("") and "_text_" in pngs[0].name
+        assert list(tmp_path.glob("*.png")) == [], "No PNGs should be in the flat dir"
+        assert result.shape == (h, w)
+        assert result.dtype == np.uint8
+
+    def test_different_prompts_produce_different_cache_files(self, tmp_path) -> None:
+        """Different text prompts produce different cache files in masks/."""
+        import plottter.ai.replicate_client as rc_mod
+
+        h, w = 8, 8
+        image = np.zeros((h, w, 3), dtype=np.uint8)
+        mask = self._make_mask(h, w)
+
+        client = self._make_client(cache_dir=str(tmp_path))
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
+            with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=mask):
+                client.segment_by_text(image, text_prompt="the cat")
+                client._cache.clear()
+                client.segment_by_text(image, text_prompt="the dog")
+
+        pngs = list((tmp_path / "masks").glob("*_text_*.png"))
+        assert len(pngs) == 2, f"Expected 2 PNGs for different prompts, got {len(pngs)}"
+
+    def test_second_call_loads_from_disk_cache(self, tmp_path) -> None:
+        """Second segment_by_text() with same image+prompt loads from disk, not API."""
+        import plottter.ai.replicate_client as rc_mod
+
+        h, w = 8, 8
+        image = np.zeros((h, w, 3), dtype=np.uint8)
+        mask = self._make_mask(h, w)
+
+        client = self._make_client(cache_dir=str(tmp_path))
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
+            with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=mask) as mock_fetch:
+                r1 = client.segment_by_text(image, text_prompt="the object")
+                assert mock_fetch.call_count == 1
+
+                client._cache.clear()
+                r2 = client.segment_by_text(image, text_prompt="the object")
+                assert mock_fetch.call_count == 1, (
+                    "API should not be called a second time when disk cache exists"
+                )
+
+        assert r1.shape == r2.shape
+        np.testing.assert_array_equal(r1, r2)
+
+    def test_masks_subdir_created_on_init(self, tmp_path) -> None:
+        """ReplicateClient creates masks/ subdirectory on init."""
+        new_dir = tmp_path / "nested" / "cache"
+        assert not new_dir.exists()
+        self._make_client(cache_dir=str(new_dir))
+        assert (new_dir / "masks").is_dir(), "masks/ subdir should be created by __init__"
+
+    def test_no_disk_cache_when_cache_dir_none(self, tmp_path) -> None:
+        """When cache_dir=None, no files are written for segment_by_text()."""
+        import plottter.ai.replicate_client as rc_mod
+
+        h, w = 8, 8
+        image = np.zeros((h, w, 3), dtype=np.uint8)
+        mask = self._make_mask(h, w)
+
+        client = self._make_client(cache_dir=None)
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
+            with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=mask) as mock_fetch:
+                client.segment_by_text(image, text_prompt="the object")
+                client._cache.clear()
+                client.segment_by_text(image, text_prompt="the object")
+                assert mock_fetch.call_count == 2, "API always called when no cache dir"
+
+        assert list(tmp_path.glob("**/*.png")) == []
+
+
+class TestSegmentByPointDiskCache:
+    """Tests for disk caching in ReplicateClient.segment_by_point()."""
+
+    def _make_client(self, cache_dir=None):
+        from plottter.ai.replicate_client import ReplicateClient
+        return ReplicateClient(api_key="r8_test", cache_dir=cache_dir)
+
+    def _make_mask(self, h: int, w: int) -> np.ndarray:
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mask[2:6, 2:6] = 255
+        return mask
+
+    def test_saves_png_to_masks_subdir(self, tmp_path) -> None:
+        """segment_by_point() saves binary mask PNG to masks/ subdir after an API call."""
+        import plottter.ai.replicate_client as rc_mod
+
+        h, w = 8, 8
+        image = np.zeros((h, w, 3), dtype=np.uint8)
+        mask = self._make_mask(h, w)
+
+        client = self._make_client(cache_dir=str(tmp_path))
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
+            with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=mask):
+                client.segment_by_point(image, positive_points=[(4, 4)])
+
+        pngs = list((tmp_path / "masks").glob("*_point_*.png"))
+        assert len(pngs) == 1, f"Expected 1 PNG in masks/, got {len(pngs)}"
+
+    def test_second_call_loads_from_disk_cache(self, tmp_path) -> None:
+        """Second segment_by_point() with same image+points loads from disk, not API."""
+        import plottter.ai.replicate_client as rc_mod
+
+        h, w = 8, 8
+        image = np.zeros((h, w, 3), dtype=np.uint8)
+        mask = self._make_mask(h, w)
+
+        client = self._make_client(cache_dir=str(tmp_path))
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
+            with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=mask) as mock_fetch:
+                r1 = client.segment_by_point(image, positive_points=[(4, 4)])
+                assert mock_fetch.call_count == 1
+
+                client._cache.clear()
+                r2 = client.segment_by_point(image, positive_points=[(4, 4)])
+                assert mock_fetch.call_count == 1, (
+                    "API should not be called a second time when disk cache exists"
+                )
+
+        np.testing.assert_array_equal(r1, r2)
+
+
+class TestSegmentByBoxDiskCache:
+    """Tests for disk caching in ReplicateClient.segment_by_box()."""
+
+    def _make_client(self, cache_dir=None):
+        from plottter.ai.replicate_client import ReplicateClient
+        return ReplicateClient(api_key="r8_test", cache_dir=cache_dir)
+
+    def _make_mask(self, h: int, w: int) -> np.ndarray:
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mask[2:6, 2:6] = 255
+        return mask
+
+    def test_saves_png_to_masks_subdir(self, tmp_path) -> None:
+        """segment_by_box() saves binary mask PNG to masks/ subdir after an API call."""
+        import plottter.ai.replicate_client as rc_mod
+
+        h, w = 8, 8
+        image = np.zeros((h, w, 3), dtype=np.uint8)
+        mask = self._make_mask(h, w)
+
+        client = self._make_client(cache_dir=str(tmp_path))
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
+            with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=mask):
+                client.segment_by_box(image, box_xyxy=(2, 2, 6, 6))
+
+        pngs = list((tmp_path / "masks").glob("*_box_*.png"))
+        assert len(pngs) == 1, f"Expected 1 PNG in masks/, got {len(pngs)}"
+
+    def test_second_call_loads_from_disk_cache(self, tmp_path) -> None:
+        """Second segment_by_box() with same image+box loads from disk, not API."""
+        import plottter.ai.replicate_client as rc_mod
+
+        h, w = 8, 8
+        image = np.zeros((h, w, 3), dtype=np.uint8)
+        mask = self._make_mask(h, w)
+
+        client = self._make_client(cache_dir=str(tmp_path))
+        with patch.object(rc_mod, "_replicate_run", return_value="https://fake/mask.png"):
+            with patch.object(rc_mod, "_fetch_mask_as_binary", return_value=mask) as mock_fetch:
+                r1 = client.segment_by_box(image, box_xyxy=(2, 2, 6, 6))
+                assert mock_fetch.call_count == 1
+
+                client._cache.clear()
+                r2 = client.segment_by_box(image, box_xyxy=(2, 2, 6, 6))
+                assert mock_fetch.call_count == 1, (
+                    "API should not be called a second time when disk cache exists"
+                )
+
+        np.testing.assert_array_equal(r1, r2)
