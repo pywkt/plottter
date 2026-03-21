@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMenu,
     QMessageBox,
     QPlainTextEdit,
@@ -888,6 +889,28 @@ class SettingsPanel(QScrollArea):
         self._mask_paint_group.setVisible(False)
 
         # ----------------------------------------------------------------
+        # Saved Masks group (Mask Paint mode only)
+        # ----------------------------------------------------------------
+        self._saved_masks_group = QGroupBox("Saved Masks")
+        saved_masks_layout = QVBoxLayout(self._saved_masks_group)
+
+        self._mask_list = QListWidget()
+        self._mask_list.setMaximumHeight(120)
+        saved_masks_layout.addWidget(self._mask_list)
+
+        saved_masks_btn_row = QWidget()
+        saved_masks_btn_layout = QHBoxLayout(saved_masks_btn_row)
+        saved_masks_btn_layout.setContentsMargins(0, 0, 0, 0)
+        self._save_mask_btn = QPushButton("Save Current")
+        self._load_mask_btn = QPushButton("Load")
+        saved_masks_btn_layout.addWidget(self._save_mask_btn)
+        saved_masks_btn_layout.addWidget(self._load_mask_btn)
+        saved_masks_layout.addWidget(saved_masks_btn_row)
+
+        self._layout.addWidget(self._saved_masks_group)
+        self._saved_masks_group.setVisible(False)
+
+        # ----------------------------------------------------------------
         # AI Mask Generation group (Mask Paint mode only, requires API key)
         # ----------------------------------------------------------------
         self._ai_mask_group = QGroupBox("AI Mask Generation")
@@ -1251,6 +1274,8 @@ class SettingsPanel(QScrollArea):
         self._controller.layers_reordered.connect(self._refresh_layer_combo)
         self._controller.project_loaded.connect(self._refresh_layer_combo)
         self._controller.project_loaded.connect(self._on_project_loaded)
+        self._controller.masks_changed.connect(self._refresh_mask_list)
+        self._controller.project_loaded.connect(self._refresh_mask_list)
         self._controller.active_layer_changed.connect(self._on_active_layer_changed)
         self._controller.paths_changed.connect(self._on_source_layer_paths_changed)
         self._controller.generator_info_changed.connect(self._on_generator_info_changed)
@@ -1569,6 +1594,7 @@ class SettingsPanel(QScrollArea):
 
         # Mask paint controls
         self._mask_paint_group.setVisible(is_mask_paint)
+        self._saved_masks_group.setVisible(is_mask_paint)
         self._ai_mask_group.setVisible(is_mask_paint)
 
         if is_mask_paint:
@@ -1671,6 +1697,11 @@ class SettingsPanel(QScrollArea):
         self._invert_mask_btn.clicked.connect(self._on_invert_mask)
         self._apply_mask_btn.clicked.connect(self._on_apply_mask)
 
+        # Saved masks list buttons and double-click
+        self._save_mask_btn.clicked.connect(self._on_save_mask)
+        self._load_mask_btn.clicked.connect(self._on_load_mask)
+        self._mask_list.itemDoubleClicked.connect(self._on_load_mask)
+
         # Canvas stroke-done signal → status label
         canvas.mask_stroke_done.connect(self._on_mask_stroke_done)
 
@@ -1737,6 +1768,51 @@ class SettingsPanel(QScrollArea):
         description = f"Mask {tool_text}"
         cmd = MaskPaintCommand(self._canvas_ref, before, after, description)
         self._controller.undo_stack.push(cmd)
+
+    def _refresh_mask_list(self, *_args: Any) -> None:
+        """Repopulate the saved-masks list from the controller."""
+        self._mask_list.blockSignals(True)
+        current = self._mask_list.currentItem()
+        current_name = current.text() if current else None
+        self._mask_list.clear()
+        for name in self._controller.mask_names():
+            self._mask_list.addItem(name)
+        # Restore selection
+        if current_name is not None:
+            items = self._mask_list.findItems(current_name, Qt.MatchFlag.MatchExactly)
+            if items:
+                self._mask_list.setCurrentItem(items[0])
+        self._mask_list.blockSignals(False)
+
+    def _on_save_mask(self) -> None:
+        """Prompt for a name and save the current canvas mask."""
+        if self._canvas_ref is None:
+            return
+        mask = self._canvas_ref.get_mask()
+        if mask is None or not mask.any():
+            QMessageBox.warning(self, "Save Mask", "No mask to save. Paint a mask first.")
+            return
+        name, ok = QInputDialog.getText(self, "Save Mask", "Mask name:")
+        if not ok or not name.strip():
+            return
+        self._controller.save_mask(name.strip(), mask)
+
+    def _on_load_mask(self, *_args: Any) -> None:
+        """Load the selected mask from the list and apply it to the canvas."""
+        item = self._mask_list.currentItem()
+        if item is None:
+            return
+        name = item.text()
+        try:
+            mask = self._controller.load_mask(name)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Load Mask", f"Could not load mask '{name}': {exc}")
+            return
+        if self._canvas_ref is not None:
+            self._canvas_ref.set_mask(mask)
+            # Activate mask paint mode so the overlay is visible
+            self._canvas_ref.set_mask_paint_active(True)
+        self._mask_status_label.setText(f"Loaded mask: {name}")
 
     _MASK_TOOL_MAP: dict[str, str] = {
         "Brush": "brush",
