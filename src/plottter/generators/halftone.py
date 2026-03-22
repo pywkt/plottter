@@ -575,9 +575,16 @@ class HalftoneGenerator(Generator):
                     img = img.mean(axis=2).astype(np.uint8)
 
             img_h, img_w = img.shape[:2]
+            fit_mode = params.get("image_fit_mode", "fill")
+            custom_w = params.get("image_width_mm")
+            custom_h = params.get("image_height_mm")
+            offset_x = params.get("image_offset_x_mm", 0.0)
+            offset_y = params.get("image_offset_y_mm", 0.0)
             img_rect = compute_image_rect(
-                "fill",
+                fit_mode,
                 img_w, img_h, draw_x1, draw_y1, draw_x2, draw_y2,
+                custom_w_mm=custom_w, custom_h_mm=custom_h,
+                offset_x_mm=offset_x, offset_y_mm=offset_y,
             )
             img_x1, img_y1, img_x2, img_y2 = img_rect
             img_rect_w = img_x2 - img_x1

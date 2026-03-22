@@ -981,8 +981,24 @@ class TAMGenerator(Generator):
         y_off = float(params.get("y_offset_mm", 0.0))
 
         draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
-        canvas_w = draw_x2 - draw_x1
-        canvas_h = draw_y2 - draw_y1
+
+        # Compute the image placement rect (respects fit/fill/custom mode)
+        from plottter.generators._helpers import compute_image_rect
+        img_h, img_w = img_gray.shape[:2]
+        fit_mode = str(params.get("image_fit_mode", "fill"))
+        custom_w = params.get("image_width_mm")
+        custom_h = params.get("image_height_mm")
+        img_off_x = float(params.get("image_offset_x_mm", 0.0))
+        img_off_y = float(params.get("image_offset_y_mm", 0.0))
+        img_rect = compute_image_rect(
+            fit_mode, img_w, img_h,
+            draw_x1, draw_y1, draw_x2, draw_y2,
+            custom_w_mm=custom_w, custom_h_mm=custom_h,
+            offset_x_mm=img_off_x, offset_y_mm=img_off_y,
+        )
+        ir_x1, ir_y1, ir_x2, ir_y2 = img_rect
+        canvas_w = ir_x2 - ir_x1
+        canvas_h = ir_y2 - ir_y1
 
         if canvas_w <= 0 or canvas_h <= 0:
             return []
@@ -1081,7 +1097,7 @@ class TAMGenerator(Generator):
         # 7. Translate from local canvas coordinates to page mm coordinates
         # ------------------------------------------------------------------
         result: list[Polyline] = [
-            [(x + draw_x1 + x_off, y + draw_y1 + y_off) for x, y in pl]
+            [(x + ir_x1 + x_off, y + ir_y1 + y_off) for x, y in pl]
             for pl in polylines
         ]
 
