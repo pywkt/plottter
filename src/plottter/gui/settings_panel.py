@@ -3948,8 +3948,16 @@ class SettingsPanel(QScrollArea):
                 if hasattr(p, "default"):
                     gen_params[p.name] = p.default
 
-        # Always set _source_image regardless of preset
+        # Always set _source_image and image placement params regardless of preset
         gen_params["_source_image"] = masked_gray
+        gen_params["image_fit_mode"] = self._image_fit_mode()
+        fit_mode = gen_params["image_fit_mode"]
+        if fit_mode == "custom":
+            gen_params["image_width_mm"] = self._image_width_spin.value()
+            gen_params["image_height_mm"] = self._image_height_spin.value()
+        if fit_mode != "fill":
+            gen_params["image_offset_x_mm"] = self._image_offset_x_spin.value()
+            gen_params["image_offset_y_mm"] = self._image_offset_y_spin.value()
 
         from plottter.gui.generator_worker import GeneratorWorker
         worker = GeneratorWorker(gen, gen_params, self._lines_canvas)
