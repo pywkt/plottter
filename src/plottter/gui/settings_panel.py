@@ -4442,10 +4442,12 @@ class SettingsPanel(QScrollArea):
             # on_mode_changed() is called synchronously (direct connection),
             # which resets the generator combo to the first item.
 
-        # Select the saved generator by name
+        # Select the saved generator by name.
+        # Always rebuild the parameter UI even if the same generator is already
+        # selected — the parameter values differ per layer.
         if gen_name:
             idx = self._generator_type_combo.findText(gen_name)
-            if idx >= 0 and idx != self._generator_type_combo.currentIndex():
+            if idx >= 0:
                 self._generator_type_combo.blockSignals(True)
                 self._generator_type_combo.setCurrentIndex(idx)
                 self._generator_type_combo.blockSignals(False)
