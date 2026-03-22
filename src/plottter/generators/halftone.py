@@ -14,7 +14,6 @@ from plottter.generators.base import (
     ChoiceParam,
     FloatParam,
     Generator,
-    ImageParam,
     IntParam,
     Parameter,
     Preset,
@@ -294,12 +293,6 @@ class HalftoneGenerator(Generator):
 
     def get_parameters(self) -> list[Parameter]:
         return [
-            ImageParam(
-                name="_source_image",
-                label="Source Image",
-                randomizable=False,
-                description="Source image used to modulate halftone dot sizes.",
-            ),
             FloatParam(
                 name="grid_spacing_mm",
                 label="Grid Spacing (mm)",
@@ -591,6 +584,11 @@ class HalftoneGenerator(Generator):
             img_rect_h = img_y2 - img_y1
 
             for x_mm, y_mm in pts:
+                # Skip dots outside the image rect (avoids edge-pixel
+                # clamping that causes dots to repeat beyond the image)
+                if x_mm < img_x1 or x_mm > img_x2 or y_mm < img_y1 or y_mm > img_y2:
+                    continue
+
                 # Map mm coordinate to pixel coordinate in the source image
                 if img_rect_w > 0 and img_rect_h > 0:
                     px = (x_mm - img_x1) / img_rect_w * img_w

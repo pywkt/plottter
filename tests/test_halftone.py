@@ -222,11 +222,10 @@ class TestHalftoneGenerator:
         names = {p.name for p in self.gen.get_parameters()}
         assert "grid_angle_deg" in names
 
-    def test_has_image_param(self):
-        from plottter.generators.base import ImageParam
-        params = {p.name: p for p in self.gen.get_parameters()}
-        assert "_source_image" in params
-        assert isinstance(params["_source_image"], ImageParam)
+    def test_no_explicit_image_param(self):
+        """Source image is provided by the settings panel, not via an ImageParam."""
+        params = {p.name for p in self.gen.get_parameters()}
+        assert "_source_image" not in params
 
     def test_has_offset_params(self):
         names = {p.name for p in self.gen.get_parameters()}
