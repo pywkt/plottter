@@ -1,3 +1,5 @@
+![](docs/images/hatch_logo.png)
+
 # Plottter
 
 A free, open-source desktop application for generating pen-plotter-ready vector art from mathematical equations, generative algorithms, and raster images. Produces multi-layer output in SVG, HPGL, G-code, and Mural formats for any pen plotter.
