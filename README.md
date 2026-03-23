@@ -1,4 +1,4 @@
-![](docs/images/hatch_logo.png)
+![](docs/images/hatch_logo_2color.png)
 
 # Plottter
 
