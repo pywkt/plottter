@@ -6,6 +6,7 @@ import numpy as np
 
 from plottter.generators.triangulated_hatch import (
     TriangulatedHatchGenerator,
+    _compute_angle_map,
     _discard_outside_triangles,
     _edge_aware_seeds,
     _triangulate_and_sample,
@@ -342,3 +343,190 @@ def test_discard_outside_all_inside() -> None:
 
     result = _discard_outside_triangles(triangles, img_rect)
     assert len(result) == 2
+
+
+# ---------------------------------------------------------------------------
+# Tests for hatching behaviour
+# ---------------------------------------------------------------------------
+
+
+def _make_params(extra: dict | None = None) -> dict:
+    """Build a minimal params dict for the generator."""
+    gray = make_gray_with_edges()
+    rgb = np.stack([gray, gray, gray], axis=-1)
+    base = {
+        "_source_image": rgb,
+        "num_points": 80,
+        "edge_weight": 0.5,
+        "brightness": 0.0,
+        "contrast": 0.0,
+        "blur_radius": 0.0,
+        "invert": False,
+        "x_offset_mm": 0.0,
+        "y_offset_mm": 0.0,
+        "min_density": 0.0,
+        "max_density": 6.0,
+        "angle_mode": "Fixed",
+        "fixed_angle_deg": 45.0,
+        "cross_hatch": False,
+        "cross_hatch_threshold": 0.3,
+    }
+    if extra:
+        base.update(extra)
+    return base
+
+
+def test_generate_returns_polylines() -> None:
+    """generate() must return a non-empty list of polylines with hatching enabled."""
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+    result = gen.generate(_make_params(), canvas)
+    assert isinstance(result, list)
+    assert len(result) > 0, "Expected hatching polylines in result"
+    for poly in result:
+        assert len(poly) >= 2, "Each polyline must have at least 2 points"
+
+
+def test_dark_triangles_more_lines_than_bright() -> None:
+    """Dark image areas should produce more hatch lines than bright areas."""
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+
+    # All-dark image (brightness≈0 → max density)
+    dark_img = np.zeros((100, 100), dtype=np.uint8)
+    dark_rgb = np.stack([dark_img, dark_img, dark_img], axis=-1)
+
+    # All-bright image (brightness≈255 → min density = 0 → no lines)
+    bright_img = np.full((100, 100), 255, dtype=np.uint8)
+    bright_rgb = np.stack([bright_img, bright_img, bright_img], axis=-1)
+
+    dark_params = _make_params({"_source_image": dark_rgb, "min_density": 0.0, "max_density": 6.0})
+    bright_params = _make_params({"_source_image": bright_rgb, "min_density": 0.0, "max_density": 6.0})
+
+    dark_result = gen.generate(dark_params, canvas)
+    bright_result = gen.generate(bright_params, canvas)
+
+    assert len(dark_result) > len(bright_result), (
+        f"Expected more lines for dark image ({len(dark_result)}) vs bright ({len(bright_result)})"
+    )
+
+
+def test_min_density_zero_bright_areas_no_lines() -> None:
+    """When min_density=0, fully bright triangles should produce no hatch lines."""
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+
+    # All-white image: brightness = 255, density = 0 + (1-1)*max = 0 → skip
+    white_img = np.full((100, 100), 255, dtype=np.uint8)
+    white_rgb = np.stack([white_img, white_img, white_img], axis=-1)
+
+    result = gen.generate(_make_params({"_source_image": white_rgb, "min_density": 0.0}), canvas)
+    assert result == [], f"Expected no lines for all-white image with min_density=0, got {len(result)}"
+
+
+def test_fixed_angle_mode() -> None:
+    """In 'Fixed' mode, the angle_mode param is respected without crashing."""
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+
+    result = gen.generate(_make_params({"angle_mode": "Fixed", "fixed_angle_deg": 30.0}), canvas)
+    assert isinstance(result, list)
+    assert len(result) > 0
+
+
+def test_edge_flow_angle_mode() -> None:
+    """'Edge Flow' mode must produce polylines without errors."""
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+
+    result = gen.generate(_make_params({"angle_mode": "Edge Flow"}), canvas)
+    assert isinstance(result, list)
+    assert len(result) > 0
+
+
+def test_gradient_angle_mode() -> None:
+    """'Gradient' mode must produce polylines without errors."""
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+
+    result = gen.generate(_make_params({"angle_mode": "Gradient"}), canvas)
+    assert isinstance(result, list)
+    assert len(result) > 0
+
+
+def test_cross_hatch_produces_more_lines() -> None:
+    """Cross-hatch enabled should produce at least as many lines as single-hatch."""
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+
+    # Dark image so cross_hatch threshold is crossed
+    dark_img = np.zeros((100, 100), dtype=np.uint8)
+    dark_rgb = np.stack([dark_img, dark_img, dark_img], axis=-1)
+
+    single = gen.generate(_make_params({
+        "_source_image": dark_rgb,
+        "cross_hatch": False,
+        "cross_hatch_threshold": 0.5,
+    }), canvas)
+    crossed = gen.generate(_make_params({
+        "_source_image": dark_rgb,
+        "cross_hatch": True,
+        "cross_hatch_threshold": 0.5,
+    }), canvas)
+
+    assert len(crossed) >= len(single), (
+        f"Cross-hatch ({len(crossed)}) should produce >= lines vs single ({len(single)})"
+    )
+
+
+def test_cross_hatch_skipped_for_bright_triangles() -> None:
+    """Cross-hatch must not be applied to bright triangles (brightness ≥ threshold)."""
+    # For a uniform gray image right at the threshold, cross-hatch should not appear.
+    # We compare bright (255) single vs cross-hatch — both should produce 0 lines
+    # when min_density=0 and cross_hatch_threshold=0.3 (brightness/255=1.0 ≥ 0.3).
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+
+    white_img = np.full((100, 100), 255, dtype=np.uint8)
+    white_rgb = np.stack([white_img, white_img, white_img], axis=-1)
+
+    result = gen.generate(_make_params({
+        "_source_image": white_rgb,
+        "min_density": 0.0,
+        "cross_hatch": True,
+        "cross_hatch_threshold": 0.3,
+    }), canvas)
+    assert result == [], "Bright-only image with min_density=0 should yield no lines"
+
+
+def test_compute_angle_map_shape() -> None:
+    """_compute_angle_map must return an array matching the input shape."""
+    gray = make_gray_with_edges()
+    for mode in ("Edge Flow", "Gradient"):
+        angle_map = _compute_angle_map(gray, mode)
+        assert angle_map.shape == gray.shape, f"Shape mismatch for mode={mode}"
+
+
+def test_compute_angle_map_edge_flow_vs_gradient_differ() -> None:
+    """Edge Flow and Gradient angle maps should not be identical for a non-uniform image."""
+    gray = make_gray_with_edges()
+    ef = _compute_angle_map(gray, "Edge Flow")
+    gr = _compute_angle_map(gray, "Gradient")
+    # They differ by 90° everywhere, so they should not be equal
+    assert not np.allclose(ef, gr), "Edge Flow and Gradient angle maps must differ"
+
+
+def test_get_parameters_includes_hatching_params() -> None:
+    """get_parameters() must include all new hatching parameters."""
+    gen = TriangulatedHatchGenerator()
+    param_names = {p.name for p in gen.get_parameters()}
+
+    for required in (
+        "min_density",
+        "max_density",
+        "angle_mode",
+        "fixed_angle_deg",
+        "cross_hatch",
+        "cross_hatch_threshold",
+    ):
+        assert required in param_names, f"Missing parameter: {required}"

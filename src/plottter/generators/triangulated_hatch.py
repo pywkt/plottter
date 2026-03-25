@@ -10,6 +10,7 @@ from plottter.generators import register_generator
 from plottter.generators._helpers import compute_image_rect
 from plottter.generators.base import (
     BoolParam,
+    ChoiceParam,
     FloatParam,
     Generator,
     IntParam,
@@ -17,6 +18,7 @@ from plottter.generators.base import (
     Preset,
 )
 from plottter.models import Canvas, Polyline
+from plottter.scene3d.hatching import _fill_triangle_with_hatching
 
 
 def _edge_aware_seeds(
@@ -194,6 +196,42 @@ def _discard_outside_triangles(
     return kept
 
 
+def _compute_angle_map(gray: np.ndarray, mode: str) -> np.ndarray:
+    """Compute per-pixel hatch angle map (degrees) from image gradient.
+
+    Parameters
+    ----------
+    gray:
+        Grayscale image array (uint8, shape HxW).
+    mode:
+        "Edge Flow" — angle along edges (perpendicular to gradient).
+        "Gradient"  — angle of the steepest ascent (along gradient).
+
+    Returns
+    -------
+    np.ndarray of shape (H, W) with angle in degrees at each pixel.
+    """
+    try:
+        import cv2
+
+        gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=5)
+        gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=5)
+    except ImportError:
+        # Fallback: central difference
+        gx = np.zeros_like(gray, dtype=np.float64)
+        gy = np.zeros_like(gray, dtype=np.float64)
+        gx[:, 1:-1] = gray[:, 2:].astype(np.float64) - gray[:, :-2].astype(np.float64)
+        gy[1:-1, :] = gray[2:, :].astype(np.float64) - gray[:-2, :].astype(np.float64)
+
+    angle = np.degrees(np.arctan2(gy, gx))  # gradient direction
+
+    if mode == "Edge Flow":
+        # Rotate 90° to get edge tangent direction
+        angle = angle + 90.0
+
+    return angle
+
+
 @register_generator
 class TriangulatedHatchGenerator(Generator):
     """Edge-aware seed point placement for Delaunay-based triangulated hatching."""
@@ -274,9 +312,68 @@ class TriangulatedHatchGenerator(Generator):
                 randomizable=False,
                 description="Vertical offset applied to the generated output on the canvas page (mm)",
             ),
+            FloatParam(
+                name="min_density",
+                label="Min Density",
+                min=0.0,
+                max=5.0,
+                step=0.1,
+                default=0.0,
+                description="Hatching density for brightest areas — 0 = no lines in highlights",
+            ),
+            FloatParam(
+                name="max_density",
+                label="Max Density",
+                min=1.0,
+                max=20.0,
+                step=0.5,
+                default=6.0,
+                description="Hatching density for darkest areas",
+            ),
+            ChoiceParam(
+                name="angle_mode",
+                label="Angle Mode",
+                choices=["Edge Flow", "Fixed", "Gradient"],
+                default="Edge Flow",
+                description="How the hatching angle is determined per triangle",
+            ),
+            FloatParam(
+                name="fixed_angle_deg",
+                label="Fixed Angle (°)",
+                min=0.0,
+                max=180.0,
+                step=1.0,
+                default=45.0,
+                visible_when={"angle_mode": ["Fixed"]},
+                description="Hatch angle in degrees when Angle Mode is Fixed",
+            ),
+            BoolParam(
+                name="cross_hatch",
+                label="Cross Hatch",
+                default=False,
+                description="Add perpendicular cross-hatching in dark triangles",
+            ),
+            FloatParam(
+                name="cross_hatch_threshold",
+                label="Cross Hatch Threshold",
+                min=0.0,
+                max=1.0,
+                step=0.05,
+                default=0.3,
+                visible_when={"cross_hatch": [True]},
+                description="Brightness below which cross-hatching is applied",
+            ),
         ]
 
     def get_presets(self) -> list[Preset]:
+        _hatch_defaults = {
+            "min_density": 0.0,
+            "max_density": 6.0,
+            "angle_mode": "Edge Flow",
+            "fixed_angle_deg": 45.0,
+            "cross_hatch": False,
+            "cross_hatch_threshold": 0.3,
+        }
         return [
             Preset(
                 name="Default",
@@ -289,6 +386,7 @@ class TriangulatedHatchGenerator(Generator):
                     "invert": False,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
+                    **_hatch_defaults,
                 },
             ),
             Preset(
@@ -302,6 +400,7 @@ class TriangulatedHatchGenerator(Generator):
                     "invert": False,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
+                    **_hatch_defaults,
                 },
             ),
             Preset(
@@ -315,6 +414,26 @@ class TriangulatedHatchGenerator(Generator):
                     "invert": False,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
+                    **_hatch_defaults,
+                },
+            ),
+            Preset(
+                name="Cross Hatch Portrait",
+                params={
+                    "num_points": 1500,
+                    "edge_weight": 0.8,
+                    "brightness": 0.0,
+                    "contrast": 10.0,
+                    "blur_radius": 1.0,
+                    "invert": False,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                    "min_density": 0.0,
+                    "max_density": 8.0,
+                    "angle_mode": "Edge Flow",
+                    "fixed_angle_deg": 45.0,
+                    "cross_hatch": True,
+                    "cross_hatch_threshold": 0.35,
                 },
             ),
         ]
@@ -394,7 +513,73 @@ class TriangulatedHatchGenerator(Generator):
         triangles = _discard_outside_triangles(triangles, img_rect)
 
         if progress_callback:
+            progress_callback(60)
+
+        # --- Hatching parameters ---
+        min_density = float(params.get("min_density", 0.0))
+        max_density = float(params.get("max_density", 6.0))
+        angle_mode = str(params.get("angle_mode", "Edge Flow"))
+        fixed_angle_deg = float(params.get("fixed_angle_deg", 45.0))
+        do_cross_hatch = bool(params.get("cross_hatch", False))
+        cross_hatch_threshold = float(params.get("cross_hatch_threshold", 0.3))
+
+        # Precompute angle map for Edge Flow / Gradient modes
+        angle_map: np.ndarray | None = None
+        if angle_mode in ("Edge Flow", "Gradient"):
+            angle_map = _compute_angle_map(gray, angle_mode)
+
+        img_x1, img_y1, img_x2, img_y2 = img_rect
+        mm_w = img_x2 - img_x1
+        mm_h = img_y2 - img_y1
+
+        x_off = float(params.get("x_offset_mm", 0.0))
+        y_off = float(params.get("y_offset_mm", 0.0))
+
+        all_polylines: list[Polyline] = []
+        n_triangles = len(triangles)
+
+        for i, (verts_mm, brightness) in enumerate(triangles):
+            if cancelled_callback and cancelled_callback():
+                break
+
+            # Compute density: dark → dense, bright → sparse.
+            # Round and clamp brightness to guard against sub-integer floating-point
+            # noise from bilinear interpolation (e.g. 254.9999... → 255).
+            brightness_int = max(0.0, min(255.0, round(brightness)))
+            density = min_density + (1.0 - brightness_int / 255.0) * (max_density - min_density)
+
+            if density <= 0.0:
+                continue
+
+            # Compute hatch angle
+            if angle_mode == "Fixed":
+                angle_deg = fixed_angle_deg
+            else:
+                # Sample angle map at triangle centroid
+                cx = (verts_mm[0][0] + verts_mm[1][0] + verts_mm[2][0]) / 3.0
+                cy = (verts_mm[0][1] + verts_mm[1][1] + verts_mm[2][1]) / 3.0
+                # Convert mm centroid to pixel coordinates
+                px = (cx - img_x1) / mm_w * (img_w - 1)
+                py = (cy - img_y1) / mm_h * (img_h - 1)
+                px = max(0.0, min(float(img_w - 1), px))
+                py = max(0.0, min(float(img_h - 1), py))
+                angle_deg = float(angle_map[int(py), int(px)])  # type: ignore[index]
+
+            # Determine whether to cross-hatch this triangle (use rounded brightness)
+            apply_cross = do_cross_hatch and (brightness_int / 255.0) < cross_hatch_threshold
+
+            lines = _fill_triangle_with_hatching(verts_mm, density, angle_deg, apply_cross)
+
+            for line in lines:
+                shifted = [(x + x_off, y + y_off) for x, y in line]
+                all_polylines.append(shifted)
+
+            # Progress 60–100 over triangle loop
+            if progress_callback and (i % max(1, n_triangles // 20) == 0):
+                pct = 60 + int(40 * i / max(1, n_triangles))
+                progress_callback(pct)
+
+        if progress_callback:
             progress_callback(100)
 
-        # Triangulation complete; hatching added in next step
-        return []
+        return all_polylines
