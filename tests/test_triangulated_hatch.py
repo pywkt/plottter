@@ -370,6 +370,7 @@ def _make_params(extra: dict | None = None) -> dict:
         "fixed_angle_deg": 45.0,
         "cross_hatch": False,
         "cross_hatch_threshold": 0.3,
+        "draw_edges": False,
     }
     if extra:
         base.update(extra)
@@ -528,5 +529,94 @@ def test_get_parameters_includes_hatching_params() -> None:
         "fixed_angle_deg",
         "cross_hatch",
         "cross_hatch_threshold",
+        "draw_edges",
     ):
         assert required in param_names, f"Missing parameter: {required}"
+
+
+# ---------------------------------------------------------------------------
+# Tests for draw_edges, coordinate offset
+# ---------------------------------------------------------------------------
+
+
+def test_draw_edges_produces_more_polylines() -> None:
+    """draw_edges=True must produce more polylines than draw_edges=False."""
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+
+    without_edges = gen.generate(_make_params({"draw_edges": False}), canvas)
+    with_edges = gen.generate(_make_params({"draw_edges": True}), canvas)
+
+    assert len(with_edges) > len(without_edges), (
+        f"Expected more polylines with edges ({len(with_edges)}) vs without ({len(without_edges)})"
+    )
+
+
+def test_draw_edges_no_duplicates() -> None:
+    """When draw_edges=True, no two edge polylines should be identical (deduplication).
+
+    Uses an all-white source so min_density=0 produces zero hatch lines,
+    leaving only the deduplicated edge polylines in the output.
+    """
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+
+    white_img = np.full((100, 100), 255, dtype=np.uint8)
+    white_rgb = np.stack([white_img, white_img, white_img], axis=-1)
+
+    # min_density=0 + all-white → no hatch lines; only draw_edges polylines remain
+    result = gen.generate(
+        _make_params({"_source_image": white_rgb, "draw_edges": True, "min_density": 0.0}),
+        canvas,
+    )
+
+    assert len(result) > 0, "Expected edge polylines in result"
+
+    # Each edge polyline must have exactly 2 points
+    for poly in result:
+        assert len(poly) == 2, f"Edge polyline has {len(poly)} points, expected 2"
+
+    # Deduplicate undirected
+    def edge_key(poly: list) -> frozenset:
+        r0 = (round(poly[0][0], 4), round(poly[0][1], 4))
+        r1 = (round(poly[1][0], 4), round(poly[1][1], 4))
+        return frozenset((r0, r1))
+
+    keys = [edge_key(p) for p in result]
+    assert len(keys) == len(set(keys)), (
+        f"Duplicate edges found: {len(keys)} total, {len(set(keys))} unique"
+    )
+
+
+def test_offset_shifts_all_polylines() -> None:
+    """x_offset_mm and y_offset_mm must shift every point in every polyline (hatch and edge)."""
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+
+    dx, dy = 10.0, 5.0
+    base = gen.generate(_make_params({"draw_edges": True, "x_offset_mm": 0.0, "y_offset_mm": 0.0}), canvas)
+    shifted = gen.generate(_make_params({"draw_edges": True, "x_offset_mm": dx, "y_offset_mm": dy}), canvas)
+
+    assert len(base) == len(shifted), "Offset must not change number of polylines"
+
+    for poly_b, poly_s in zip(base, shifted):
+        assert len(poly_b) == len(poly_s)
+        for (bx, by), (sx, sy) in zip(poly_b, poly_s):
+            assert abs(sx - bx - dx) < 1e-9, f"X shift mismatch: {sx} - {bx} != {dx}"
+            assert abs(sy - by - dy) < 1e-9, f"Y shift mismatch: {sy} - {by} != {dy}"
+
+
+def test_draw_edges_offset_applied() -> None:
+    """draw_edges polylines must also be shifted by x/y offset."""
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+
+    dx, dy = 7.5, -3.0
+    base = gen.generate(_make_params({"draw_edges": True, "x_offset_mm": 0.0, "y_offset_mm": 0.0}), canvas)
+    shifted = gen.generate(_make_params({"draw_edges": True, "x_offset_mm": dx, "y_offset_mm": dy}), canvas)
+
+    assert len(base) == len(shifted)
+    for poly_b, poly_s in zip(base, shifted):
+        for (bx, by), (sx, sy) in zip(poly_b, poly_s):
+            assert abs(sx - bx - dx) < 1e-9
+            assert abs(sy - by - dy) < 1e-9

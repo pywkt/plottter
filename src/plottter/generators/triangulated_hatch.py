@@ -363,6 +363,12 @@ class TriangulatedHatchGenerator(Generator):
                 visible_when={"cross_hatch": [True]},
                 description="Brightness below which cross-hatching is applied",
             ),
+            BoolParam(
+                name="draw_edges",
+                label="Draw Edges",
+                default=False,
+                description="Draw triangle edges in addition to hatching — shows the mesh structure",
+            ),
         ]
 
     def get_presets(self) -> list[Preset]:
@@ -373,6 +379,7 @@ class TriangulatedHatchGenerator(Generator):
             "fixed_angle_deg": 45.0,
             "cross_hatch": False,
             "cross_hatch_threshold": 0.3,
+            "draw_edges": False,
         }
         return [
             Preset(
@@ -434,6 +441,7 @@ class TriangulatedHatchGenerator(Generator):
                     "fixed_angle_deg": 45.0,
                     "cross_hatch": True,
                     "cross_hatch_threshold": 0.35,
+                    "draw_edges": False,
                 },
             ),
         ]
@@ -522,6 +530,7 @@ class TriangulatedHatchGenerator(Generator):
         fixed_angle_deg = float(params.get("fixed_angle_deg", 45.0))
         do_cross_hatch = bool(params.get("cross_hatch", False))
         cross_hatch_threshold = float(params.get("cross_hatch_threshold", 0.3))
+        draw_edges = bool(params.get("draw_edges", False))
 
         # Precompute angle map for Edge Flow / Gradient modes
         angle_map: np.ndarray | None = None
@@ -578,6 +587,21 @@ class TriangulatedHatchGenerator(Generator):
             if progress_callback and (i % max(1, n_triangles // 20) == 0):
                 pct = 60 + int(40 * i / max(1, n_triangles))
                 progress_callback(pct)
+
+        if draw_edges:
+            seen_edges: set[frozenset] = set()
+            for verts_mm, _ in triangles:
+                v0, v1, v2 = verts_mm
+                for p_a, p_b in ((v0, v1), (v1, v2), (v0, v2)):
+                    r_a = (round(p_a[0], 4), round(p_a[1], 4))
+                    r_b = (round(p_b[0], 4), round(p_b[1], 4))
+                    key = frozenset((r_a, r_b))
+                    if key not in seen_edges:
+                        seen_edges.add(key)
+                        all_polylines.append([
+                            (p_a[0] + x_off, p_a[1] + y_off),
+                            (p_b[0] + x_off, p_b[1] + y_off),
+                        ])
 
         if progress_callback:
             progress_callback(100)
