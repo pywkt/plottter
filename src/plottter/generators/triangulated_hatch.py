@@ -112,6 +112,88 @@ def _edge_aware_seeds(
     return np.array(all_points, dtype=np.float64)
 
 
+def _bilinear_sample(gray: np.ndarray, px: float, py: float) -> float:
+    """Bilinear interpolation of grayscale pixel value at sub-pixel coordinates."""
+    h, w = gray.shape[:2]
+    x0 = int(px)
+    y0 = int(py)
+    x1 = min(x0 + 1, w - 1)
+    y1 = min(y0 + 1, h - 1)
+    x0 = max(x0, 0)
+    y0 = max(y0, 0)
+    fx = px - x0
+    fy = py - y0
+    v00 = float(gray[y0, x0])
+    v10 = float(gray[y0, x1])
+    v01 = float(gray[y1, x0])
+    v11 = float(gray[y1, x1])
+    return v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) + v01 * (1 - fx) * fy + v11 * fx * fy
+
+
+def _triangulate_and_sample(
+    seeds: np.ndarray,
+    gray: np.ndarray,
+    img_rect: tuple[float, float, float, float],
+) -> list[tuple[list[tuple[float, float]], float]]:
+    """Delaunay-triangulate seed points and sample brightness at each centroid.
+
+    Parameters
+    ----------
+    seeds:
+        Array of shape (N, 2) with (x_mm, y_mm) seed coordinates.
+    gray:
+        Grayscale image array (uint8, shape HxW).
+    img_rect:
+        Bounding box in mm: (x1, y1, x2, y2).
+
+    Returns
+    -------
+    list of (verts_mm, brightness) tuples where verts_mm is
+    [(x0,y0),(x1,y1),(x2,y2)] in mm and brightness is 0–255.
+    """
+    from scipy.spatial import Delaunay
+
+    tri = Delaunay(seeds)
+    img_x1, img_y1, img_x2, img_y2 = img_rect
+    img_h, img_w = gray.shape[:2]
+    mm_w = img_x2 - img_x1
+    mm_h = img_y2 - img_y1
+
+    result: list[tuple[list[tuple[float, float]], float]] = []
+    for simplex in tri.simplices:
+        v0 = (float(seeds[simplex[0], 0]), float(seeds[simplex[0], 1]))
+        v1 = (float(seeds[simplex[1], 0]), float(seeds[simplex[1], 1]))
+        v2 = (float(seeds[simplex[2], 0]), float(seeds[simplex[2], 1]))
+        cx = (v0[0] + v1[0] + v2[0]) / 3.0
+        cy = (v0[1] + v1[1] + v2[1]) / 3.0
+        # Convert mm centroid to pixel coordinates
+        px = (cx - img_x1) / mm_w * (img_w - 1)
+        py = (cy - img_y1) / mm_h * (img_h - 1)
+        brightness = _bilinear_sample(gray, px, py)
+        result.append(([v0, v1, v2], brightness))
+
+    return result
+
+
+def _discard_outside_triangles(
+    triangles: list[tuple[list[tuple[float, float]], float]],
+    img_rect: tuple[float, float, float, float],
+) -> list[tuple[list[tuple[float, float]], float]]:
+    """Remove triangles whose centroid falls outside the image rect.
+
+    The Delaunay convex hull can extend beyond the image boundary;
+    those hull-edge triangles produce centroids outside the image.
+    """
+    img_x1, img_y1, img_x2, img_y2 = img_rect
+    kept = []
+    for verts_mm, brightness in triangles:
+        cx = (verts_mm[0][0] + verts_mm[1][0] + verts_mm[2][0]) / 3.0
+        cy = (verts_mm[0][1] + verts_mm[1][1] + verts_mm[2][1]) / 3.0
+        if img_x1 <= cx <= img_x2 and img_y1 <= cy <= img_y2:
+            kept.append((verts_mm, brightness))
+    return kept
+
+
 @register_generator
 class TriangulatedHatchGenerator(Generator):
     """Edge-aware seed point placement for Delaunay-based triangulated hatching."""
@@ -306,7 +388,13 @@ class TriangulatedHatchGenerator(Generator):
         _seeds = _edge_aware_seeds(gray, img_rect, num_points, edge_weight, rng)
 
         if progress_callback:
+            progress_callback(50)
+
+        triangles = _triangulate_and_sample(_seeds, gray, img_rect)
+        triangles = _discard_outside_triangles(triangles, img_rect)
+
+        if progress_callback:
             progress_callback(100)
 
-        # Scaffold: seed points generated, return empty polylines until triangulation is added
+        # Triangulation complete; hatching added in next step
         return []

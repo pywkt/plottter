@@ -6,7 +6,9 @@ import numpy as np
 
 from plottter.generators.triangulated_hatch import (
     TriangulatedHatchGenerator,
+    _discard_outside_triangles,
     _edge_aware_seeds,
+    _triangulate_and_sample,
 )
 from plottter.models.canvas import Canvas
 
@@ -220,3 +222,123 @@ def test_get_parameters_includes_required() -> None:
     assert "invert" in param_names
     assert "x_offset_mm" in param_names
     assert "y_offset_mm" in param_names
+
+
+# ---------------------------------------------------------------------------
+# Tests for _triangulate_and_sample
+# ---------------------------------------------------------------------------
+
+
+def test_triangulation_covers_seed_points() -> None:
+    """Triangulation must produce triangles whose vertices come from the seed points."""
+    canvas = make_canvas()
+    img_rect = img_rect_for_canvas(canvas)
+    gray = make_gray_with_edges()
+    rng = np.random.default_rng(5)
+
+    seeds = _edge_aware_seeds(gray, img_rect, num_points=50, edge_weight=0.5, rng=rng)
+    triangles = _triangulate_and_sample(seeds, gray, img_rect)
+
+    assert len(triangles) > 0, "Expected at least one triangle"
+
+    # Every vertex must be one of the original seeds (within float tolerance)
+    seed_set = {(round(x, 9), round(y, 9)) for x, y in seeds.tolist()}
+    for verts_mm, _ in triangles:
+        for vx, vy in verts_mm:
+            assert (round(vx, 9), round(vy, 9)) in seed_set, (
+                f"Triangle vertex ({vx}, {vy}) is not a seed point"
+            )
+
+
+def test_triangulation_brightness_range() -> None:
+    """Each triangle must have brightness in [0, 255]."""
+    canvas = make_canvas()
+    img_rect = img_rect_for_canvas(canvas)
+    gray = make_gray_with_edges()
+    rng = np.random.default_rng(6)
+
+    seeds = _edge_aware_seeds(gray, img_rect, num_points=100, edge_weight=0.7, rng=rng)
+    triangles = _triangulate_and_sample(seeds, gray, img_rect)
+
+    assert len(triangles) > 0
+    for verts_mm, brightness in triangles:
+        assert 0.0 <= brightness <= 255.0, f"Brightness {brightness} out of [0, 255]"
+
+
+def test_triangulation_returns_correct_structure() -> None:
+    """Each element must be (list-of-3-pairs, float)."""
+    canvas = make_canvas()
+    img_rect = img_rect_for_canvas(canvas)
+    gray = make_uniform_gray()
+    rng = np.random.default_rng(7)
+
+    seeds = _edge_aware_seeds(gray, img_rect, num_points=30, edge_weight=0.0, rng=rng)
+    triangles = _triangulate_and_sample(seeds, gray, img_rect)
+
+    for verts_mm, brightness in triangles:
+        assert len(verts_mm) == 3
+        for pt in verts_mm:
+            assert len(pt) == 2
+        assert isinstance(brightness, float)
+
+
+def test_triangulation_centroid_within_image() -> None:
+    """Centroids of all triangles (before discarding) must map to valid pixel coords."""
+    canvas = make_canvas()
+    img_rect = img_rect_for_canvas(canvas)
+    gray = make_gray_with_edges()
+    rng = np.random.default_rng(8)
+
+    seeds = _edge_aware_seeds(gray, img_rect, num_points=80, edge_weight=0.5, rng=rng)
+    # Seeds include corners so all centroids that we later keep are within rect
+    triangles = _discard_outside_triangles(
+        _triangulate_and_sample(seeds, gray, img_rect), img_rect
+    )
+
+    img_x1, img_y1, img_x2, img_y2 = img_rect
+    for verts_mm, _ in triangles:
+        cx = (verts_mm[0][0] + verts_mm[1][0] + verts_mm[2][0]) / 3.0
+        cy = (verts_mm[0][1] + verts_mm[1][1] + verts_mm[2][1]) / 3.0
+        assert img_x1 <= cx <= img_x2, f"Centroid x {cx} outside [{img_x1}, {img_x2}]"
+        assert img_y1 <= cy <= img_y2, f"Centroid y {cy} outside [{img_y1}, {img_y2}]"
+
+
+# ---------------------------------------------------------------------------
+# Tests for _discard_outside_triangles
+# ---------------------------------------------------------------------------
+
+
+def test_discard_outside_removes_exterior_triangles() -> None:
+    """Triangles with centroids outside the rect must be removed."""
+    img_rect = (0.0, 0.0, 100.0, 100.0)
+
+    inside = ([( 10.0,  10.0), ( 20.0,  10.0), ( 15.0,  20.0)], 128.0)   # centroid inside
+    outside = ([(110.0, 110.0), (120.0, 110.0), (115.0, 120.0)], 50.0)    # centroid outside
+
+    result = _discard_outside_triangles([inside, outside], img_rect)
+    assert len(result) == 1
+    assert result[0][1] == 128.0
+
+
+def test_discard_outside_keeps_boundary_triangles() -> None:
+    """Triangles whose centroid is exactly on the boundary edge should be kept."""
+    img_rect = (0.0, 0.0, 100.0, 100.0)
+
+    # centroid exactly at (0, 0)
+    on_boundary = ([(0.0, 0.0), (-1.0, 0.0), (1.0, 0.0)], 200.0)  # cx=0, cy=0
+
+    result = _discard_outside_triangles([on_boundary], img_rect)
+    assert len(result) == 1
+
+
+def test_discard_outside_all_inside() -> None:
+    """When all triangles are inside, nothing should be removed."""
+    img_rect = (0.0, 0.0, 100.0, 100.0)
+
+    triangles = [
+        ([(10.0, 10.0), (20.0, 10.0), (15.0, 20.0)], 100.0),
+        ([(50.0, 50.0), (60.0, 50.0), (55.0, 60.0)], 200.0),
+    ]
+
+    result = _discard_outside_triangles(triangles, img_rect)
+    assert len(result) == 2
