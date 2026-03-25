@@ -620,3 +620,78 @@ def test_draw_edges_offset_applied() -> None:
         for (bx, by), (sx, sy) in zip(poly_b, poly_s):
             assert abs(sx - bx - dx) < 1e-9
             assert abs(sy - by - dy) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Tests for presets and fit mode
+# ---------------------------------------------------------------------------
+
+
+def test_all_presets_generate_valid_output() -> None:
+    """Every preset must produce a non-empty list of valid polylines."""
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+    gray = make_gray_with_edges()
+    rgb = np.stack([gray, gray, gray], axis=-1)
+
+    presets = gen.get_presets()
+    assert len(presets) > 0, "Expected at least one preset"
+
+    named = {p.name: p for p in presets}
+    required = ["Pen & Ink", "Cross-Hatched Portrait", "Geometric Mesh", "Dense Illustration", "Minimal Sketch"]
+    for name in required:
+        assert name in named, f"Missing required preset: {name!r}"
+
+    for preset in presets:
+        params = dict(preset.params)
+        params["_source_image"] = rgb
+        # Use small num_points to keep test fast
+        params["num_points"] = min(params.get("num_points", 200), 200)
+        result = gen.generate(params, canvas)
+        assert isinstance(result, list), f"Preset {preset.name!r}: generate() must return list"
+        assert len(result) > 0, f"Preset {preset.name!r}: expected non-empty output"
+        for poly in result:
+            assert len(poly) >= 2, f"Preset {preset.name!r}: polyline has fewer than 2 points"
+
+
+def test_fit_mode_output_within_image_rect() -> None:
+    """Output polyline points must lie within the image rect for 'fit' mode.
+
+    'fit' scales the image to fit within the drawing area while preserving
+    aspect ratio, so img_rect is strictly smaller than drawing_area for a
+    square image on a portrait A4 canvas.  All generated points must stay
+    inside that smaller rect — not just inside the larger drawing area.
+    """
+    from plottter.generators._helpers import compute_image_rect
+
+    canvas = make_canvas()
+    gen = TriangulatedHatchGenerator()
+    gray = make_gray_with_edges()
+    rgb = np.stack([gray, gray, gray], axis=-1)
+
+    params = _make_params({
+        "_source_image": rgb,
+        "num_points": 100,
+        "draw_edges": True,
+        "x_offset_mm": 0.0,
+        "y_offset_mm": 0.0,
+        "image_fit_mode": "fit",
+    })
+    result = gen.generate(params, canvas)
+
+    # Compute the expected img_rect that the generator will use
+    draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+    img_h, img_w = gray.shape[:2]
+    x1, y1, x2, y2 = compute_image_rect(
+        "fit", img_w, img_h, draw_x1, draw_y1, draw_x2, draw_y2
+    )
+    # For a 100×100 square image on portrait A4, the fit rect is narrower in
+    # height than the full drawing area — confirming this test is non-trivial
+    assert y2 < draw_y2, "Fit rect should be shorter than drawing area for this image"
+
+    tol = 0.01
+    assert len(result) > 0, "Expected non-empty output"
+    for poly in result:
+        for px, py in poly:
+            assert x1 - tol <= px <= x2 + tol, f"Point x={px} outside fit rect [{x1}, {x2}]"
+            assert y1 - tol <= py <= y2 + tol, f"Point y={py} outside fit rect [{y1}, {y2}]"
