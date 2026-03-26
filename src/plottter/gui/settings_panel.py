@@ -2952,6 +2952,9 @@ class SettingsPanel(QScrollArea):
         self._on_generate()
 
     def _on_generate(self) -> None:
+        # Flush current UI state to model before reading sibling layers' generator_info
+        self.flush_current_snapshot()
+
         if self._generator is None:
             QMessageBox.warning(
                 self,
