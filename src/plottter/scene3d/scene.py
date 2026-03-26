@@ -143,6 +143,7 @@ class Scene:
         offset_mm: tuple[float, float] = (0.0, 0.0),
         light_dir: "tuple[float, float, float] | None" = None,
         extra_render_paths: "list[Path3D] | None" = None,
+        hlr_quality: str = "Fine",
     ):
         """Render shapes to 2D polylines in mm coordinates.
 
@@ -212,6 +213,7 @@ class Scene:
             all_paths, camera, vp_matrix, canvas_w_mm, canvas_h_mm,
             progress_callback, cancelled_callback, offset_mm, light_dir,
             extra_render_paths=extra_render_paths,
+            hlr_quality=hlr_quality,
         )
 
     def _project_paths(
@@ -242,6 +244,7 @@ class Scene:
         offset_mm: tuple[float, float] = (0.0, 0.0),
         light_dir: "tuple[float, float, float] | None" = None,
         extra_render_paths: "list[Path3D] | None" = None,
+        hlr_quality: str = "Fine",
     ):
         """Render with hidden line removal via ray casting.
 
@@ -309,6 +312,10 @@ class Scene:
         seg_starts: list[np.ndarray] = []
         seg_ends: list[np.ndarray] = []
         seg_normals: list[np.ndarray | None] = []
+        # For coarse-to-fine: track (path_id, start_idx, end_idx) per source path.
+        # end_idx is exclusive (like a Python range).
+        seg_path_ranges: list[tuple[int, int, int]] = []
+        _path_id = 0
 
         for path in paths:
             pts = np.asarray(path.points, dtype=np.float64)
@@ -322,6 +329,7 @@ class Scene:
 
             # Chop this path into sub-segments as raw numpy pairs.
             path_normal = path.face_normal  # may be None
+            _path_start = len(seg_starts)
             for i in range(len(pts) - 1):
                 a = pts[i]
                 b = pts[i + 1]
@@ -337,6 +345,10 @@ class Scene:
                     seg_starts.append(a + step_vec * j)
                     seg_ends.append(a + step_vec * (j + 1))
                     seg_normals.append(path_normal)
+            _path_end = len(seg_starts)
+            if _path_end > _path_start:
+                seg_path_ranges.append((_path_id, _path_start, _path_end))
+            _path_id += 1
 
         if not seg_starts and not extra_render_paths:
             return [] if light_dir_norm is None else ([], [])
@@ -392,65 +404,149 @@ class Scene:
                 shadow_origins = mids + chop_step * 0.5 * light_dir_norm  # (N, 3)
 
             # ── 3. Per-ray visibility + shadow test ───────────────────────────────
-            # We still traverse the BVH one ray at a time (tree traversal is hard
-            # to vectorize in pure Python), but:
-            # - All segment data is pre-computed as NumPy arrays (no per-iteration
-            #   allocation for direction computation or normalization).
-            # - BVH dispatches to Shape.intersect_any() → Mesh.intersect_any() →
-            #   TriangleBVH.intersect_any() for early-exit triangle testing.
-            # - cancelled_callback is checked every 100 segments.
-            # - When shadow_origins is provided, each visible segment also receives
-            #   a shadow ray cast toward the light source.
-            for i in range(n_segs):
-                if i % 100 == 0:
-                    if cancelled_callback is not None and cancelled_callback():
+            # Determine coarse-to-fine stride from hlr_quality.
+            # "Fine"   → stride 1 (test every segment, identical to legacy behavior).
+            # "Normal" → stride 4 (coarse pre-pass every 4th segment per path).
+            # "Fast"   → stride 8 (coarse pre-pass every 8th segment per path).
+            # Coarse-to-fine is only applied when n_segs > 200 and bvh is present.
+            if hlr_quality == "Fast":
+                _coarse_stride = 8
+            elif hlr_quality == "Normal":
+                _coarse_stride = 4
+            else:
+                _coarse_stride = 1  # "Fine": no optimization
+
+            _use_coarse = _coarse_stride > 1 and n_segs > 200 and bvh is not None
+
+            if not _use_coarse:
+                # ── Original per-segment loop (Fine quality or small scene) ──────
+                for i in range(n_segs):
+                    if i % 100 == 0:
+                        if cancelled_callback is not None and cancelled_callback():
+                            return [] if light_dir_norm is None else ([], [])
+                        if progress_callback is not None:
+                            progress_callback(i / n_segs)
+
+                    if not valid[i]:
+                        continue
+
+                    is_visible = True
+                    if bvh is not None:
+                        ray = Ray(origin=eye, direction=dirs_norm[i])
+                        is_visible = not bvh.intersect_any(ray, t_max=float(t_maxs[i]))
+
+                    if is_visible:
+                        if light_dir_norm is not None:
+                            in_shadow = False
+                            fn = seg_normals[i]
+                            if fn is not None:
+                                if float(np.dot(fn, light_dir_norm)) < 0:
+                                    in_shadow = True
+                            if not in_shadow and shadow_origins is not None and bvh is not None:
+                                shadow_ray = Ray(
+                                    origin=shadow_origins[i],
+                                    direction=light_dir_norm,
+                                )
+                                in_shadow = bvh.intersect_any(shadow_ray, t_max=1e9)
+                            if in_shadow:
+                                shadow_segments.append((seg_a[i], seg_b[i]))
+                            else:
+                                lit_segments.append((seg_a[i], seg_b[i]))
+                        else:
+                            lit_segments.append((seg_a[i], seg_b[i]))
+            else:
+                # ── Coarse-to-fine per-path loop ─────────────────────────────────
+                # Phase 1: Coarse pass — test every Nth segment per source path.
+                # Phase 2: Per block between coarse samples:
+                #   - If both endpoints agree: intermediate segments inherit.
+                #   - If endpoints differ (transition): fine-test intermediates.
+                # Phase 3: Record all visible segments (with shadow logic).
+                #
+                # Visibility is encoded in vis_result:
+                #   1 = visible, 0 = hidden/invalid, -1 = unresolved (shouldn't remain)
+                vis_result = np.zeros(n_segs, dtype=np.int8)  # 0 = hidden/invalid
+                vis_result[~valid] = 0  # invalid rays are hidden
+
+                _ray_count = 0
+                _coarse_cancelled = False
+
+                def _cast_vis(idx: int) -> bool:
+                    """Cast a visibility ray for segment idx; returns True if visible.
+
+                    Sets _coarse_cancelled when the cancelled_callback fires so the
+                    outer loop can propagate early exit identically to the Fine path.
+                    """
+                    nonlocal _ray_count, _coarse_cancelled
+                    _ray_count += 1
+                    if _ray_count % 100 == 0:
+                        if cancelled_callback is not None and cancelled_callback():
+                            _coarse_cancelled = True
+                            return False
+                        if progress_callback is not None:
+                            progress_callback(_ray_count / n_segs)
+                    r = Ray(origin=eye, direction=dirs_norm[idx])
+                    return not bvh.intersect_any(r, t_max=float(t_maxs[idx]))
+
+                for _pid, _ps, _pe in seg_path_ranges:
+                    if _coarse_cancelled:
                         return [] if light_dir_norm is None else ([], [])
-                    if progress_callback is not None:
-                        progress_callback(i / n_segs)
+                    _n_path = _pe - _ps
+                    if _n_path == 0:
+                        continue
 
-                if not valid[i]:
-                    continue
+                    # Coarse sample positions within the path (0-based offsets).
+                    # Always include the last segment so the final block is bounded.
+                    _coarse_offsets: list[int] = list(range(0, _n_path, _coarse_stride))
+                    _last = _n_path - 1
+                    if _coarse_offsets[-1] != _last:
+                        _coarse_offsets.append(_last)
 
-                is_visible = True
-                if bvh is not None:
-                    ray = Ray(origin=eye, direction=dirs_norm[i])
-                    is_visible = not bvh.intersect_any(ray, t_max=float(t_maxs[i]))
+                    # Phase 1: coarse ray casts
+                    _coarse_vis: dict[int, int] = {}
+                    for _k in _coarse_offsets:
+                        if _coarse_cancelled:
+                            return [] if light_dir_norm is None else ([], [])
+                        _i = _ps + _k
+                        if not valid[_i]:
+                            _coarse_vis[_k] = 0
+                        else:
+                            _coarse_vis[_k] = 1 if _cast_vis(_i) else 0
+                        vis_result[_i] = _coarse_vis[_k]
 
-                if is_visible:
+                    # Phase 2: inheritance or fine test for intermediate segments
+                    for _bi in range(len(_coarse_offsets) - 1):
+                        _k1 = _coarse_offsets[_bi]
+                        _k2 = _coarse_offsets[_bi + 1]
+                        _same = _coarse_vis[_k1] == _coarse_vis[_k2]
+                        _inherit_val = _coarse_vis[_k1]
+
+                        for _k in range(_k1 + 1, _k2):
+                            if _coarse_cancelled:
+                                return [] if light_dir_norm is None else ([], [])
+                            _i = _ps + _k
+                            if not valid[_i]:
+                                vis_result[_i] = 0
+                            elif _same:
+                                vis_result[_i] = _inherit_val
+                            else:
+                                vis_result[_i] = 1 if _cast_vis(_i) else 0
+
+                # Phase 3: record all visible segments with shadow logic
+                for i in range(n_segs):
+                    if vis_result[i] != 1:
+                        continue
                     if light_dir_norm is not None:
-                        # Determine whether this segment is in shadow.
-                        # Two complementary tests are combined:
-                        #
-                        # 1. Face-normal test (self-shadowing on convex objects):
-                        #    If the surface normal of the originating face points
-                        #    away from the light (dot < 0), the face is on the dark
-                        #    side regardless of whether any other object blocks the
-                        #    light.  This correctly shadows the back side of a
-                        #    single cube or sphere without needing a ray cast.
-                        #
-                        # 2. Shadow ray-cast (inter-object shadows):
-                        #    Even when the face normal points toward the light, the
-                        #    segment may be blocked by another object.  A ray from
-                        #    the midpoint toward the light is cast against the BVH.
-                        #    We skip this expensive test when the face-normal check
-                        #    has already determined the segment is in shadow.
                         in_shadow = False
-
                         fn = seg_normals[i]
                         if fn is not None:
                             if float(np.dot(fn, light_dir_norm)) < 0:
-                                in_shadow = True  # face points away from light
-
+                                in_shadow = True
                         if not in_shadow and shadow_origins is not None and bvh is not None:
-                            # Cast a ray from the segment midpoint toward the light.
-                            # The ray origin is offset by half a chop_step to avoid
-                            # self-intersection with the surface the midpoint lies on.
                             shadow_ray = Ray(
                                 origin=shadow_origins[i],
                                 direction=light_dir_norm,
                             )
                             in_shadow = bvh.intersect_any(shadow_ray, t_max=1e9)
-
                         if in_shadow:
                             shadow_segments.append((seg_a[i], seg_b[i]))
                         else:

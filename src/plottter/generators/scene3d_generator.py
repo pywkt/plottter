@@ -686,6 +686,19 @@ class Scene3DGenerator(Generator):
                 name="chop_step", label="HLR Accuracy", min=0.005, max=0.5, step=0.005, default=0.05,
                 description="Path segment length for HLR ray casting — smaller = more accurate but slower",
             ),
+            ChoiceParam(
+                name="hlr_quality",
+                label="HLR Quality",
+                choices=["Fast", "Normal", "Fine"],
+                default="Normal",
+                description=(
+                    "HLR ray-cast quality. "
+                    "Fine: test every segment (slowest, most accurate). "
+                    "Normal: coarse pre-pass every 4 segments, fine-test at transitions. "
+                    "Fast: coarse pre-pass every 8 segments, fine-test at transitions. "
+                    "Normal and Fast are identical to Fine for scenes with fewer than 200 segments."
+                ),
+            ),
             # ── Shadow / lighting ─────────────────────────────────────
             BoolParam(
                 name="shadow_enabled", label="Enable Shadows", default=False,
@@ -1004,6 +1017,7 @@ class Scene3DGenerator(Generator):
         # Build scene
         hlr_enabled = bool(params.get("hlr_enabled", True))
         chop_step = float(params.get("chop_step", 0.05))
+        hlr_quality = str(params.get("hlr_quality", "Normal"))
         scene = Scene(hlr_enabled=hlr_enabled, chop_step=chop_step)
 
         # Add sibling shapes for occlusion (not rendered, just block rays)
@@ -1091,6 +1105,7 @@ class Scene3DGenerator(Generator):
             offset_mm=(x_off, y_off),
             light_dir=light_dir,
             extra_render_paths=extra_for_main,
+            hlr_quality=hlr_quality,
         )
 
         if isinstance(render_result, tuple):
@@ -1123,6 +1138,7 @@ class Scene3DGenerator(Generator):
                         offset_mm=(x_off, y_off),
                         light_dir=None,
                         extra_render_paths=ground_shadow_paths,
+                        hlr_quality=hlr_quality,
                     )
                     if isinstance(ground_render, list):
                         polylines = polylines + ground_render

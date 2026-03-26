@@ -3237,3 +3237,89 @@ class TestFillTriangleWithHatching:
         from plottter.scene3d.hatching import brightness_to_density
         d = brightness_to_density(brightness=0.5, min_density=1.0, max_density=5.0)
         assert abs(d - 3.0) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# Coarse-to-fine HLR quality tests (task 59.4)
+# ---------------------------------------------------------------------------
+
+class TestHLRQuality:
+    """Tests for the coarse-to-fine HLR optimization (hlr_quality parameter)."""
+
+    def _make_sphere_scene(self, chop_step=0.2):
+        """Return a compiled scene with a sphere behind a cube for occlusion."""
+        from plottter.scene3d import Scene, Camera
+        from plottter.scene3d.shapes import Sphere, Cube
+        from plottter.scene3d.vector3 import vec3
+
+        scene = Scene(hlr_enabled=True, chop_step=chop_step)
+        scene.add(Sphere(center=vec3(0, 0, 0), radius=1.0, lat_lines=8, lng_lines=8))
+        scene.add(Cube(center=vec3(0, 0, 0), size=1.5))
+        scene.compile()
+        camera = Camera.default(aspect=1.0)
+        return scene, camera
+
+    def test_fine_quality_matches_default(self):
+        """hlr_quality='Fine' should produce the same output as the legacy loop (stride=1)."""
+        scene, camera = self._make_sphere_scene()
+        # Fine quality should be identical to passing no hlr_quality (default="Fine")
+        result_default = scene.render(camera, 100.0, 100.0)
+        result_fine = scene.render(camera, 100.0, 100.0, hlr_quality="Fine")
+        # Both use stride=1; results must be exactly equal
+        assert len(result_default) == len(result_fine)
+        for pl_a, pl_b in zip(result_default, result_fine):
+            assert pl_a == pl_b, "Fine quality polylines differ from default"
+
+    def test_normal_quality_nonempty(self):
+        """hlr_quality='Normal' should still produce visible output."""
+        scene, camera = self._make_sphere_scene()
+        result = scene.render(camera, 100.0, 100.0, hlr_quality="Normal")
+        assert len(result) > 0, "Normal quality produced no output"
+        for pl in result:
+            assert len(pl) >= 2
+
+    def test_fast_quality_nonempty(self):
+        """hlr_quality='Fast' should still produce visible output."""
+        scene, camera = self._make_sphere_scene()
+        result = scene.render(camera, 100.0, 100.0, hlr_quality="Fast")
+        assert len(result) > 0, "Fast quality produced no output"
+        for pl in result:
+            assert len(pl) >= 2
+
+    def test_coarse_skipped_for_small_scenes(self):
+        """With < 200 segments, Normal/Fast should be identical to Fine."""
+        from plottter.scene3d import Scene, Camera
+        from plottter.scene3d.shapes import Sphere
+        from plottter.scene3d.vector3 import vec3
+
+        # Use a very coarse chop_step so we get < 200 segments
+        scene = Scene(hlr_enabled=True, chop_step=0.5)
+        scene.add(Sphere(center=vec3(0, 0, 0), radius=1.0, lat_lines=4, lng_lines=4))
+        scene.compile()
+        camera = Camera.default(aspect=1.0)
+
+        fine = scene.render(camera, 100.0, 100.0, hlr_quality="Fine")
+        normal = scene.render(camera, 100.0, 100.0, hlr_quality="Normal")
+        fast = scene.render(camera, 100.0, 100.0, hlr_quality="Fast")
+
+        assert len(fine) == len(normal), "Normal differs from Fine on small scene"
+        assert len(fine) == len(fast), "Fast differs from Fine on small scene"
+        for pl_a, pl_b in zip(fine, normal):
+            assert pl_a == pl_b
+        for pl_a, pl_b in zip(fine, fast):
+            assert pl_a == pl_b
+
+    def test_hlr_quality_param_in_generator(self):
+        """Scene3DGenerator must expose hlr_quality as a ChoiceParam."""
+        from plottter.generators.scene3d_generator import Scene3DGenerator
+        gen = Scene3DGenerator()
+        params = gen.get_parameters()
+        names = [p.name for p in params]
+        assert "hlr_quality" in names, "hlr_quality param missing from generator"
+        hlr_q = next(p for p in params if p.name == "hlr_quality")
+        from plottter.generators.base import ChoiceParam
+        assert isinstance(hlr_q, ChoiceParam)
+        assert "Fine" in hlr_q.choices
+        assert "Normal" in hlr_q.choices
+        assert "Fast" in hlr_q.choices
+        assert hlr_q.default == "Normal"
