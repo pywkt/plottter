@@ -351,7 +351,25 @@ class Scene:
             seg_b = np.stack(seg_ends)            # (N, 3)
             mids = (seg_a + seg_b) * 0.5          # (N, 3)
 
-            dirs = mids - eye                     # (N, 3) raw direction vectors
+            # Build per-segment normal array (None entries → zero vector)
+            seg_normals_arr = np.zeros((n_segs, 3), dtype=np.float64)
+            for _k, _sn in enumerate(seg_normals):
+                if _sn is not None:
+                    seg_normals_arr[_k] = _sn
+
+            # Offset midpoints along face normal to lift the test point slightly
+            # off the surface, preventing self-occlusion at grazing angles.
+            # Only applied where face normals are valid (non-zero magnitude).
+            norm_mags = np.linalg.norm(seg_normals_arr, axis=1)  # (N,)
+            has_normal = norm_mags > 0.1
+            offset_mids = mids.copy()
+            if np.any(has_normal):
+                offset_mids[has_normal] = (
+                    mids[has_normal]
+                    + seg_normals_arr[has_normal] * (chop_step * 0.1)
+                )
+
+            dirs = offset_mids - eye              # (N, 3) raw direction vectors
             dists = np.linalg.norm(dirs, axis=1)  # (N,)
 
             # Mark degenerate rays (midpoint coincides with eye) as invalid
