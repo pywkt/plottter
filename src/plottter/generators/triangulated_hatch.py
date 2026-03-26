@@ -199,6 +199,154 @@ def _discard_outside_triangles(
     return kept
 
 
+def _rectangle_cells(
+    gray: np.ndarray,
+    img_rect: tuple[float, float, float, float],
+    cell_size: float,
+) -> list[tuple[list[tuple[float, float]], float]]:
+    """Generate axis-aligned rectangular cells covering img_rect.
+
+    Each cell is ``cell_size × cell_size`` mm (edge cells are clipped to the
+    image rect boundary so they remain axis-aligned quads).
+
+    Parameters
+    ----------
+    gray:
+        Grayscale image array (uint8, shape HxW).
+    img_rect:
+        Bounding box in mm: (x1, y1, x2, y2).
+    cell_size:
+        Side length of each cell in mm.
+
+    Returns
+    -------
+    list of (verts_mm, brightness) tuples where verts_mm is a 4-vertex list
+    and brightness is 0–255.
+    """
+    img_x1, img_y1, img_x2, img_y2 = img_rect
+    img_h, img_w = gray.shape[:2]
+    mm_w = img_x2 - img_x1
+    mm_h = img_y2 - img_y1
+
+    result: list[tuple[list[tuple[float, float]], float]] = []
+
+    y = img_y1
+    while y < img_y2:
+        y_end = min(y + cell_size, img_y2)
+        x = img_x1
+        while x < img_x2:
+            x_end = min(x + cell_size, img_x2)
+
+            # Sample brightness at cell center
+            cx = (x + x_end) / 2.0
+            cy = (y + y_end) / 2.0
+            px = (cx - img_x1) / mm_w * (img_w - 1)
+            py = (cy - img_y1) / mm_h * (img_h - 1)
+            brightness = _bilinear_sample(gray, px, py)
+
+            verts: list[tuple[float, float]] = [
+                (x, y), (x_end, y), (x_end, y_end), (x, y_end)
+            ]
+            result.append((verts, brightness))
+
+            x += cell_size
+        y += cell_size
+
+    return result
+
+
+def _hexagon_cells(
+    gray: np.ndarray,
+    img_rect: tuple[float, float, float, float],
+    cell_size: float,
+) -> list[tuple[list[tuple[float, float]], float]]:
+    """Generate pointy-top hexagonal cells covering img_rect.
+
+    Hex radius = ``cell_size / 2``. Alternate rows are offset by half the
+    horizontal spacing. Hexagons that extend beyond the image rect are clipped
+    with Shapely.
+
+    Parameters
+    ----------
+    gray:
+        Grayscale image array (uint8, shape HxW).
+    img_rect:
+        Bounding box in mm: (x1, y1, x2, y2).
+    cell_size:
+        Nominal diameter of each hexagon in mm; radius = cell_size / 2.
+
+    Returns
+    -------
+    list of (verts_mm, brightness) tuples where verts_mm is the (clipped)
+    hexagon vertices and brightness is 0–255.
+    """
+    import math
+
+    img_x1, img_y1, img_x2, img_y2 = img_rect
+    img_h, img_w = gray.shape[:2]
+    mm_w = img_x2 - img_x1
+    mm_h = img_y2 - img_y1
+
+    radius = cell_size / 2.0
+    # Pointy-top hexagon layout metrics
+    col_spacing = math.sqrt(3.0) * radius   # horizontal distance between adjacent centers
+    row_spacing = 1.5 * radius              # vertical distance between row centers
+
+    clip_rect = shapely_box(img_x1, img_y1, img_x2, img_y2)
+
+    # How many rows/cols needed to fully cover the image rect
+    n_cols = int(math.ceil((img_x2 - img_x1) / col_spacing)) + 3
+    n_rows = int(math.ceil((img_y2 - img_y1) / row_spacing)) + 3
+
+    result: list[tuple[list[tuple[float, float]], float]] = []
+
+    for row_idx in range(-1, n_rows + 1):
+        cy = img_y1 + row_idx * row_spacing
+        # Odd rows are shifted right by half the column spacing
+        x_shift = (col_spacing / 2.0) if (row_idx % 2 != 0) else 0.0
+
+        for col_idx in range(-1, n_cols + 1):
+            cx = img_x1 + col_idx * col_spacing + x_shift
+
+            # Skip centres clearly outside the image rect
+            if cx < img_x1 - radius * 2 or cx > img_x2 + radius * 2:
+                continue
+            if cy < img_y1 - radius * 2 or cy > img_y2 + radius * 2:
+                continue
+
+            # Pointy-top hex vertices: first vertex at 30°, then every 60°
+            verts_raw = [
+                (
+                    cx + radius * math.cos(math.radians(30.0 + 60.0 * i)),
+                    cy + radius * math.sin(math.radians(30.0 + 60.0 * i)),
+                )
+                for i in range(6)
+            ]
+
+            hex_poly = ShapelyPolygon(verts_raw)
+            if hex_poly.area < _AREA_EPSILON:
+                continue
+            clipped = hex_poly.intersection(clip_rect)
+
+            if clipped.is_empty or not isinstance(clipped, ShapelyPolygon):
+                continue
+
+            cell_coords = list(clipped.exterior.coords)[:-1]
+            if len(cell_coords) < 3:
+                continue
+
+            # Sample brightness at (clamped) hex centre
+            sample_cx = max(img_x1, min(img_x2, cx))
+            sample_cy = max(img_y1, min(img_y2, cy))
+            px = (sample_cx - img_x1) / mm_w * (img_w - 1)
+            py = (sample_cy - img_y1) / mm_h * (img_h - 1)
+            brightness = _bilinear_sample(gray, px, py)
+
+            result.append(([(float(x), float(y)) for x, y in cell_coords], brightness))
+
+    return result
+
+
 def _voronoi_cells(
     seeds: np.ndarray,
     gray: np.ndarray,
@@ -329,9 +477,9 @@ class MosaicHatchGenerator(Generator):
             ChoiceParam(
                 name="mesh_type",
                 label="Mesh Type",
-                choices=["Triangles", "Voronoi"],
+                choices=["Triangles", "Voronoi", "Rectangles", "Hexagons"],
                 default="Triangles",
-                description="Tessellation method — Triangles uses Delaunay triangulation, Voronoi uses Voronoi cells",
+                description="Tessellation method — Triangles, Voronoi, Rectangles, or Hexagons",
             ),
             IntParam(
                 name="num_points",
@@ -340,6 +488,7 @@ class MosaicHatchGenerator(Generator):
                 max=10000,
                 step=100,
                 default=1000,
+                visible_when={"mesh_type": ["Triangles", "Voronoi"]},
                 description="Number of seed points to place across the image — more points produce finer detail",
             ),
             FloatParam(
@@ -349,7 +498,18 @@ class MosaicHatchGenerator(Generator):
                 max=1.0,
                 step=0.05,
                 default=0.7,
+                visible_when={"mesh_type": ["Triangles", "Voronoi"]},
                 description="How strongly edges attract mesh vertices — 0 = uniform, 1 = all on edges",
+            ),
+            FloatParam(
+                name="cell_size_mm",
+                label="Cell Size (mm)",
+                min=1.0,
+                max=30.0,
+                step=0.5,
+                default=5.0,
+                visible_when={"mesh_type": ["Rectangles", "Hexagons"]},
+                description="Cell size in mm",
             ),
             FloatParam(
                 name="brightness",
@@ -667,6 +827,46 @@ class MosaicHatchGenerator(Generator):
                     "draw_edges": False,
                 },
             ),
+            Preset(
+                name="Geometric Grid",
+                params={
+                    "mesh_type": "Rectangles",
+                    "cell_size_mm": 5.0,
+                    "brightness": 0.0,
+                    "contrast": 0.0,
+                    "blur_radius": 1.0,
+                    "invert": False,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                    "min_density": 0.0,
+                    "max_density": 4.0,
+                    "angle_mode": "Fixed",
+                    "fixed_angle_deg": 45.0,
+                    "cross_hatch": False,
+                    "cross_hatch_threshold": 0.3,
+                    "draw_edges": True,
+                },
+            ),
+            Preset(
+                name="Honeycomb",
+                params={
+                    "mesh_type": "Hexagons",
+                    "cell_size_mm": 8.0,
+                    "brightness": 0.0,
+                    "contrast": 0.0,
+                    "blur_radius": 1.0,
+                    "invert": False,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                    "min_density": 0.0,
+                    "max_density": 5.0,
+                    "angle_mode": "Edge Flow",
+                    "fixed_angle_deg": 45.0,
+                    "cross_hatch": False,
+                    "cross_hatch_threshold": 0.3,
+                    "draw_edges": True,
+                },
+            ),
         ]
 
     def generate(
@@ -727,30 +927,41 @@ class MosaicHatchGenerator(Generator):
             offset_y_mm=float(params.get("image_offset_y_mm", 0.0)),
         )
 
-        num_points = int(params.get("num_points", 1000))
-        edge_weight = float(params.get("edge_weight", 0.7))
-        seed = int(params.get("random_seed", 42))
-        rng = np.random.default_rng(seed)
         mesh_type = str(params.get("mesh_type", "Triangles"))
+        cell_size = float(params.get("cell_size_mm", 5.0))
 
         if progress_callback:
             progress_callback(20)
 
-        _seeds = _edge_aware_seeds(gray, img_rect, num_points, edge_weight, rng)
-
-        if progress_callback:
-            progress_callback(50)
-
         # Build the cell list: list of (verts_mm, brightness)
-        if mesh_type == "Voronoi":
-            cells = _voronoi_cells(_seeds, gray, img_rect)
+        if mesh_type == "Rectangles":
+            cells = _rectangle_cells(gray, img_rect, cell_size)
+            if progress_callback:
+                progress_callback(60)
+        elif mesh_type == "Hexagons":
+            cells = _hexagon_cells(gray, img_rect, cell_size)
+            if progress_callback:
+                progress_callback(60)
         else:
-            # Triangles (default)
-            cells = _triangulate_and_sample(_seeds, gray, img_rect)
-            cells = _discard_outside_triangles(cells, img_rect)
+            num_points = int(params.get("num_points", 1000))
+            edge_weight = float(params.get("edge_weight", 0.7))
+            seed = int(params.get("random_seed", 42))
+            rng = np.random.default_rng(seed)
 
-        if progress_callback:
-            progress_callback(60)
+            _seeds = _edge_aware_seeds(gray, img_rect, num_points, edge_weight, rng)
+
+            if progress_callback:
+                progress_callback(50)
+
+            if mesh_type == "Voronoi":
+                cells = _voronoi_cells(_seeds, gray, img_rect)
+            else:
+                # Triangles (default)
+                cells = _triangulate_and_sample(_seeds, gray, img_rect)
+                cells = _discard_outside_triangles(cells, img_rect)
+
+            if progress_callback:
+                progress_callback(60)
 
         # --- Hatching parameters ---
         min_density = float(params.get("min_density", 0.0))

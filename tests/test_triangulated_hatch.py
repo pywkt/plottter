@@ -9,6 +9,8 @@ from plottter.generators.triangulated_hatch import (
     _compute_angle_map,
     _discard_outside_triangles,
     _edge_aware_seeds,
+    _hexagon_cells,
+    _rectangle_cells,
     _triangulate_and_sample,
     _voronoi_cells,
 )
@@ -783,15 +785,19 @@ def test_all_presets_generate_valid_output() -> None:
     assert len(presets) > 0, "Expected at least one preset"
 
     named = {p.name: p for p in presets}
-    required = ["Pen & Ink", "Cross-Hatched Portrait", "Geometric Mesh", "Dense Illustration", "Minimal Sketch", "Voronoi Portrait"]
+    required = [
+        "Pen & Ink", "Cross-Hatched Portrait", "Geometric Mesh", "Dense Illustration",
+        "Minimal Sketch", "Voronoi Portrait", "Geometric Grid", "Honeycomb",
+    ]
     for name in required:
         assert name in named, f"Missing required preset: {name!r}"
 
     for preset in presets:
         params = dict(preset.params)
         params["_source_image"] = rgb
-        # Use small num_points to keep test fast
-        params["num_points"] = min(params.get("num_points", 200), 200)
+        # Use small num_points to keep test fast (only relevant for Triangles/Voronoi)
+        if "num_points" in params:
+            params["num_points"] = min(params["num_points"], 200)
         result = gen.generate(params, canvas)
         assert isinstance(result, list), f"Preset {preset.name!r}: generate() must return list"
         assert len(result) > 0, f"Preset {preset.name!r}: expected non-empty output"
@@ -852,3 +858,381 @@ def test_fit_mode_output_within_image_rect() -> None:
         for px, py in poly:
             assert x1 - tol <= px <= x2 + tol, f"Point x={px} outside fit rect [{x1}, {x2}]"
             assert y1 - tol <= py <= y2 + tol, f"Point y={py} outside fit rect [{y1}, {y2}]"
+
+
+# ---------------------------------------------------------------------------
+# Tests for _rectangle_cells
+# ---------------------------------------------------------------------------
+
+
+def test_rectangle_cells_returns_list() -> None:
+    """_rectangle_cells must return a list of (verts, brightness) tuples."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_uniform_gray()
+    cells = _rectangle_cells(gray, img_rect, cell_size=10.0)
+    assert isinstance(cells, list)
+    assert len(cells) > 0
+
+
+def test_rectangle_cells_are_quads() -> None:
+    """Each rectangle cell must have exactly 4 vertices."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_gray_with_edges()
+    cells = _rectangle_cells(gray, img_rect, cell_size=10.0)
+    assert len(cells) > 0
+    for verts, brightness in cells:
+        assert len(verts) == 4, f"Rectangle cell has {len(verts)} vertices, expected 4"
+        for pt in verts:
+            assert len(pt) == 2
+
+
+def test_rectangle_cells_axis_aligned() -> None:
+    """Rectangle cell edges must be axis-aligned (horizontal and vertical)."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_uniform_gray()
+    cells = _rectangle_cells(gray, img_rect, cell_size=10.0)
+    tol = 1e-9
+    for verts, _ in cells:
+        xs = [v[0] for v in verts]
+        ys = [v[1] for v in verts]
+        # Exactly 2 distinct x values and 2 distinct y values
+        unique_xs = {round(x, 9) for x in xs}
+        unique_ys = {round(y, 9) for y in ys}
+        assert len(unique_xs) == 2, f"Expected 2 unique x coords, got {len(unique_xs)}: {unique_xs}"
+        assert len(unique_ys) == 2, f"Expected 2 unique y coords, got {len(unique_ys)}: {unique_ys}"
+
+
+def test_rectangle_cells_cover_image_rect() -> None:
+    """The union of all rectangle cells must cover the entire image rect."""
+    img_rect = (0.0, 0.0, 30.0, 30.0)
+    gray = make_uniform_gray()
+    cells = _rectangle_cells(gray, img_rect, cell_size=10.0)
+
+    # Collect all x and y extents
+    x_covered_min = min(min(v[0] for v in verts) for verts, _ in cells)
+    y_covered_min = min(min(v[1] for v in verts) for verts, _ in cells)
+    x_covered_max = max(max(v[0] for v in verts) for verts, _ in cells)
+    y_covered_max = max(max(v[1] for v in verts) for verts, _ in cells)
+
+    x1, y1, x2, y2 = img_rect
+    tol = 1e-9
+    assert x_covered_min <= x1 + tol
+    assert y_covered_min <= y1 + tol
+    assert x_covered_max >= x2 - tol
+    assert y_covered_max >= y2 - tol
+
+
+def test_rectangle_cells_brightness_range() -> None:
+    """Each rectangle cell must have brightness in [0, 255]."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_gray_with_edges()
+    cells = _rectangle_cells(gray, img_rect, cell_size=8.0)
+    for _, brightness in cells:
+        assert 0.0 <= brightness <= 255.0
+
+
+def test_rectangle_cell_size_controls_count() -> None:
+    """Larger cell_size should produce fewer cells than smaller cell_size."""
+    img_rect = (0.0, 0.0, 100.0, 100.0)
+    gray = make_uniform_gray()
+    cells_small = _rectangle_cells(gray, img_rect, cell_size=5.0)
+    cells_large = _rectangle_cells(gray, img_rect, cell_size=20.0)
+    assert len(cells_small) > len(cells_large), (
+        f"Smaller cells ({len(cells_small)}) should outnumber larger cells ({len(cells_large)})"
+    )
+
+
+def test_rectangle_cells_dimensions_match_cell_size() -> None:
+    """Interior (non-edge) cells must have width and height equal to cell_size."""
+    img_rect = (0.0, 0.0, 40.0, 40.0)
+    gray = make_uniform_gray()
+    cell_size = 10.0
+    cells = _rectangle_cells(gray, img_rect, cell_size=cell_size)
+
+    tol = 1e-9
+    full_cells_count = 0
+    for verts, _ in cells:
+        xs = [v[0] for v in verts]
+        ys = [v[1] for v in verts]
+        width = max(xs) - min(xs)
+        height = max(ys) - min(ys)
+        if abs(width - cell_size) < tol and abs(height - cell_size) < tol:
+            full_cells_count += 1
+
+    # For a 40×40 image with 10mm cells: 4×4 = 16 full cells (all of them)
+    assert full_cells_count == 16, f"Expected 16 full cells, got {full_cells_count}"
+
+
+# ---------------------------------------------------------------------------
+# Tests for _hexagon_cells
+# ---------------------------------------------------------------------------
+
+
+def test_hexagon_cells_returns_list() -> None:
+    """_hexagon_cells must return a non-empty list."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_uniform_gray()
+    cells = _hexagon_cells(gray, img_rect, cell_size=10.0)
+    assert isinstance(cells, list)
+    assert len(cells) > 0
+
+
+def test_hexagon_cells_polygon_structure() -> None:
+    """Each hexagon cell must have at least 3 vertices and valid brightness."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_uniform_gray()
+    cells = _hexagon_cells(gray, img_rect, cell_size=10.0)
+    assert len(cells) > 0
+    for verts, brightness in cells:
+        assert len(verts) >= 3, f"Hexagon cell has only {len(verts)} vertices"
+        for pt in verts:
+            assert len(pt) == 2
+        assert 0.0 <= brightness <= 255.0
+
+
+def test_hexagon_interior_cells_are_hexagons() -> None:
+    """Interior hexagon cells (not clipped by image boundary) must have exactly 6 vertices."""
+    # Large image rect so interior hexagons are not clipped
+    img_rect = (0.0, 0.0, 200.0, 200.0)
+    gray = np.full((100, 100), 128, dtype=np.uint8)
+    cells = _hexagon_cells(gray, img_rect, cell_size=10.0)
+
+    six_vertex_count = sum(1 for verts, _ in cells if len(verts) == 6)
+    assert six_vertex_count > 0, "Expected some interior (unclipped) hexagons with 6 vertices"
+    # Majority of cells should be 6-vertex hexagons
+    assert six_vertex_count > len(cells) // 2, (
+        f"Expected majority of cells to be hexagons, got {six_vertex_count}/{len(cells)}"
+    )
+
+
+def test_hexagon_cells_clipped_to_image_rect() -> None:
+    """All hexagon cell vertices must lie within (or on) the image rect."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_gray_with_edges()
+    cells = _hexagon_cells(gray, img_rect, cell_size=8.0)
+
+    x1, y1, x2, y2 = img_rect
+    tol = 1e-6
+    for verts, _ in cells:
+        for vx, vy in verts:
+            assert x1 - tol <= vx <= x2 + tol, f"Hex vertex x={vx} outside [{x1}, {x2}]"
+            assert y1 - tol <= vy <= y2 + tol, f"Hex vertex y={vy} outside [{y1}, {y2}]"
+
+
+def test_hexagon_cell_size_controls_count() -> None:
+    """Larger cell_size produces fewer hexagons."""
+    img_rect = (0.0, 0.0, 100.0, 100.0)
+    gray = make_uniform_gray()
+    cells_small = _hexagon_cells(gray, img_rect, cell_size=5.0)
+    cells_large = _hexagon_cells(gray, img_rect, cell_size=20.0)
+    assert len(cells_small) > len(cells_large), (
+        f"Smaller hexagons ({len(cells_small)}) should outnumber larger ({len(cells_large)})"
+    )
+
+
+def test_hexagon_cells_cover_image_rect() -> None:
+    """Hexagon cells must collectively cover the entire image rect."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_uniform_gray()
+    cells = _hexagon_cells(gray, img_rect, cell_size=8.0)
+
+    # Check: the 4 corners of the image rect are inside at least one cell polygon
+    from shapely.geometry import Point as ShapelyPoint, Polygon as ShapelyPoly
+
+    x1, y1, x2, y2 = img_rect
+    test_points = [
+        ((x1 + x2) / 2, (y1 + y2) / 2),  # centre
+        (x1 + 1.0, y1 + 1.0),              # near top-left
+        (x2 - 1.0, y2 - 1.0),              # near bottom-right
+    ]
+
+    for tx, ty in test_points:
+        pt = ShapelyPoint(tx, ty)
+        covered = any(ShapelyPoly(verts).contains(pt) or ShapelyPoly(verts).boundary.contains(pt)
+                      for verts, _ in cells)
+        assert covered, f"Point ({tx}, {ty}) is not covered by any hexagon cell"
+
+
+# ---------------------------------------------------------------------------
+# Tests for Rectangles and Hexagons via generate()
+# ---------------------------------------------------------------------------
+
+
+def _make_grid_params(mesh_type: str, cell_size: float = 5.0, extra: dict | None = None) -> dict:
+    gray = make_gray_with_edges()
+    rgb = np.stack([gray, gray, gray], axis=-1)
+    params: dict = {
+        "_source_image": rgb,
+        "mesh_type": mesh_type,
+        "cell_size_mm": cell_size,
+        "brightness": 0.0,
+        "contrast": 0.0,
+        "blur_radius": 0.0,
+        "invert": False,
+        "x_offset_mm": 0.0,
+        "y_offset_mm": 0.0,
+        "min_density": 0.0,
+        "max_density": 4.0,
+        "angle_mode": "Fixed",
+        "fixed_angle_deg": 45.0,
+        "cross_hatch": False,
+        "cross_hatch_threshold": 0.3,
+        "draw_edges": False,
+    }
+    if extra:
+        params.update(extra)
+    return params
+
+
+def test_rectangles_generate_produces_polylines() -> None:
+    """Rectangles mode must produce hatching polylines for a dark image."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+    dark = np.zeros((100, 100), dtype=np.uint8)
+    dark_rgb = np.stack([dark, dark, dark], axis=-1)
+    params = _make_grid_params("Rectangles", cell_size=8.0)
+    params["_source_image"] = dark_rgb
+    params["max_density"] = 4.0
+
+    result = gen.generate(params, canvas)
+    assert isinstance(result, list)
+    assert len(result) > 0, "Expected hatch lines for dark image with Rectangles"
+    for poly in result:
+        assert len(poly) >= 2
+
+
+def test_rectangles_bright_image_no_lines() -> None:
+    """Rectangles + white image + min_density=0 must produce no lines."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+    white = np.full((100, 100), 255, dtype=np.uint8)
+    white_rgb = np.stack([white, white, white], axis=-1)
+
+    result = gen.generate(_make_grid_params("Rectangles", extra={"_source_image": white_rgb}), canvas)
+    assert result == [], f"Expected no lines for all-white image with Rectangles, got {len(result)}"
+
+
+def test_rectangles_draw_edges() -> None:
+    """Rectangles with draw_edges=True must produce edge polylines (2-point segments)."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+    white = np.full((100, 100), 255, dtype=np.uint8)
+    white_rgb = np.stack([white, white, white], axis=-1)
+
+    result = gen.generate(
+        _make_grid_params("Rectangles", extra={"_source_image": white_rgb, "draw_edges": True}),
+        canvas,
+    )
+    assert len(result) > 0, "Expected edge polylines from Rectangles with draw_edges=True"
+    for poly in result:
+        assert len(poly) == 2, f"Edge polyline has {len(poly)} points, expected 2"
+
+
+def test_hexagons_generate_produces_polylines() -> None:
+    """Hexagons mode must produce hatching polylines for a dark image."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+    dark = np.zeros((100, 100), dtype=np.uint8)
+    dark_rgb = np.stack([dark, dark, dark], axis=-1)
+    params = _make_grid_params("Hexagons", cell_size=10.0)
+    params["_source_image"] = dark_rgb
+    params["max_density"] = 4.0
+
+    result = gen.generate(params, canvas)
+    assert isinstance(result, list)
+    assert len(result) > 0, "Expected hatch lines for dark image with Hexagons"
+    for poly in result:
+        assert len(poly) >= 2
+
+
+def test_hexagons_bright_image_no_lines() -> None:
+    """Hexagons + white image + min_density=0 must produce no lines."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+    white = np.full((100, 100), 255, dtype=np.uint8)
+    white_rgb = np.stack([white, white, white], axis=-1)
+
+    result = gen.generate(_make_grid_params("Hexagons", extra={"_source_image": white_rgb}), canvas)
+    assert result == [], f"Expected no lines for all-white image with Hexagons, got {len(result)}"
+
+
+def test_hexagons_draw_edges() -> None:
+    """Hexagons with draw_edges=True must produce edge polylines."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+    white = np.full((100, 100), 255, dtype=np.uint8)
+    white_rgb = np.stack([white, white, white], axis=-1)
+
+    result = gen.generate(
+        _make_grid_params("Hexagons", cell_size=10.0, extra={"_source_image": white_rgb, "draw_edges": True}),
+        canvas,
+    )
+    assert len(result) > 0, "Expected edge polylines from Hexagons with draw_edges=True"
+    for poly in result:
+        assert len(poly) == 2, f"Edge polyline has {len(poly)} points, expected 2"
+
+
+def test_cell_size_mm_parameter_exists() -> None:
+    """get_parameters() must include a cell_size_mm parameter."""
+    gen = MosaicHatchGenerator()
+    param_names = {p.name for p in gen.get_parameters()}
+    assert "cell_size_mm" in param_names
+
+
+def test_mesh_type_choices_include_rectangles_and_hexagons() -> None:
+    """mesh_type ChoiceParam must include 'Rectangles' and 'Hexagons'."""
+    gen = MosaicHatchGenerator()
+    mesh_param = next(p for p in gen.get_parameters() if p.name == "mesh_type")
+    assert hasattr(mesh_param, "choices")
+    assert "Rectangles" in mesh_param.choices
+    assert "Hexagons" in mesh_param.choices
+
+
+def test_geometric_grid_preset_exists() -> None:
+    """'Geometric Grid' preset must exist and use Rectangles mesh type."""
+    gen = MosaicHatchGenerator()
+    presets = {p.name: p for p in gen.get_presets()}
+    assert "Geometric Grid" in presets
+    assert presets["Geometric Grid"].params["mesh_type"] == "Rectangles"
+    assert presets["Geometric Grid"].params["draw_edges"] is True
+
+
+def test_honeycomb_preset_exists() -> None:
+    """'Honeycomb' preset must exist and use Hexagons mesh type."""
+    gen = MosaicHatchGenerator()
+    presets = {p.name: p for p in gen.get_presets()}
+    assert "Honeycomb" in presets
+    assert presets["Honeycomb"].params["mesh_type"] == "Hexagons"
+    assert presets["Honeycomb"].params["draw_edges"] is True
+
+
+def test_num_points_and_edge_weight_hidden_for_grid_modes() -> None:
+    """num_points and edge_weight must have visible_when restricting them to Triangles/Voronoi."""
+    gen = MosaicHatchGenerator()
+    params_dict = {p.name: p for p in gen.get_parameters()}
+
+    num_p = params_dict["num_points"]
+    edge_p = params_dict["edge_weight"]
+
+    assert num_p.visible_when is not None, "num_points must have visible_when set"
+    assert edge_p.visible_when is not None, "edge_weight must have visible_when set"
+
+    assert "mesh_type" in num_p.visible_when
+    assert "Triangles" in num_p.visible_when["mesh_type"]
+    assert "Voronoi" in num_p.visible_when["mesh_type"]
+    assert "Rectangles" not in num_p.visible_when["mesh_type"]
+    assert "Hexagons" not in num_p.visible_when["mesh_type"]
+
+
+def test_cell_size_mm_visible_for_grid_modes_only() -> None:
+    """cell_size_mm must have visible_when restricting it to Rectangles/Hexagons."""
+    gen = MosaicHatchGenerator()
+    params_dict = {p.name: p for p in gen.get_parameters()}
+
+    cell_p = params_dict["cell_size_mm"]
+    assert cell_p.visible_when is not None, "cell_size_mm must have visible_when set"
+    assert "mesh_type" in cell_p.visible_when
+    assert "Rectangles" in cell_p.visible_when["mesh_type"]
+    assert "Hexagons" in cell_p.visible_when["mesh_type"]
+    assert "Triangles" not in cell_p.visible_when["mesh_type"]
+    assert "Voronoi" not in cell_p.visible_when["mesh_type"]
