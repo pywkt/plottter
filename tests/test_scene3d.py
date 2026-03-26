@@ -450,6 +450,116 @@ f 1/1/1 2/2/1 3/3/1
         assert verts.shape == (0, 3)
         assert faces.shape == (0, 3)
 
+    def test_weld_cube_24_to_8_vertices(self, tmp_path):
+        """Cube OBJ with 24 duplicate vertices (3 per corner) reduces to 8."""
+        from plottter.scene3d.loaders.obj import load_obj
+        # A cube where each face has its own copy of the corner vertices
+        # (typical of some OBJ exporters — 6 faces × 4 corners = 24 vertices).
+        # We only need one face to verify the welding; use all 6 for realism.
+        corners = [
+            (0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),  # bottom z=0
+            (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1),  # top    z=1
+        ]
+        # 6 faces of a cube, each defined with its own 4 vertices (duplicated)
+        faces_corners = [
+            [0, 1, 2, 3],  # bottom
+            [4, 5, 6, 7],  # top
+            [0, 1, 5, 4],  # front
+            [2, 3, 7, 6],  # back
+            [1, 2, 6, 5],  # right
+            [0, 3, 7, 4],  # left
+        ]
+        lines = []
+        face_lines = []
+        vi = 1
+        for face in faces_corners:
+            for ci in face:
+                x, y, z = corners[ci]
+                lines.append(f"v {x} {y} {z}")
+            face_lines.append(f"f {vi} {vi+1} {vi+2} {vi+3}")
+            vi += 4
+
+        obj_content = "\n".join(lines + face_lines) + "\n"
+        p = tmp_path / "cube_dup.obj"
+        p.write_text(obj_content)
+        verts, faces = load_obj(p)
+        # 24 original vertices should weld down to 8
+        assert verts.shape[0] == 8, f"Expected 8 unique vertices, got {verts.shape[0]}"
+        # 6 quad faces → 12 triangles (no degenerate faces expected)
+        assert faces.shape == (12, 3)
+
+    def test_weld_remaps_face_indices_correctly(self, tmp_path):
+        """After welding, face indices reference the deduplicated vertex array."""
+        from plottter.scene3d.loaders.obj import load_obj
+        # Two triangles sharing an edge; define the shared vertices twice
+        obj_content = """\
+v 0 0 0
+v 1 0 0
+v 0.5 1 0
+v 0 0 0
+v 1 0 0
+v 0.5 -1 0
+f 1 2 3
+f 4 5 6
+"""
+        p = tmp_path / "shared_edge.obj"
+        p.write_text(obj_content)
+        verts, faces = load_obj(p)
+        # 6 raw vertices → 4 unique (v4==v1, v5==v2 duplicates)
+        assert verts.shape[0] == 4
+        assert faces.shape == (2, 3)
+        # Both faces must reference only indices 0..3
+        assert faces.max() <= 3
+
+    def test_weld_removes_degenerate_faces(self, tmp_path):
+        """Faces that collapse to a line/point after welding are removed."""
+        from plottter.scene3d.loaders.obj import load_obj
+        # Two vertices at the same position → face (0, 1, 1) after weld
+        obj_content = """\
+v 0 0 0
+v 1 0 0
+v 1 0 0
+f 1 2 3
+"""
+        p = tmp_path / "degen.obj"
+        p.write_text(obj_content)
+        verts, faces = load_obj(p)
+        # Degenerate face must be dropped
+        assert faces.shape == (0, 3)
+
+    def test_weld_disabled_preserves_duplicates(self, tmp_path):
+        """weld_tol=0 disables welding and keeps duplicate vertices."""
+        from plottter.scene3d.loaders.obj import load_obj
+        obj_content = """\
+v 0 0 0
+v 1 0 0
+v 1 0 0
+v 0.5 1 0
+f 1 2 4
+f 1 3 4
+"""
+        p = tmp_path / "notweld.obj"
+        p.write_text(obj_content)
+        verts, faces = load_obj(p, weld_tol=0.0)
+        assert verts.shape[0] == 4  # duplicates kept
+
+    def test_unique_vertices_unchanged_by_weld(self, tmp_path):
+        """OBJ files with already-unique vertices are unaffected by welding."""
+        from plottter.scene3d.loaders.obj import load_obj
+        obj_content = """\
+v 0 0 0
+v 1 0 0
+v 1 1 0
+v 0 1 0
+f 1 2 3
+f 1 3 4
+"""
+        p = tmp_path / "quad.obj"
+        p.write_text(obj_content)
+        verts, faces = load_obj(p)
+        assert verts.shape == (4, 3)
+        assert faces.shape == (2, 3)
+
 
 # ---------------------------------------------------------------------------
 # STL loader tests
