@@ -1034,6 +1034,23 @@ class MainWindow(QMainWindow):
             new_gen_info["params"]["y_offset_mm"] = (
                 old_gen_info["params"]["y_offset_mm"] + dy_mm
             )
+        elif (
+            old_gen_info is not None
+            and old_gen_info.get("mode") == "3D Scene"
+            and isinstance(old_gen_info.get("params"), dict)
+            and "pos_x" in old_gen_info["params"]
+            and "pos_y" in old_gen_info["params"]
+        ):
+            # 3D Scene: pos_x/pos_y are in 3D world units.  Canvas X maps
+            # directly to 3D X; canvas Y increases downward but 3D Y is up,
+            # so the sign is inverted.
+            new_gen_info = copy.deepcopy(old_gen_info)
+            new_gen_info["params"]["pos_x"] = (
+                old_gen_info["params"]["pos_x"] + dx_mm
+            )
+            new_gen_info["params"]["pos_y"] = (
+                old_gen_info["params"]["pos_y"] - dy_mm
+            )
 
         from plottter.gui.commands import MoveLayerCommand
         cmd = MoveLayerCommand(

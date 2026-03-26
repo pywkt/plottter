@@ -4618,7 +4618,7 @@ class SettingsPanel(QScrollArea):
         if layer is None or not isinstance(layer.generator_info, dict):
             return
         params = layer.generator_info.get("params", {})
-        for name in ("x_offset_mm", "y_offset_mm"):
+        for name in ("x_offset_mm", "y_offset_mm", "pos_x", "pos_y"):
             widget = self._param_widgets.get(name)
             if widget is not None and isinstance(widget, QDoubleSpinBox) and name in params:
                 widget.blockSignals(True)
