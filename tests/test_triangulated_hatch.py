@@ -1,15 +1,16 @@
-"""Tests for TriangulatedHatchGenerator — edge-aware seed point placement."""
+"""Tests for MosaicHatchGenerator — Delaunay-triangulated and Voronoi-tessellated hatching."""
 
 from __future__ import annotations
 
 import numpy as np
 
 from plottter.generators.triangulated_hatch import (
-    TriangulatedHatchGenerator,
+    MosaicHatchGenerator,
     _compute_angle_map,
     _discard_outside_triangles,
     _edge_aware_seeds,
     _triangulate_and_sample,
+    _voronoi_cells,
 )
 from plottter.models.canvas import Canvas
 
@@ -166,7 +167,7 @@ def test_seeds_ndarray_shape() -> None:
 def test_generate_returns_list() -> None:
     """generate() must return a list (even if empty for the scaffold stage)."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
     gray = make_gray_with_edges()
 
     # Wrap in 3-channel RGB as the generator expects _source_image to potentially be RGB
@@ -174,6 +175,7 @@ def test_generate_returns_list() -> None:
 
     params = {
         "_source_image": rgb,
+        "mesh_type": "Triangles",
         "num_points": 100,
         "edge_weight": 0.7,
         "brightness": 0.0,
@@ -191,30 +193,38 @@ def test_generate_returns_list() -> None:
 def test_generate_no_source_image() -> None:
     """generate() must return [] when _source_image is not provided."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
     result = gen.generate({}, canvas)
     assert result == []
 
 
 def test_generator_registered() -> None:
-    """TriangulatedHatchGenerator must appear in the GENERATORS registry."""
+    """MosaicHatchGenerator must appear in the GENERATORS registry under 'Mosaic Hatching'."""
     from plottter.generators import GENERATORS
 
-    assert "Triangulated Hatching" in GENERATORS
-    assert GENERATORS["Triangulated Hatching"] is TriangulatedHatchGenerator
+    assert "Mosaic Hatching" in GENERATORS
+    assert GENERATORS["Mosaic Hatching"] is MosaicHatchGenerator
+
+
+def test_old_name_not_registered() -> None:
+    """'Triangulated Hatching' must no longer be in the GENERATORS registry."""
+    from plottter.generators import GENERATORS
+
+    assert "Triangulated Hatching" not in GENERATORS
 
 
 def test_generator_category() -> None:
     """Generator must have category='image'."""
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
     assert gen.category == "image"
 
 
 def test_get_parameters_includes_required() -> None:
-    """get_parameters() must include num_points, edge_weight, and standard image params."""
-    gen = TriangulatedHatchGenerator()
+    """get_parameters() must include mesh_type, num_points, edge_weight, and standard image params."""
+    gen = MosaicHatchGenerator()
     param_names = {p.name for p in gen.get_parameters()}
 
+    assert "mesh_type" in param_names
     assert "num_points" in param_names
     assert "edge_weight" in param_names
     assert "brightness" in param_names
@@ -223,6 +233,13 @@ def test_get_parameters_includes_required() -> None:
     assert "invert" in param_names
     assert "x_offset_mm" in param_names
     assert "y_offset_mm" in param_names
+
+
+def test_mesh_type_is_first_parameter() -> None:
+    """mesh_type must be the first parameter returned by get_parameters()."""
+    gen = MosaicHatchGenerator()
+    params = gen.get_parameters()
+    assert params[0].name == "mesh_type"
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +363,77 @@ def test_discard_outside_all_inside() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Tests for _voronoi_cells
+# ---------------------------------------------------------------------------
+
+
+def test_voronoi_cells_returns_list() -> None:
+    """_voronoi_cells must return a list of (verts_mm, brightness) tuples."""
+    canvas = make_canvas()
+    img_rect = img_rect_for_canvas(canvas)
+    gray = make_gray_with_edges()
+    rng = np.random.default_rng(20)
+
+    seeds = _edge_aware_seeds(gray, img_rect, num_points=100, edge_weight=0.5, rng=rng)
+    cells = _voronoi_cells(seeds, gray, img_rect)
+
+    assert isinstance(cells, list)
+    assert len(cells) > 0, "Expected at least one Voronoi cell"
+
+
+def test_voronoi_cells_polygon_structure() -> None:
+    """Each Voronoi cell must be (list-of-at-least-3-pairs, float)."""
+    canvas = make_canvas()
+    img_rect = img_rect_for_canvas(canvas)
+    gray = make_uniform_gray()
+    rng = np.random.default_rng(21)
+
+    seeds = _edge_aware_seeds(gray, img_rect, num_points=50, edge_weight=0.0, rng=rng)
+    cells = _voronoi_cells(seeds, gray, img_rect)
+
+    assert len(cells) > 0
+    for verts_mm, brightness in cells:
+        assert len(verts_mm) >= 3, f"Cell has only {len(verts_mm)} vertices"
+        for pt in verts_mm:
+            assert len(pt) == 2
+        assert isinstance(brightness, float)
+        assert 0.0 <= brightness <= 255.0
+
+
+def test_voronoi_cells_clipped_to_image_rect() -> None:
+    """All Voronoi cell vertices must lie within (or on) the image rect."""
+    canvas = make_canvas()
+    img_rect = img_rect_for_canvas(canvas)
+    gray = make_gray_with_edges()
+    rng = np.random.default_rng(22)
+
+    seeds = _edge_aware_seeds(gray, img_rect, num_points=80, edge_weight=0.5, rng=rng)
+    cells = _voronoi_cells(seeds, gray, img_rect)
+
+    x1, y1, x2, y2 = img_rect
+    tol = 1e-6
+    for verts_mm, _ in cells:
+        for vx, vy in verts_mm:
+            assert x1 - tol <= vx <= x2 + tol, f"Cell vertex x={vx} outside [{x1}, {x2}]"
+            assert y1 - tol <= vy <= y2 + tol, f"Cell vertex y={vy} outside [{y1}, {y2}]"
+
+
+def test_voronoi_cells_brightness_range() -> None:
+    """Each Voronoi cell must have brightness in [0, 255]."""
+    canvas = make_canvas()
+    img_rect = img_rect_for_canvas(canvas)
+    gray = make_gray_with_edges()
+    rng = np.random.default_rng(23)
+
+    seeds = _edge_aware_seeds(gray, img_rect, num_points=80, edge_weight=0.5, rng=rng)
+    cells = _voronoi_cells(seeds, gray, img_rect)
+
+    assert len(cells) > 0
+    for _, brightness in cells:
+        assert 0.0 <= brightness <= 255.0, f"Brightness {brightness} out of [0, 255]"
+
+
+# ---------------------------------------------------------------------------
 # Tests for hatching behaviour
 # ---------------------------------------------------------------------------
 
@@ -356,6 +444,7 @@ def _make_params(extra: dict | None = None) -> dict:
     rgb = np.stack([gray, gray, gray], axis=-1)
     base = {
         "_source_image": rgb,
+        "mesh_type": "Triangles",
         "num_points": 80,
         "edge_weight": 0.5,
         "brightness": 0.0,
@@ -380,7 +469,7 @@ def _make_params(extra: dict | None = None) -> dict:
 def test_generate_returns_polylines() -> None:
     """generate() must return a non-empty list of polylines with hatching enabled."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
     result = gen.generate(_make_params(), canvas)
     assert isinstance(result, list)
     assert len(result) > 0, "Expected hatching polylines in result"
@@ -391,7 +480,7 @@ def test_generate_returns_polylines() -> None:
 def test_dark_triangles_more_lines_than_bright() -> None:
     """Dark image areas should produce more hatch lines than bright areas."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
 
     # All-dark image (brightness≈0 → max density)
     dark_img = np.zeros((100, 100), dtype=np.uint8)
@@ -415,7 +504,7 @@ def test_dark_triangles_more_lines_than_bright() -> None:
 def test_min_density_zero_bright_areas_no_lines() -> None:
     """When min_density=0, fully bright triangles should produce no hatch lines."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
 
     # All-white image: brightness = 255, density = 0 + (1-1)*max = 0 → skip
     white_img = np.full((100, 100), 255, dtype=np.uint8)
@@ -428,7 +517,7 @@ def test_min_density_zero_bright_areas_no_lines() -> None:
 def test_fixed_angle_mode() -> None:
     """In 'Fixed' mode, the angle_mode param is respected without crashing."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
 
     result = gen.generate(_make_params({"angle_mode": "Fixed", "fixed_angle_deg": 30.0}), canvas)
     assert isinstance(result, list)
@@ -438,7 +527,7 @@ def test_fixed_angle_mode() -> None:
 def test_edge_flow_angle_mode() -> None:
     """'Edge Flow' mode must produce polylines without errors."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
 
     result = gen.generate(_make_params({"angle_mode": "Edge Flow"}), canvas)
     assert isinstance(result, list)
@@ -448,7 +537,7 @@ def test_edge_flow_angle_mode() -> None:
 def test_gradient_angle_mode() -> None:
     """'Gradient' mode must produce polylines without errors."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
 
     result = gen.generate(_make_params({"angle_mode": "Gradient"}), canvas)
     assert isinstance(result, list)
@@ -458,7 +547,7 @@ def test_gradient_angle_mode() -> None:
 def test_cross_hatch_produces_more_lines() -> None:
     """Cross-hatch enabled should produce at least as many lines as single-hatch."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
 
     # Dark image so cross_hatch threshold is crossed
     dark_img = np.zeros((100, 100), dtype=np.uint8)
@@ -482,11 +571,8 @@ def test_cross_hatch_produces_more_lines() -> None:
 
 def test_cross_hatch_skipped_for_bright_triangles() -> None:
     """Cross-hatch must not be applied to bright triangles (brightness ≥ threshold)."""
-    # For a uniform gray image right at the threshold, cross-hatch should not appear.
-    # We compare bright (255) single vs cross-hatch — both should produce 0 lines
-    # when min_density=0 and cross_hatch_threshold=0.3 (brightness/255=1.0 ≥ 0.3).
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
 
     white_img = np.full((100, 100), 255, dtype=np.uint8)
     white_rgb = np.stack([white_img, white_img, white_img], axis=-1)
@@ -518,11 +604,12 @@ def test_compute_angle_map_edge_flow_vs_gradient_differ() -> None:
 
 
 def test_get_parameters_includes_hatching_params() -> None:
-    """get_parameters() must include all new hatching parameters."""
-    gen = TriangulatedHatchGenerator()
+    """get_parameters() must include all hatching parameters."""
+    gen = MosaicHatchGenerator()
     param_names = {p.name for p in gen.get_parameters()}
 
     for required in (
+        "mesh_type",
         "min_density",
         "max_density",
         "angle_mode",
@@ -535,6 +622,68 @@ def test_get_parameters_includes_hatching_params() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Tests for Voronoi mode via generate()
+# ---------------------------------------------------------------------------
+
+
+def test_voronoi_mode_produces_polylines() -> None:
+    """Voronoi mesh_type must produce hatching polylines."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+
+    result = gen.generate(_make_params({"mesh_type": "Voronoi", "max_density": 6.0}), canvas)
+    assert isinstance(result, list)
+    assert len(result) > 0, "Expected polylines from Voronoi mode"
+    for poly in result:
+        assert len(poly) >= 2
+
+
+def test_voronoi_mode_bright_no_lines() -> None:
+    """Voronoi mode with all-white image and min_density=0 should produce no lines."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+
+    white_img = np.full((100, 100), 255, dtype=np.uint8)
+    white_rgb = np.stack([white_img, white_img, white_img], axis=-1)
+
+    result = gen.generate(_make_params({
+        "_source_image": white_rgb,
+        "mesh_type": "Voronoi",
+        "min_density": 0.0,
+    }), canvas)
+    assert result == [], f"Expected no lines for all-white image in Voronoi mode, got {len(result)}"
+
+
+def test_voronoi_mode_draw_edges() -> None:
+    """Voronoi mode with draw_edges=True must produce more polylines than without."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+
+    without = gen.generate(_make_params({"mesh_type": "Voronoi", "draw_edges": False}), canvas)
+    with_edges = gen.generate(_make_params({"mesh_type": "Voronoi", "draw_edges": True}), canvas)
+
+    assert len(with_edges) > len(without), (
+        f"Expected more polylines with draw_edges ({len(with_edges)}) vs without ({len(without)})"
+    )
+
+
+def test_triangles_and_voronoi_same_input_different_output() -> None:
+    """Triangles and Voronoi modes should produce different output for the same image/params."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+
+    tri_result = gen.generate(_make_params({"mesh_type": "Triangles"}), canvas)
+    vor_result = gen.generate(_make_params({"mesh_type": "Voronoi"}), canvas)
+
+    # Both should have output
+    assert len(tri_result) > 0
+    assert len(vor_result) > 0
+
+    # They should not be identical (different tessellations → different lines)
+    assert tri_result != vor_result
+
+
+# ---------------------------------------------------------------------------
 # Tests for draw_edges, coordinate offset
 # ---------------------------------------------------------------------------
 
@@ -542,7 +691,7 @@ def test_get_parameters_includes_hatching_params() -> None:
 def test_draw_edges_produces_more_polylines() -> None:
     """draw_edges=True must produce more polylines than draw_edges=False."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
 
     without_edges = gen.generate(_make_params({"draw_edges": False}), canvas)
     with_edges = gen.generate(_make_params({"draw_edges": True}), canvas)
@@ -553,13 +702,9 @@ def test_draw_edges_produces_more_polylines() -> None:
 
 
 def test_draw_edges_no_duplicates() -> None:
-    """When draw_edges=True, no two edge polylines should be identical (deduplication).
-
-    Uses an all-white source so min_density=0 produces zero hatch lines,
-    leaving only the deduplicated edge polylines in the output.
-    """
+    """When draw_edges=True, no two edge polylines should be identical (deduplication)."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
 
     white_img = np.full((100, 100), 255, dtype=np.uint8)
     white_rgb = np.stack([white_img, white_img, white_img], axis=-1)
@@ -591,7 +736,7 @@ def test_draw_edges_no_duplicates() -> None:
 def test_offset_shifts_all_polylines() -> None:
     """x_offset_mm and y_offset_mm must shift every point in every polyline (hatch and edge)."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
 
     dx, dy = 10.0, 5.0
     base = gen.generate(_make_params({"draw_edges": True, "x_offset_mm": 0.0, "y_offset_mm": 0.0}), canvas)
@@ -609,7 +754,7 @@ def test_offset_shifts_all_polylines() -> None:
 def test_draw_edges_offset_applied() -> None:
     """draw_edges polylines must also be shifted by x/y offset."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
 
     dx, dy = 7.5, -3.0
     base = gen.generate(_make_params({"draw_edges": True, "x_offset_mm": 0.0, "y_offset_mm": 0.0}), canvas)
@@ -630,7 +775,7 @@ def test_draw_edges_offset_applied() -> None:
 def test_all_presets_generate_valid_output() -> None:
     """Every preset must produce a non-empty list of valid polylines."""
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
     gray = make_gray_with_edges()
     rgb = np.stack([gray, gray, gray], axis=-1)
 
@@ -638,7 +783,7 @@ def test_all_presets_generate_valid_output() -> None:
     assert len(presets) > 0, "Expected at least one preset"
 
     named = {p.name: p for p in presets}
-    required = ["Pen & Ink", "Cross-Hatched Portrait", "Geometric Mesh", "Dense Illustration", "Minimal Sketch"]
+    required = ["Pen & Ink", "Cross-Hatched Portrait", "Geometric Mesh", "Dense Illustration", "Minimal Sketch", "Voronoi Portrait"]
     for name in required:
         assert name in named, f"Missing required preset: {name!r}"
 
@@ -654,18 +799,30 @@ def test_all_presets_generate_valid_output() -> None:
             assert len(poly) >= 2, f"Preset {preset.name!r}: polyline has fewer than 2 points"
 
 
-def test_fit_mode_output_within_image_rect() -> None:
-    """Output polyline points must lie within the image rect for 'fit' mode.
+def test_voronoi_portrait_preset_exists() -> None:
+    """'Voronoi Portrait' preset must exist and use Voronoi mesh type."""
+    gen = MosaicHatchGenerator()
+    presets = {p.name: p for p in gen.get_presets()}
 
-    'fit' scales the image to fit within the drawing area while preserving
-    aspect ratio, so img_rect is strictly smaller than drawing_area for a
-    square image on a portrait A4 canvas.  All generated points must stay
-    inside that smaller rect — not just inside the larger drawing area.
-    """
+    assert "Voronoi Portrait" in presets
+    assert presets["Voronoi Portrait"].params["mesh_type"] == "Voronoi"
+
+
+def test_presets_include_mesh_type() -> None:
+    """All presets must include the mesh_type parameter."""
+    gen = MosaicHatchGenerator()
+    for preset in gen.get_presets():
+        assert "mesh_type" in preset.params, (
+            f"Preset {preset.name!r} is missing 'mesh_type' parameter"
+        )
+
+
+def test_fit_mode_output_within_image_rect() -> None:
+    """Output polyline points must lie within the image rect for 'fit' mode."""
     from plottter.generators._helpers import compute_image_rect
 
     canvas = make_canvas()
-    gen = TriangulatedHatchGenerator()
+    gen = MosaicHatchGenerator()
     gray = make_gray_with_edges()
     rgb = np.stack([gray, gray, gray], axis=-1)
 

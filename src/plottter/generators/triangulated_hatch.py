@@ -1,10 +1,11 @@
-"""TriangulatedHatchGenerator — edge-aware seed point placement for Delaunay-based hatching."""
+"""MosaicHatchGenerator — Delaunay-triangulated or Voronoi-tessellated hatching from image brightness."""
 
 from __future__ import annotations
 
 from typing import Any
 
 import numpy as np
+from shapely.geometry import Polygon as ShapelyPolygon, box as shapely_box
 
 from plottter.generators import register_generator
 from plottter.generators._helpers import compute_image_rect
@@ -18,7 +19,9 @@ from plottter.generators.base import (
     Preset,
 )
 from plottter.models import Canvas, Polyline
-from plottter.scene3d.hatching import _fill_triangle_with_hatching
+from plottter.scene3d.hatching import _hatch_polygon
+
+_AREA_EPSILON = 1e-6
 
 
 def _edge_aware_seeds(
@@ -52,7 +55,7 @@ def _edge_aware_seeds(
         import cv2
     except ImportError as exc:
         raise RuntimeError(
-            "opencv-python is required for triangulated hatching. "
+            "opencv-python is required for mosaic hatching. "
             "Install with: pip install opencv-python"
         ) from exc
 
@@ -196,6 +199,88 @@ def _discard_outside_triangles(
     return kept
 
 
+def _voronoi_cells(
+    seeds: np.ndarray,
+    gray: np.ndarray,
+    img_rect: tuple[float, float, float, float],
+) -> list[tuple[list[tuple[float, float]], float]]:
+    """Compute Voronoi cells clipped to img_rect and sample brightness at each centroid.
+
+    Uses the mirror-point boundary approach: reflects all seeds across each of
+    the four image rect edges so that all cells for the original seeds are finite
+    (no infinite Voronoi rays). Only regions for the original n seed points are
+    processed.
+
+    Parameters
+    ----------
+    seeds:
+        Array of shape (N, 2) with (x_mm, y_mm) seed coordinates (includes corners).
+    gray:
+        Grayscale image array (uint8, shape HxW).
+    img_rect:
+        Bounding box in mm: (x1, y1, x2, y2).
+
+    Returns
+    -------
+    list of (verts_mm, brightness) tuples where verts_mm is the clipped cell
+    polygon vertices in mm and brightness is 0–255.
+    """
+    from scipy.spatial import Voronoi
+
+    img_x1, img_y1, img_x2, img_y2 = img_rect
+    img_h, img_w = gray.shape[:2]
+    mm_w = img_x2 - img_x1
+    mm_h = img_y2 - img_y1
+
+    n = len(seeds)
+    if n < 4:
+        return []
+
+    # Reflect seeds across all four boundaries → 4 extra copies
+    reflected = np.vstack([
+        seeds,  # original: indices 0 … n-1
+        np.column_stack([2.0 * img_x1 - seeds[:, 0], seeds[:, 1]]),  # left
+        np.column_stack([2.0 * img_x2 - seeds[:, 0], seeds[:, 1]]),  # right
+        np.column_stack([seeds[:, 0], 2.0 * img_y1 - seeds[:, 1]]),  # top
+        np.column_stack([seeds[:, 0], 2.0 * img_y2 - seeds[:, 1]]),  # bottom
+    ])
+
+    vor = Voronoi(reflected)
+    clip_rect = shapely_box(img_x1, img_y1, img_x2, img_y2)
+
+    result: list[tuple[list[tuple[float, float]], float]] = []
+    for i in range(n):
+        region_idx = vor.point_region[i]
+        region = vor.regions[region_idx]
+        if not region or -1 in region or len(region) < 3:
+            continue
+
+        verts = vor.vertices[region]
+        cell_poly = ShapelyPolygon(verts)
+        clipped = cell_poly.intersection(clip_rect)
+
+        if clipped.is_empty or not isinstance(clipped, ShapelyPolygon):
+            continue
+
+        # Get vertices from clipped polygon (drop closing duplicate)
+        cell_coords = list(clipped.exterior.coords)[:-1]
+        if len(cell_coords) < 3:
+            continue
+
+        # Compute centroid
+        cx = clipped.centroid.x
+        cy = clipped.centroid.y
+
+        # Convert mm centroid to pixel coordinates and sample brightness
+        px = (cx - img_x1) / mm_w * (img_w - 1)
+        py = (cy - img_y1) / mm_h * (img_h - 1)
+        brightness = _bilinear_sample(gray, px, py)
+
+        result.append(([(float(x), float(y)) for x, y in cell_coords], brightness))
+
+    return result
+
+
 def _compute_angle_map(gray: np.ndarray, mode: str) -> np.ndarray:
     """Compute per-pixel hatch angle map (degrees) from image gradient.
 
@@ -233,14 +318,21 @@ def _compute_angle_map(gray: np.ndarray, mode: str) -> np.ndarray:
 
 
 @register_generator
-class TriangulatedHatchGenerator(Generator):
-    """Edge-aware seed point placement for Delaunay-based triangulated hatching."""
+class MosaicHatchGenerator(Generator):
+    """Delaunay-triangulated or Voronoi-tessellated hatching driven by image brightness."""
 
-    name = "Triangulated Hatching"
+    name = "Mosaic Hatching"
     category = "image"
 
     def get_parameters(self) -> list[Parameter]:
         return [
+            ChoiceParam(
+                name="mesh_type",
+                label="Mesh Type",
+                choices=["Triangles", "Voronoi"],
+                default="Triangles",
+                description="Tessellation method — Triangles uses Delaunay triangulation, Voronoi uses Voronoi cells",
+            ),
             IntParam(
                 name="num_points",
                 label="Seed Points",
@@ -248,7 +340,7 @@ class TriangulatedHatchGenerator(Generator):
                 max=10000,
                 step=100,
                 default=1000,
-                description="Number of seed points to place across the image — more points produce finer triangulation detail",
+                description="Number of seed points to place across the image — more points produce finer detail",
             ),
             FloatParam(
                 name="edge_weight",
@@ -257,7 +349,7 @@ class TriangulatedHatchGenerator(Generator):
                 max=1.0,
                 step=0.05,
                 default=0.7,
-                description="How strongly edges attract triangle vertices — 0 = uniform, 1 = all on edges",
+                description="How strongly edges attract mesh vertices — 0 = uniform, 1 = all on edges",
             ),
             FloatParam(
                 name="brightness",
@@ -335,7 +427,7 @@ class TriangulatedHatchGenerator(Generator):
                 label="Angle Mode",
                 choices=["Edge Flow", "Fixed", "Gradient"],
                 default="Edge Flow",
-                description="How the hatching angle is determined per triangle",
+                description="How the hatching angle is determined per cell",
             ),
             FloatParam(
                 name="fixed_angle_deg",
@@ -351,7 +443,7 @@ class TriangulatedHatchGenerator(Generator):
                 name="cross_hatch",
                 label="Cross Hatch",
                 default=False,
-                description="Add perpendicular cross-hatching in dark triangles",
+                description="Add perpendicular cross-hatching in dark cells",
             ),
             FloatParam(
                 name="cross_hatch_threshold",
@@ -367,12 +459,13 @@ class TriangulatedHatchGenerator(Generator):
                 name="draw_edges",
                 label="Draw Edges",
                 default=False,
-                description="Draw triangle edges in addition to hatching — shows the mesh structure",
+                description="Draw mesh edges in addition to hatching — shows the mesh structure",
             ),
         ]
 
     def get_presets(self) -> list[Preset]:
         _hatch_defaults = {
+            "mesh_type": "Triangles",
             "min_density": 0.0,
             "max_density": 6.0,
             "angle_mode": "Edge Flow",
@@ -385,6 +478,7 @@ class TriangulatedHatchGenerator(Generator):
             Preset(
                 name="Default",
                 params={
+                    "mesh_type": "Triangles",
                     "num_points": 1000,
                     "edge_weight": 0.7,
                     "brightness": 0.0,
@@ -399,6 +493,7 @@ class TriangulatedHatchGenerator(Generator):
             Preset(
                 name="Uniform Grid",
                 params={
+                    "mesh_type": "Triangles",
                     "num_points": 1000,
                     "edge_weight": 0.0,
                     "brightness": 0.0,
@@ -413,6 +508,7 @@ class TriangulatedHatchGenerator(Generator):
             Preset(
                 name="Edge Emphasis",
                 params={
+                    "mesh_type": "Triangles",
                     "num_points": 2000,
                     "edge_weight": 1.0,
                     "brightness": 0.0,
@@ -427,6 +523,7 @@ class TriangulatedHatchGenerator(Generator):
             Preset(
                 name="Cross Hatch Portrait",
                 params={
+                    "mesh_type": "Triangles",
                     "num_points": 1500,
                     "edge_weight": 0.8,
                     "brightness": 0.0,
@@ -447,6 +544,7 @@ class TriangulatedHatchGenerator(Generator):
             Preset(
                 name="Pen & Ink",
                 params={
+                    "mesh_type": "Triangles",
                     "num_points": 1000,
                     "edge_weight": 0.7,
                     "brightness": 0.0,
@@ -467,6 +565,7 @@ class TriangulatedHatchGenerator(Generator):
             Preset(
                 name="Cross-Hatched Portrait",
                 params={
+                    "mesh_type": "Triangles",
                     "num_points": 1500,
                     "edge_weight": 0.8,
                     "brightness": 0.0,
@@ -487,6 +586,7 @@ class TriangulatedHatchGenerator(Generator):
             Preset(
                 name="Geometric Mesh",
                 params={
+                    "mesh_type": "Triangles",
                     "num_points": 500,
                     "edge_weight": 0.3,
                     "brightness": 0.0,
@@ -507,6 +607,7 @@ class TriangulatedHatchGenerator(Generator):
             Preset(
                 name="Dense Illustration",
                 params={
+                    "mesh_type": "Triangles",
                     "num_points": 3000,
                     "edge_weight": 0.9,
                     "brightness": 0.0,
@@ -527,6 +628,7 @@ class TriangulatedHatchGenerator(Generator):
             Preset(
                 name="Minimal Sketch",
                 params={
+                    "mesh_type": "Triangles",
                     "num_points": 300,
                     "edge_weight": 0.5,
                     "brightness": 0.0,
@@ -539,6 +641,27 @@ class TriangulatedHatchGenerator(Generator):
                     "max_density": 3.0,
                     "angle_mode": "Fixed",
                     "fixed_angle_deg": 30.0,
+                    "cross_hatch": False,
+                    "cross_hatch_threshold": 0.3,
+                    "draw_edges": False,
+                },
+            ),
+            Preset(
+                name="Voronoi Portrait",
+                params={
+                    "mesh_type": "Voronoi",
+                    "num_points": 800,
+                    "edge_weight": 0.8,
+                    "brightness": 0.0,
+                    "contrast": 0.0,
+                    "blur_radius": 1.0,
+                    "invert": False,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                    "min_density": 0.0,
+                    "max_density": 8.0,
+                    "angle_mode": "Edge Flow",
+                    "fixed_angle_deg": 45.0,
                     "cross_hatch": False,
                     "cross_hatch_threshold": 0.3,
                     "draw_edges": False,
@@ -608,6 +731,7 @@ class TriangulatedHatchGenerator(Generator):
         edge_weight = float(params.get("edge_weight", 0.7))
         seed = int(params.get("random_seed", 42))
         rng = np.random.default_rng(seed)
+        mesh_type = str(params.get("mesh_type", "Triangles"))
 
         if progress_callback:
             progress_callback(20)
@@ -617,8 +741,13 @@ class TriangulatedHatchGenerator(Generator):
         if progress_callback:
             progress_callback(50)
 
-        triangles = _triangulate_and_sample(_seeds, gray, img_rect)
-        triangles = _discard_outside_triangles(triangles, img_rect)
+        # Build the cell list: list of (verts_mm, brightness)
+        if mesh_type == "Voronoi":
+            cells = _voronoi_cells(_seeds, gray, img_rect)
+        else:
+            # Triangles (default)
+            cells = _triangulate_and_sample(_seeds, gray, img_rect)
+            cells = _discard_outside_triangles(cells, img_rect)
 
         if progress_callback:
             progress_callback(60)
@@ -645,15 +774,13 @@ class TriangulatedHatchGenerator(Generator):
         y_off = float(params.get("y_offset_mm", 0.0))
 
         all_polylines: list[Polyline] = []
-        n_triangles = len(triangles)
+        n_cells = len(cells)
 
-        for i, (verts_mm, brightness) in enumerate(triangles):
+        for i, (verts_mm, brightness) in enumerate(cells):
             if cancelled_callback and cancelled_callback():
                 break
 
             # Compute density: dark → dense, bright → sparse.
-            # Round and clamp brightness to guard against sub-integer floating-point
-            # noise from bilinear interpolation (e.g. 254.9999... → 255).
             brightness_int = max(0.0, min(255.0, round(brightness)))
             density = min_density + (1.0 - brightness_int / 255.0) * (max_density - min_density)
 
@@ -664,9 +791,10 @@ class TriangulatedHatchGenerator(Generator):
             if angle_mode == "Fixed":
                 angle_deg = fixed_angle_deg
             else:
-                # Sample angle map at triangle centroid
-                cx = (verts_mm[0][0] + verts_mm[1][0] + verts_mm[2][0]) / 3.0
-                cy = (verts_mm[0][1] + verts_mm[1][1] + verts_mm[2][1]) / 3.0
+                # Sample angle map at cell centroid
+                n_verts = len(verts_mm)
+                cx = sum(v[0] for v in verts_mm) / n_verts
+                cy = sum(v[1] for v in verts_mm) / n_verts
                 # Convert mm centroid to pixel coordinates
                 px = (cx - img_x1) / mm_w * (img_w - 1)
                 py = (cy - img_y1) / mm_h * (img_h - 1)
@@ -674,25 +802,35 @@ class TriangulatedHatchGenerator(Generator):
                 py = max(0.0, min(float(img_h - 1), py))
                 angle_deg = float(angle_map[int(py), int(px)])  # type: ignore[index]
 
-            # Determine whether to cross-hatch this triangle (use rounded brightness)
+            # Determine whether to cross-hatch this cell
             apply_cross = do_cross_hatch and (brightness_int / 255.0) < cross_hatch_threshold
 
-            lines = _fill_triangle_with_hatching(verts_mm, density, angle_deg, apply_cross)
+            # Build Shapely polygon and hatch it
+            poly = ShapelyPolygon(verts_mm)
+            if poly.area < _AREA_EPSILON:
+                continue
+
+            spacing = 1.0 / density
+            lines = _hatch_polygon(poly, spacing, angle_deg)
+            if apply_cross:
+                lines.extend(_hatch_polygon(poly, spacing, angle_deg + 90.0))
 
             for line in lines:
                 shifted = [(x + x_off, y + y_off) for x, y in line]
                 all_polylines.append(shifted)
 
-            # Progress 60–100 over triangle loop
-            if progress_callback and (i % max(1, n_triangles // 20) == 0):
-                pct = 60 + int(40 * i / max(1, n_triangles))
+            # Progress 60–100 over cell loop
+            if progress_callback and (i % max(1, n_cells // 20) == 0):
+                pct = 60 + int(40 * i / max(1, n_cells))
                 progress_callback(pct)
 
         if draw_edges:
             seen_edges: set[frozenset] = set()
-            for verts_mm, _ in triangles:
-                v0, v1, v2 = verts_mm
-                for p_a, p_b in ((v0, v1), (v1, v2), (v0, v2)):
+            for verts_mm, _ in cells:
+                n_verts = len(verts_mm)
+                for j in range(n_verts):
+                    p_a = verts_mm[j]
+                    p_b = verts_mm[(j + 1) % n_verts]
                     r_a = (round(p_a[0], 4), round(p_a[1], 4))
                     r_b = (round(p_b[0], 4), round(p_b[1], 4))
                     key = frozenset((r_a, r_b))
