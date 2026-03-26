@@ -4348,6 +4348,13 @@ class SettingsPanel(QScrollArea):
             return self._layer_combo.itemData(idx)
         return None
 
+    def flush_current_snapshot(self) -> None:
+        """Save current UI state to the active layer's generator_info."""
+        snapshot = self._get_settings_snapshot()
+        layer_id = self.current_layer_id()
+        if snapshot is not None and layer_id:
+            self._controller.set_layer_generator_info(layer_id, snapshot)
+
     # ------------------------------------------------------------------
     # Per-layer generator settings memory
     # ------------------------------------------------------------------

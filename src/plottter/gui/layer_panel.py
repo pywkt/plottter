@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, QSize, QEvent
+from PyQt6.QtCore import Qt, QSize, QEvent, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QPalette, QPixmap
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -295,6 +295,8 @@ class _LayerItem(QWidget):
 class LayerPanel(QWidget):
     """Panel with a list of layers and management buttons."""
 
+    pre_duplicate = pyqtSignal()
+
     def __init__(self, controller: ProjectController, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._controller = controller
@@ -467,6 +469,7 @@ class LayerPanel(QWidget):
     def _on_duplicate(self) -> None:
         layer_id = self._current_layer_id()
         if layer_id:
+            self.pre_duplicate.emit()
             self._controller.duplicate_layer(layer_id)
 
     def _on_merge(self) -> None:

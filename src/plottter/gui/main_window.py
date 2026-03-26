@@ -928,6 +928,7 @@ class MainWindow(QMainWindow):
         stack.undoTextChanged.connect(self._on_undo_text_changed)
         stack.redoTextChanged.connect(self._on_redo_text_changed)
         self._canvas.mouse_position_mm.connect(self._on_cursor_moved)
+        self._layer_panel.pre_duplicate.connect(self._settings_panel.flush_current_snapshot)
         self._mode_panel.mode_changed.connect(self._settings_panel.on_mode_changed)
         self._settings_panel.mode_change_requested.connect(self._on_mode_change_requested)
         self._settings_panel.image_preprocessed.connect(self._canvas.set_image_overlay)
