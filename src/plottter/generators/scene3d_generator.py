@@ -659,6 +659,15 @@ class Scene3DGenerator(Generator):
                 description="Draw all triangle edges; when off, only hard/boundary edges are drawn",
             ),
             FloatParam(
+                name="mesh_crease_angle", label="Crease Angle (°)", min=0.0, max=90.0, step=1.0, default=30.0,
+                visible_when={"shape_type": ["Mesh Import"]},
+                description=(
+                    "Edges between faces with dihedral angle above this threshold are drawn. "
+                    "Lower values show more detail on smooth surfaces. "
+                    "Set to 0 to draw all edges."
+                ),
+            ),
+            FloatParam(
                 name="mesh_decimate", label="Decimation", min=0.0, max=1.0, step=0.05, default=1.0,
                 visible_when={"shape_type": ["Mesh Import"]},
                 description=(
@@ -894,9 +903,12 @@ class Scene3DGenerator(Generator):
             if not mesh_file:
                 return None
             decimate = float(params.get("mesh_decimate", 1.0))
+            crease_angle = float(params.get("mesh_crease_angle", 30.0))
+            draw_all = bool(params.get("mesh_all_edges", False)) or crease_angle == 0.0
             return Mesh(
                 file_path=mesh_file,
-                draw_all_edges=bool(params.get("mesh_all_edges", False)),
+                draw_all_edges=draw_all,
+                crease_angle_deg=crease_angle,
                 decimate=decimate,
             )
 
