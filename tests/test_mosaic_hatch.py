@@ -436,6 +436,23 @@ def test_voronoi_cells_brightness_range() -> None:
         assert 0.0 <= brightness <= 255.0, f"Brightness {brightness} out of [0, 255]"
 
 
+def test_voronoi_cells_average_more_than_3_vertices() -> None:
+    """Voronoi cells must have more than 3 vertices on average (they are polygons, not triangles)."""
+    canvas = make_canvas()
+    img_rect = img_rect_for_canvas(canvas)
+    gray = make_gray_with_edges()
+    rng = np.random.default_rng(24)
+
+    seeds = _edge_aware_seeds(gray, img_rect, num_points=200, edge_weight=0.5, rng=rng)
+    cells = _voronoi_cells(seeds, gray, img_rect)
+
+    assert len(cells) > 0
+    avg_vertices = sum(len(verts) for verts, _ in cells) / len(cells)
+    assert avg_vertices > 3, (
+        f"Voronoi cells should have >3 vertices on average, got {avg_vertices:.2f}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests for hatching behaviour
 # ---------------------------------------------------------------------------
