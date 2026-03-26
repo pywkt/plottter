@@ -10,6 +10,7 @@ from plottter.generators.triangulated_hatch import (
     _discard_outside_triangles,
     _edge_aware_seeds,
     _hexagon_cells,
+    _quadtree_cells,
     _rectangle_cells,
     _triangulate_and_sample,
     _voronoi_cells,
@@ -1236,3 +1237,217 @@ def test_cell_size_mm_visible_for_grid_modes_only() -> None:
     assert "Hexagons" in cell_p.visible_when["mesh_type"]
     assert "Triangles" not in cell_p.visible_when["mesh_type"]
     assert "Voronoi" not in cell_p.visible_when["mesh_type"]
+
+
+# ---------------------------------------------------------------------------
+# Tests for _quadtree_cells
+# ---------------------------------------------------------------------------
+
+
+def test_quadtree_cells_returns_list() -> None:
+    """_quadtree_cells must return a non-empty list."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_gray_with_edges()
+    cells = _quadtree_cells(gray, img_rect, max_depth=3)
+    assert isinstance(cells, list)
+    assert len(cells) > 0
+
+
+def test_quadtree_cells_are_rectangles() -> None:
+    """All leaf cells must be valid axis-aligned rectangles (4 vertices, 2 unique x, 2 unique y)."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_gray_with_edges()
+    cells = _quadtree_cells(gray, img_rect, max_depth=4)
+    assert len(cells) > 0
+    for verts, brightness in cells:
+        assert len(verts) == 4, f"Quadtree cell has {len(verts)} vertices, expected 4"
+        for pt in verts:
+            assert len(pt) == 2
+        xs = {round(v[0], 9) for v in verts}
+        ys = {round(v[1], 9) for v in verts}
+        assert len(xs) == 2, f"Expected 2 unique x coords, got {len(xs)}"
+        assert len(ys) == 2, f"Expected 2 unique y coords, got {len(ys)}"
+        assert 0.0 <= brightness <= 255.0
+
+
+def test_quadtree_high_contrast_more_cells_than_uniform() -> None:
+    """High-contrast image should produce more cells than uniform gray at same depth."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray_contrast = make_gray_with_edges()
+    gray_uniform = make_uniform_gray()
+
+    cells_contrast = _quadtree_cells(gray_contrast, img_rect, max_depth=4)
+    cells_uniform = _quadtree_cells(gray_uniform, img_rect, max_depth=4)
+
+    assert len(cells_contrast) > len(cells_uniform), (
+        f"High-contrast image ({len(cells_contrast)} cells) should produce more cells "
+        f"than uniform ({len(cells_uniform)} cells)"
+    )
+
+
+def test_quadtree_uniform_minimal_subdivision() -> None:
+    """Uniform gray image should produce only 1 cell (no subdivision needed)."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_uniform_gray()
+    cells = _quadtree_cells(gray, img_rect, max_depth=6)
+    # Uniform image has zero contrast — no subdivision at any depth
+    assert len(cells) == 1, f"Expected 1 cell for uniform image, got {len(cells)}"
+
+
+def test_quadtree_depth_limits_cell_count() -> None:
+    """Higher max_depth should produce more cells for a high-contrast image."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_gray_with_edges()
+
+    cells_shallow = _quadtree_cells(gray, img_rect, max_depth=2)
+    cells_deep = _quadtree_cells(gray, img_rect, max_depth=5)
+
+    assert len(cells_deep) >= len(cells_shallow), (
+        f"Deeper quadtree ({len(cells_deep)}) should have >= cells vs shallow ({len(cells_shallow)})"
+    )
+
+
+def test_quadtree_depth1_max_cells() -> None:
+    """At max_depth=1, a cell can subdivide at most once giving at most 4 cells."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_gray_with_edges()
+    cells = _quadtree_cells(gray, img_rect, max_depth=1)
+    # With depth=1, root can split into 4 quadrants, none of which can split further
+    assert len(cells) <= 4, f"At max_depth=1, expected ≤4 cells, got {len(cells)}"
+
+
+def test_quadtree_cells_cover_image_rect() -> None:
+    """All quadtree cells must be contained within the image rect."""
+    img_rect = (5.0, 5.0, 55.0, 55.0)
+    gray = make_gray_with_edges()
+    cells = _quadtree_cells(gray, img_rect, max_depth=3)
+
+    x1, y1, x2, y2 = img_rect
+    tol = 1e-9
+    for verts, _ in cells:
+        for vx, vy in verts:
+            assert x1 - tol <= vx <= x2 + tol, f"Vertex x={vx} outside rect [{x1}, {x2}]"
+            assert y1 - tol <= vy <= y2 + tol, f"Vertex y={vy} outside rect [{y1}, {y2}]"
+
+
+def test_quadtree_brightness_range() -> None:
+    """Each quadtree cell brightness must be in [0, 255]."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_gray_with_edges()
+    cells = _quadtree_cells(gray, img_rect, max_depth=4)
+    for _, brightness in cells:
+        assert 0.0 <= brightness <= 255.0, f"Brightness {brightness} out of [0, 255]"
+
+
+# ---------------------------------------------------------------------------
+# Tests for Quadtree mode via generate()
+# ---------------------------------------------------------------------------
+
+
+def _make_quadtree_params(extra: dict | None = None) -> dict:
+    """Build a minimal params dict for Quadtree mode."""
+    gray = make_gray_with_edges()
+    rgb = np.stack([gray, gray, gray], axis=-1)
+    base: dict = {
+        "_source_image": rgb,
+        "mesh_type": "Quadtree",
+        "quadtree_depth": 4,
+        "brightness": 0.0,
+        "contrast": 0.0,
+        "blur_radius": 0.0,
+        "invert": False,
+        "x_offset_mm": 0.0,
+        "y_offset_mm": 0.0,
+        "min_density": 0.0,
+        "max_density": 6.0,
+        "angle_mode": "Fixed",
+        "fixed_angle_deg": 45.0,
+        "cross_hatch": False,
+        "cross_hatch_threshold": 0.3,
+        "draw_edges": False,
+    }
+    if extra:
+        base.update(extra)
+    return base
+
+
+def test_quadtree_mode_produces_polylines() -> None:
+    """Quadtree mesh_type must produce hatching polylines for a dark image."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+    dark = np.zeros((100, 100), dtype=np.uint8)
+    dark_rgb = np.stack([dark, dark, dark], axis=-1)
+    params = _make_quadtree_params({"_source_image": dark_rgb})
+    result = gen.generate(params, canvas)
+    assert isinstance(result, list)
+    assert len(result) > 0, "Expected hatch lines for dark image with Quadtree"
+    for poly in result:
+        assert len(poly) >= 2
+
+
+def test_quadtree_mode_bright_no_lines() -> None:
+    """Quadtree mode with all-white image and min_density=0 should produce no lines."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+    white = np.full((100, 100), 255, dtype=np.uint8)
+    white_rgb = np.stack([white, white, white], axis=-1)
+    result = gen.generate(_make_quadtree_params({"_source_image": white_rgb, "min_density": 0.0}), canvas)
+    assert result == [], f"Expected no lines for all-white image in Quadtree mode, got {len(result)}"
+
+
+def test_quadtree_draw_edges() -> None:
+    """Quadtree with draw_edges=True must produce edge polylines (2-point segments)."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+    white = np.full((100, 100), 255, dtype=np.uint8)
+    white_rgb = np.stack([white, white, white], axis=-1)
+    result = gen.generate(_make_quadtree_params({
+        "_source_image": white_rgb,
+        "draw_edges": True,
+        "min_density": 0.0,
+    }), canvas)
+    assert len(result) > 0, "Expected edge polylines from Quadtree with draw_edges=True"
+    for poly in result:
+        assert len(poly) == 2, f"Edge polyline has {len(poly)} points, expected 2"
+
+
+def test_mesh_type_choices_include_quadtree() -> None:
+    """mesh_type ChoiceParam must include 'Quadtree'."""
+    gen = MosaicHatchGenerator()
+    mesh_param = next(p for p in gen.get_parameters() if p.name == "mesh_type")
+    assert hasattr(mesh_param, "choices")
+    assert "Quadtree" in mesh_param.choices
+
+
+def test_quadtree_depth_param_exists_and_visible_when() -> None:
+    """quadtree_depth param must exist and be visible only for Quadtree mode."""
+    gen = MosaicHatchGenerator()
+    params_dict = {p.name: p for p in gen.get_parameters()}
+    assert "quadtree_depth" in params_dict, "quadtree_depth parameter must exist"
+    qd = params_dict["quadtree_depth"]
+    assert qd.visible_when is not None
+    assert "mesh_type" in qd.visible_when
+    assert "Quadtree" in qd.visible_when["mesh_type"]
+    assert "Triangles" not in qd.visible_when["mesh_type"]
+    assert "Voronoi" not in qd.visible_when["mesh_type"]
+
+
+def test_num_points_and_edge_weight_hidden_for_quadtree() -> None:
+    """num_points and edge_weight must not be visible when mesh_type='Quadtree'."""
+    gen = MosaicHatchGenerator()
+    params_dict = {p.name: p for p in gen.get_parameters()}
+    assert "Quadtree" not in params_dict["num_points"].visible_when["mesh_type"]
+    assert "Quadtree" not in params_dict["edge_weight"].visible_when["mesh_type"]
+
+
+def test_adaptive_detail_preset_exists() -> None:
+    """'Adaptive Detail' preset must exist and use Quadtree mesh type with depth 5."""
+    gen = MosaicHatchGenerator()
+    presets = {p.name: p for p in gen.get_presets()}
+    assert "Adaptive Detail" in presets, "Missing 'Adaptive Detail' preset"
+    preset = presets["Adaptive Detail"]
+    assert preset.params["mesh_type"] == "Quadtree"
+    assert preset.params["quadtree_depth"] == 5
+    assert preset.params["max_density"] == 8.0
+    assert preset.params["cross_hatch"] is True
+    assert preset.params["angle_mode"] == "Edge Flow"

@@ -347,6 +347,79 @@ def _hexagon_cells(
     return result
 
 
+def _quadtree_cells(
+    gray: np.ndarray,
+    img_rect: tuple[float, float, float, float],
+    max_depth: int,
+    contrast_threshold: float = 30.0,
+) -> list[tuple[list[tuple[float, float]], float]]:
+    """Generate adaptive quadtree cells based on local contrast.
+
+    Starts with the full image rect as a single cell and recursively
+    subdivides any cell whose brightness contrast exceeds ``contrast_threshold``
+    — up to ``max_depth`` levels of subdivision.  Each leaf cell is an
+    axis-aligned rectangle.
+
+    Parameters
+    ----------
+    gray:
+        Grayscale image array (uint8, shape HxW).
+    img_rect:
+        Bounding box in mm: (x1, y1, x2, y2).
+    max_depth:
+        Maximum recursion depth (1–7).  Higher values produce finer
+        detail in high-contrast regions.
+    contrast_threshold:
+        Brightness range (0–255) that triggers subdivision.  Cells
+        whose max−min brightness exceed this value are split into four
+        equal quadrants.
+
+    Returns
+    -------
+    list of (verts_mm, brightness) tuples where verts_mm is a 4-vertex
+    list ``[(x1,y1),(x2,y1),(x2,y2),(x1,y2)]`` in mm and brightness is
+    the centre-sampled value in 0–255.
+    """
+    img_x1, img_y1, img_x2, img_y2 = img_rect
+    img_h, img_w = gray.shape[:2]
+    mm_w = img_x2 - img_x1
+    mm_h = img_y2 - img_y1
+
+    result: list[tuple[list[tuple[float, float]], float]] = []
+
+    def _sample(cx: float, cy: float) -> float:
+        px = (cx - img_x1) / mm_w * (img_w - 1)
+        py = (cy - img_y1) / mm_h * (img_h - 1)
+        return _bilinear_sample(gray, px, py)
+
+    def _subdivide(x1: float, y1: float, x2: float, y2: float, depth: int) -> None:
+        xm = (x1 + x2) * 0.5
+        ym = (y1 + y2) * 0.5
+
+        # Sample brightness at 9 points: 4 corners + 4 midpoints + centre
+        samples = [
+            _sample(x1, y1), _sample(xm, y1), _sample(x2, y1),
+            _sample(x1, ym), _sample(xm, ym), _sample(x2, ym),
+            _sample(x1, y2), _sample(xm, y2), _sample(x2, y2),
+        ]
+        contrast = max(samples) - min(samples)
+
+        if contrast > contrast_threshold and depth < max_depth:
+            _subdivide(x1, y1, xm, ym, depth + 1)
+            _subdivide(xm, y1, x2, ym, depth + 1)
+            _subdivide(x1, ym, xm, y2, depth + 1)
+            _subdivide(xm, ym, x2, y2, depth + 1)
+        else:
+            brightness = _sample(xm, ym)
+            verts: list[tuple[float, float]] = [
+                (x1, y1), (x2, y1), (x2, y2), (x1, y2)
+            ]
+            result.append((verts, brightness))
+
+    _subdivide(img_x1, img_y1, img_x2, img_y2, 0)
+    return result
+
+
 def _voronoi_cells(
     seeds: np.ndarray,
     gray: np.ndarray,
@@ -477,9 +550,9 @@ class MosaicHatchGenerator(Generator):
             ChoiceParam(
                 name="mesh_type",
                 label="Mesh Type",
-                choices=["Triangles", "Voronoi", "Rectangles", "Hexagons"],
+                choices=["Triangles", "Voronoi", "Rectangles", "Hexagons", "Quadtree"],
                 default="Triangles",
-                description="Tessellation method — Triangles, Voronoi, Rectangles, or Hexagons",
+                description="Tessellation method — Triangles, Voronoi, Rectangles, Hexagons, or Quadtree",
             ),
             IntParam(
                 name="num_points",
@@ -510,6 +583,16 @@ class MosaicHatchGenerator(Generator):
                 default=5.0,
                 visible_when={"mesh_type": ["Rectangles", "Hexagons"]},
                 description="Cell size in mm",
+            ),
+            IntParam(
+                name="quadtree_depth",
+                label="Max Depth",
+                min=1,
+                max=7,
+                step=1,
+                default=4,
+                visible_when={"mesh_type": ["Quadtree"]},
+                description="Maximum subdivision depth — higher = more detail in high-contrast areas",
             ),
             FloatParam(
                 name="brightness",
@@ -867,6 +950,26 @@ class MosaicHatchGenerator(Generator):
                     "draw_edges": True,
                 },
             ),
+            Preset(
+                name="Adaptive Detail",
+                params={
+                    "mesh_type": "Quadtree",
+                    "quadtree_depth": 5,
+                    "brightness": 0.0,
+                    "contrast": 0.0,
+                    "blur_radius": 1.0,
+                    "invert": False,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                    "min_density": 0.0,
+                    "max_density": 8.0,
+                    "angle_mode": "Edge Flow",
+                    "fixed_angle_deg": 45.0,
+                    "cross_hatch": True,
+                    "cross_hatch_threshold": 0.3,
+                    "draw_edges": False,
+                },
+            ),
         ]
 
     def generate(
@@ -940,6 +1043,11 @@ class MosaicHatchGenerator(Generator):
                 progress_callback(60)
         elif mesh_type == "Hexagons":
             cells = _hexagon_cells(gray, img_rect, cell_size)
+            if progress_callback:
+                progress_callback(60)
+        elif mesh_type == "Quadtree":
+            quadtree_depth = int(params.get("quadtree_depth", 4))
+            cells = _quadtree_cells(gray, img_rect, quadtree_depth)
             if progress_callback:
                 progress_callback(60)
         else:
