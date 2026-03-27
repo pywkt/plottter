@@ -77,7 +77,6 @@ def _run_streamlines(
         seed_spacing_mm=seed_spacing_mm,
         step_size_mm=step_size_mm,
         max_length_mm=max_length_mm,
-        curvature_strength=1.0,
         seed=seed,
         skip_background=skip_background,
         bg_threshold=240.0,
@@ -223,8 +222,7 @@ class TestGenerateFlowStreamlines:
             seed_spacing_mm=10.0,
             step_size_mm=step_size_mm,
             max_length_mm=max_length_mm,
-            curvature_strength=1.0,
-            seed=7,
+                    seed=7,
             skip_background=False,
             bg_threshold=240.0,
             brightness_threshold=255,
@@ -268,8 +266,7 @@ class TestGenerateFlowStreamlines:
             seed_spacing_mm=5.0,
             step_size_mm=0.5,
             max_length_mm=40.0,
-            curvature_strength=1.0,
-            seed=0,
+                    seed=0,
             skip_background=False,
             bg_threshold=240.0,
             brightness_threshold=255,
@@ -298,7 +295,7 @@ class TestGenerateFlowStreamlines:
         )
         common = dict(
             img=img, seed_spacing_mm=10.0, max_length_mm=10.0,
-            curvature_strength=1.0, seed=42,
+            seed=42,
             skip_background=False, bg_threshold=240.0,
             brightness_threshold=255, density_modulation=False,
             canvas=canvas, cancelled_callback=None, progress_callback=None,
@@ -332,8 +329,7 @@ class TestGenerateFlowStreamlines:
             seed_spacing_mm=10.0,
             step_size_mm=step_size_mm,
             max_length_mm=max_length_mm,
-            curvature_strength=1.0,
-            seed=0,
+                    seed=0,
             skip_background=False,
             bg_threshold=240.0,
             brightness_threshold=255,
@@ -386,8 +382,7 @@ class TestGridSeeding:
             seed_spacing_mm=10.0,  # coarse grid → manageable number of seeds
             step_size_mm=1.0,
             max_length_mm=5.0,
-            curvature_strength=1.0,
-            seed=42,
+                    seed=42,
             skip_background=False,
             bg_threshold=260.0,
             brightness_threshold=255,
@@ -439,8 +434,7 @@ class TestGridSeeding:
             seed_spacing_mm=1.0,
             step_size_mm=0.5,
             max_length_mm=5.0,
-            curvature_strength=1.0,
-            seed=0,
+                    seed=0,
             skip_background=False,
             bg_threshold=260.0,
             brightness_threshold=255,
@@ -456,8 +450,7 @@ class TestGridSeeding:
             seed_spacing_mm=5.0,
             step_size_mm=0.5,
             max_length_mm=5.0,
-            curvature_strength=1.0,
-            seed=0,
+                    seed=0,
             skip_background=False,
             bg_threshold=260.0,
             brightness_threshold=255,
@@ -487,8 +480,7 @@ class TestGridSeeding:
             seed_spacing_mm=2.0,
             step_size_mm=0.5,
             max_length_mm=10.0,
-            curvature_strength=1.0,
-            seed=42,
+                    seed=42,
             skip_background=False,
             bg_threshold=260.0,  # high bg_threshold so skip_background never triggers
             brightness_threshold=0,  # threshold=0 → everything >= 0 is removed
@@ -524,8 +516,7 @@ class TestGridSeeding:
             seed_spacing_mm=2.0,
             step_size_mm=0.5,
             max_length_mm=5.0,
-            curvature_strength=1.0,
-            seed=0,
+                    seed=0,
             skip_background=False,
             bg_threshold=255.0,
             brightness_threshold=255,
@@ -637,32 +628,35 @@ class TestParameterDefinitions:
                     f"Flow preset '{preset.name}' missing seed_spacing_mm"
                 )
 
-    def test_presets_have_brightness_threshold(self) -> None:
-        """All presets should have brightness_threshold."""
+    def test_flow_presets_have_brightness_threshold(self) -> None:
+        """All flow presets should have brightness_threshold."""
         from plottter.generators.flow_image import FlowImageGenerator
         gen = FlowImageGenerator()
         for preset in gen.get_presets():
-            assert "brightness_threshold" in preset.params, (
-                f"Preset '{preset.name}' missing brightness_threshold"
-            )
+            if preset.params.get("mode") == "flow":
+                assert "brightness_threshold" in preset.params, (
+                    f"Flow preset '{preset.name}' missing brightness_threshold"
+                )
 
-    def test_presets_have_density_modulation(self) -> None:
-        """All presets should have density_modulation."""
+    def test_flow_presets_have_density_modulation(self) -> None:
+        """All flow presets should have density_modulation."""
         from plottter.generators.flow_image import FlowImageGenerator
         gen = FlowImageGenerator()
         for preset in gen.get_presets():
-            assert "density_modulation" in preset.params, (
-                f"Preset '{preset.name}' missing density_modulation"
-            )
+            if preset.params.get("mode") == "flow":
+                assert "density_modulation" in preset.params, (
+                    f"Flow preset '{preset.name}' missing density_modulation"
+                )
 
-    def test_presets_use_max_length_mm(self) -> None:
-        """All presets should have max_length_mm, not max_steps."""
+    def test_flow_presets_use_max_length_mm(self) -> None:
+        """All flow presets should have max_length_mm, not max_steps."""
         from plottter.generators.flow_image import FlowImageGenerator
         gen = FlowImageGenerator()
         for preset in gen.get_presets():
-            assert "max_length_mm" in preset.params, (
-                f"Preset '{preset.name}' missing max_length_mm"
-            )
+            if preset.params.get("mode") == "flow":
+                assert "max_length_mm" in preset.params, (
+                    f"Flow preset '{preset.name}' missing max_length_mm"
+                )
             assert "max_steps" not in preset.params, (
                 f"Preset '{preset.name}' still has max_steps"
             )
@@ -808,8 +802,7 @@ class TestSeparationFilterIntegration:
             seed_spacing_mm=3.0,
             step_size_mm=0.5,
             max_length_mm=10.0,
-            curvature_strength=1.0,
-            seed=42,
+                    seed=42,
             skip_background=False,
             bg_threshold=240.0,
             brightness_threshold=255,
