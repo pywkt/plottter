@@ -15,6 +15,8 @@ from plottter.processing.optimize import (
 )
 from plottter.processing.weld import weld_overlapping_paths
 from plottter.processing.curves import fit_curves
+from plottter.processing.scale import scale_paths_to_canvas
+from plottter.models.canvas import Canvas
 from plottter.processing import (
     simplify_paths as pkg_simplify,
     filter_short_paths as pkg_filter,
@@ -1143,3 +1145,97 @@ class TestProgressAndCancellation:
         orig_sets = {frozenset(map(tuple, p)) for p in paths}
         for p in result:
             assert frozenset(map(tuple, p)) in orig_sets
+
+# ---------------------------------------------------------------------------
+# Scale paths to canvas
+# ---------------------------------------------------------------------------
+
+
+class TestScalePathsToCanvas:
+    def _make_canvas(self, w: float, h: float, margin: float = 10.0) -> Canvas:
+        return Canvas(width_mm=w, height_mm=h, margin_mm=margin)
+
+    def test_same_canvas_identity(self) -> None:
+        """Scaling to the same canvas leaves paths unchanged."""
+        canvas = self._make_canvas(210.0, 297.0)
+        paths = [[(10.0, 10.0), (100.0, 150.0), (200.0, 280.0)]]
+        result = scale_paths_to_canvas(paths, canvas, canvas)
+        assert len(result) == 1
+        for (rx, ry), (ox, oy) in zip(result[0], paths[0]):
+            assert abs(rx - ox) < 1e-9
+            assert abs(ry - oy) < 1e-9
+
+    def test_double_canvas_scales_drawing_area(self) -> None:
+        """A4 -> A3 (approx double area): points in drawing area scale proportionally."""
+        old = self._make_canvas(210.0, 297.0, margin=10.0)
+        new = self._make_canvas(297.0, 420.0, margin=10.0)
+        # Point at old drawing-area origin (10, 10)
+        paths = [[(10.0, 10.0)]]
+        result = scale_paths_to_canvas(paths, old, new)
+        # Drawing-area origin should map to new drawing-area origin (10, 10)
+        assert abs(result[0][0][0] - 10.0) < 1e-9
+        assert abs(result[0][0][1] - 10.0) < 1e-9
+
+    def test_point_at_old_margin_maps_to_new_margin(self) -> None:
+        """Top-left drawing-area corner always maps to the new margin."""
+        old = self._make_canvas(100.0, 100.0, margin=5.0)
+        new = self._make_canvas(200.0, 150.0, margin=15.0)
+        paths = [[(5.0, 5.0)]]
+        result = scale_paths_to_canvas(paths, old, new)
+        assert abs(result[0][0][0] - 15.0) < 1e-9
+        assert abs(result[0][0][1] - 15.0) < 1e-9
+
+    def test_point_at_old_far_corner_maps_to_new_far_corner(self) -> None:
+        """Bottom-right drawing-area corner maps to new drawing-area bottom-right."""
+        old = self._make_canvas(100.0, 100.0, margin=5.0)
+        new = self._make_canvas(200.0, 150.0, margin=15.0)
+        # old far corner: (100-5, 100-5) = (95, 95)
+        paths = [[(95.0, 95.0)]]
+        result = scale_paths_to_canvas(paths, old, new)
+        # new far corner: (200-15, 150-15) = (185, 135)
+        assert abs(result[0][0][0] - 185.0) < 1e-9
+        assert abs(result[0][0][1] - 135.0) < 1e-9
+
+    def test_center_point_stays_centered(self) -> None:
+        """Center of old drawing area maps to center of new drawing area."""
+        old = self._make_canvas(200.0, 200.0, margin=10.0)
+        new = self._make_canvas(400.0, 300.0, margin=20.0)
+        # old center: (10 + 90, 10 + 90) = (100, 100)
+        paths = [[(100.0, 100.0)]]
+        result = scale_paths_to_canvas(paths, old, new)
+        # new center: (20 + 180, 20 + 130) = (200, 150)
+        assert abs(result[0][0][0] - 200.0) < 1e-9
+        assert abs(result[0][0][1] - 150.0) < 1e-9
+
+    def test_multiple_polylines(self) -> None:
+        """Multiple polylines are all scaled independently."""
+        old = self._make_canvas(100.0, 100.0, margin=10.0)
+        new = self._make_canvas(200.0, 200.0, margin=10.0)
+        paths = [
+            [(10.0, 10.0), (90.0, 90.0)],
+            [(50.0, 50.0)],
+        ]
+        result = scale_paths_to_canvas(paths, old, new)
+        assert len(result) == 2
+        # old draw area: (10,10)→(90,90), width=80, height=80
+        # new draw area: (10,10)→(190,190), width=180, height=180
+        sx = 180.0 / 80.0
+        for orig_poly, new_poly in zip(paths, result):
+            for (ox, oy), (nx, ny) in zip(orig_poly, new_poly):
+                assert abs(nx - (10.0 + (ox - 10.0) * sx)) < 1e-9
+                assert abs(ny - (10.0 + (oy - 10.0) * sx)) < 1e-9
+
+    def test_empty_paths_list(self) -> None:
+        """Empty input returns empty output."""
+        old = self._make_canvas(210.0, 297.0)
+        new = self._make_canvas(297.0, 420.0)
+        result = scale_paths_to_canvas([], old, new)
+        assert result == []
+
+    def test_zero_drawing_area_returns_copy(self) -> None:
+        """If old drawing area has zero width, paths are returned unchanged."""
+        old = Canvas(width_mm=0.0, height_mm=100.0, margin_mm=0.0)
+        new = self._make_canvas(210.0, 297.0)
+        paths = [[(5.0, 10.0), (20.0, 30.0)]]
+        result = scale_paths_to_canvas(paths, old, new)
+        assert result[0] == paths[0]
