@@ -13,6 +13,7 @@ from plottter.generators.base import (
     BoolParam,
     ChoiceParam,
     FloatParam,
+    IntParam,
     Generator,
     Parameter,
     Preset,
@@ -245,6 +246,57 @@ class SpiralGenerator(Generator):
                 default="Sawtooth",
                 description="Waveform shape for perpendicular oscillation",
             ),
+            # --- Variable velocity params ---
+            BoolParam(
+                name="variable_velocity",
+                label="Variable Velocity",
+                default=True,
+                description="Adjust sampling density by brightness — more detail in dark areas",
+            ),
+            FloatParam(
+                name="min_velocity",
+                label="Min Velocity",
+                min=0.5,
+                max=5.0,
+                step=0.1,
+                default=0.8,
+                visible_when={"variable_velocity": [True]},
+                description="Step multiplier in dark areas (smallest step = most detail)",
+            ),
+            FloatParam(
+                name="max_velocity",
+                label="Max Velocity",
+                min=1.0,
+                max=10.0,
+                step=0.1,
+                default=3.0,
+                visible_when={"variable_velocity": [True]},
+                description="Step multiplier in bright areas (largest step = coarsest)",
+            ),
+            # --- White-area skipping params ---
+            BoolParam(
+                name="skip_white",
+                label="Skip White Areas",
+                default=True,
+                description="Flatten or skip oscillation in bright/white areas",
+            ),
+            IntParam(
+                name="white_threshold",
+                label="White Threshold",
+                min=0,
+                max=255,
+                step=1,
+                default=240,
+                visible_when={"skip_white": [True]},
+                description="Brightness above this value is considered white (0–255)",
+            ),
+            # --- Connected lines ---
+            BoolParam(
+                name="connected_lines",
+                label="Connected Lines",
+                default=True,
+                description="Output a single continuous polyline. When False, break at white-skipped regions (more pen lifts, cleaner bright areas)",
+            ),
             # --- Output placement params ---
             FloatParam(
                 name="x_offset_mm",
@@ -269,6 +321,14 @@ class SpiralGenerator(Generator):
         ]
 
     def get_presets(self) -> list[Preset]:
+        _common_new = {
+            "variable_velocity": True,
+            "min_velocity": 0.8,
+            "max_velocity": 3.0,
+            "skip_white": True,
+            "white_threshold": 240,
+            "connected_lines": True,
+        }
         return [
             Preset(
                 name="Default",
@@ -290,6 +350,7 @@ class SpiralGenerator(Generator):
                     "image_offset_y_mm": 0.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
+                    **_common_new,
                 },
             ),
             Preset(
@@ -312,6 +373,7 @@ class SpiralGenerator(Generator):
                     "image_offset_y_mm": 0.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
+                    **_common_new,
                 },
             ),
             Preset(
@@ -334,6 +396,7 @@ class SpiralGenerator(Generator):
                     "image_offset_y_mm": 0.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
+                    **_common_new,
                 },
             ),
         ]
@@ -398,75 +461,98 @@ class SpiralGenerator(Generator):
         if ring_spacing_mm <= 0.0 or step_size_mm <= 0.0 or max_radius_mm <= 0.0:
             return []
 
-        if progress_callback:
-            progress_callback(0)
-
-        spiral_pts = _trace_spiral(
-            center_x_mm,
-            center_y_mm,
-            ring_spacing_mm,
-            max_radius_mm,
-            step_size_mm,
-        )
-
-        if progress_callback:
-            progress_callback(90)
-
-        if not spiral_pts:
-            return []
-
         amplitude = float(params.get("amplitude", 0.8))
         oscillation_mode = str(params.get("oscillation_mode", "Sawtooth"))
+        variable_velocity = bool(params.get("variable_velocity", True))
+        min_velocity = float(params.get("min_velocity", 0.8))
+        max_velocity = float(params.get("max_velocity", 3.0))
+        skip_white = bool(params.get("skip_white", True))
+        white_threshold = int(params.get("white_threshold", 240))
+        connected_lines = bool(params.get("connected_lines", True))
+        x_off = float(params.get("x_offset_mm", 0.0))
+        y_off = float(params.get("y_offset_mm", 0.0))
 
         # Convert source image to grayscale for brightness sampling
+        # (needed for oscillation, variable velocity, and white skipping)
         gray: np.ndarray | None = None
-        if source is not None and amplitude > 0.0:
+        if source is not None:
             if source.ndim == 3:
                 gray = np.mean(source[:, :, :3], axis=2).astype(np.float32)
             else:
                 gray = source.astype(np.float32)
 
-        # Image rect dimensions for mm→pixel conversion
         img_rect_w = img_x2 - img_x1
         img_rect_h = img_y2 - img_y1
+        can_sample = gray is not None and img_rect_w > 0 and img_rect_h > 0
 
-        # Build single polyline with optional perpendicular oscillation
-        polyline: Polyline = []
-        for step_idx, (x, y, theta) in enumerate(spiral_pts):
-            if gray is not None and amplitude > 0.0 and img_rect_w > 0 and img_rect_h > 0:
-                # Sample brightness at this point
+        if progress_callback:
+            progress_callback(0)
+
+        # Integrated spiral loop: trace + variable velocity + oscillation + white skip
+        two_pi = 2.0 * math.pi
+        theta_start = step_size_mm * two_pi / ring_spacing_mm
+        theta = theta_start
+
+        polylines: list[Polyline] = []
+        current: Polyline = []
+        step_idx = 0
+
+        while True:
+            r = ring_spacing_mm * theta / two_pi
+            if r > max_radius_mm:
+                break
+
+            x = center_x_mm + r * math.cos(theta)
+            y = center_y_mm + r * math.sin(theta)
+
+            # Sample brightness
+            brightness = 128.0
+            if can_sample:
                 px = (x - img_x1) / img_rect_w * (img_w - 1)
                 py = (y - img_y1) / img_rect_h * (img_h - 1)
                 brightness = _sample_image_at(gray, px, py)
 
-                # Perpendicular direction (radially outward for Archimedean spiral)
-                perp_x = math.cos(theta)
-                perp_y = math.sin(theta)
+            # White-area skipping
+            in_white = skip_white and brightness > white_threshold
 
-                # Offset magnitude: dark=max, bright=zero
-                # amplitude=1.0 → half ring_spacing (reaches halfway to adjacent ring)
-                offset = amplitude * ring_spacing_mm / 2.0 * (1.0 - brightness / 255.0)
-
-                # Waveform sign
-                if oscillation_mode == "Sine":
-                    sign = math.sin(step_idx * math.pi / 2)
-                elif oscillation_mode == "Square":
-                    # Hold for 2 steps then flip — square wave with period 4 steps
-                    sign = 1.0 if (step_idx // 2) % 2 == 0 else -1.0
-                else:  # Sawtooth (default)
-                    sign = 1.0 if step_idx % 2 == 0 else -1.0
-
-                polyline.append((x + perp_x * offset * sign, y + perp_y * offset * sign))
+            if in_white and not connected_lines:
+                # Break the polyline at white areas
+                if len(current) >= 2:
+                    polylines.append(current)
+                current = []
             else:
-                polyline.append((x, y))
+                # Compute oscillation displacement
+                if can_sample and amplitude > 0.0 and not in_white:
+                    perp_x = math.cos(theta)
+                    perp_y = math.sin(theta)
+                    offset = amplitude * ring_spacing_mm / 2.0 * (1.0 - brightness / 255.0)
+                    if oscillation_mode == "Sine":
+                        sign = math.sin(step_idx * math.pi / 2)
+                    elif oscillation_mode == "Square":
+                        sign = 1.0 if (step_idx // 2) % 2 == 0 else -1.0
+                    else:  # Sawtooth
+                        sign = 1.0 if step_idx % 2 == 0 else -1.0
+                    current.append((x + perp_x * offset * sign + x_off, y + perp_y * offset * sign + y_off))
+                else:
+                    # Flat point (white area in connected mode, or no image/amplitude)
+                    current.append((x + x_off, y + y_off))
 
-        # Apply output offset
-        x_off = float(params.get("x_offset_mm", 0.0))
-        y_off = float(params.get("y_offset_mm", 0.0))
-        if x_off != 0.0 or y_off != 0.0:
-            polyline = [(x + x_off, y + y_off) for x, y in polyline]
+            # Variable velocity: adjust angular step by brightness
+            if variable_velocity and can_sample:
+                t = brightness / 255.0
+                ease = t * t  # quadratic ease-in
+                effective_step = step_size_mm * (min_velocity + ease * (max_velocity - min_velocity))
+            else:
+                effective_step = step_size_mm
+
+            theta += effective_step / r
+            step_idx += 1
+
+        # Flush the last segment
+        if current:
+            polylines.append(current)
 
         if progress_callback:
             progress_callback(100)
 
-        return [polyline]
+        return polylines if polylines else []

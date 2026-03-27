@@ -384,6 +384,9 @@ class TestOscillation:
             "image_fit_mode": "fill",
             "x_offset_mm": 0.0,
             "y_offset_mm": 0.0,
+            # Disable variable velocity so tests focus on oscillation only
+            "variable_velocity": False,
+            "skip_white": False,
         }
         params.update(overrides)
         return SpiralGenerator().generate(params, canvas)
@@ -454,6 +457,8 @@ class TestOscillation:
             "image_fit_mode": "fill",
             "x_offset_mm": 0.0,
             "y_offset_mm": 0.0,
+            "variable_velocity": False,
+            "skip_white": False,
         }
         result = SpiralGenerator().generate(params, canvas)
         poly = result[0]
@@ -536,3 +541,242 @@ class TestOscillation:
         mode_param = next(p for p in gen.get_parameters() if p.name == "oscillation_mode")
         assert set(mode_param.choices) == {"Sawtooth", "Sine", "Square"}
         assert mode_param.default == "Sawtooth"
+
+
+# ---------------------------------------------------------------------------
+# Variable velocity tests (task 67.3A/B)
+# ---------------------------------------------------------------------------
+
+class TestVariableVelocity:
+    """Tests for variable_velocity, min_velocity, max_velocity parameters."""
+
+    def _run(self, image: np.ndarray | None = None, **overrides) -> list:
+        canvas = _make_canvas()
+        img = image if image is not None else _make_gray(100, 100, 128)
+        params: dict = {
+            "_source_image": img,
+            "ring_spacing_mm": 3.0,
+            "center_x_pct": 50.0,
+            "center_y_pct": 50.0,
+            "step_size_mm": 0.5,
+            "amplitude": 0.8,
+            "oscillation_mode": "Sawtooth",
+            "image_fit_mode": "fill",
+            "x_offset_mm": 0.0,
+            "y_offset_mm": 0.0,
+            "variable_velocity": True,
+            "min_velocity": 0.8,
+            "max_velocity": 3.0,
+            "skip_white": False,
+            "white_threshold": 240,
+            "connected_lines": True,
+        }
+        params.update(overrides)
+        return SpiralGenerator().generate(params, canvas)
+
+    def test_dark_image_more_points_than_bright(self):
+        """variable_velocity=True: dark image should produce more points than bright image."""
+        dark_img = np.zeros((100, 100), dtype=np.uint8)
+        bright_img = np.full((100, 100), 255, dtype=np.uint8)
+
+        result_dark = self._run(image=dark_img, variable_velocity=True)
+        result_bright = self._run(image=bright_img, variable_velocity=True)
+
+        # Dark areas use smaller steps → more points
+        assert len(result_dark[0]) > len(result_bright[0])
+
+    def test_variable_velocity_false_uniform_spacing(self):
+        """variable_velocity=False should produce same count regardless of image brightness."""
+        dark_img = np.zeros((100, 100), dtype=np.uint8)
+        bright_img = np.full((100, 100), 255, dtype=np.uint8)
+
+        result_dark = self._run(image=dark_img, variable_velocity=False)
+        result_bright = self._run(image=bright_img, variable_velocity=False)
+
+        # Without variable velocity, same image → same point count
+        assert len(result_dark[0]) == len(result_bright[0])
+
+    def test_variable_velocity_params_in_parameter_list(self):
+        gen = SpiralGenerator()
+        param_names = {p.name for p in gen.get_parameters()}
+        assert "variable_velocity" in param_names
+        assert "min_velocity" in param_names
+        assert "max_velocity" in param_names
+
+    def test_min_velocity_param_range(self):
+        gen = SpiralGenerator()
+        p = next(p for p in gen.get_parameters() if p.name == "min_velocity")
+        assert p.min == 0.5
+        assert p.max == 5.0
+        assert p.default == 0.8
+
+    def test_max_velocity_param_range(self):
+        gen = SpiralGenerator()
+        p = next(p for p in gen.get_parameters() if p.name == "max_velocity")
+        assert p.min == 1.0
+        assert p.max == 10.0
+        assert p.default == 3.0
+
+    def test_variable_velocity_default_true(self):
+        gen = SpiralGenerator()
+        p = next(p for p in gen.get_parameters() if p.name == "variable_velocity")
+        assert p.default is True
+
+
+# ---------------------------------------------------------------------------
+# White-area skipping tests (task 67.3C)
+# ---------------------------------------------------------------------------
+
+class TestSkipWhite:
+    """Tests for skip_white and white_threshold parameters."""
+
+    def _run(self, image: np.ndarray | None = None, **overrides) -> list:
+        canvas = _make_canvas()
+        img = image if image is not None else _make_gray(100, 100, 128)
+        params: dict = {
+            "_source_image": img,
+            "ring_spacing_mm": 3.0,
+            "center_x_pct": 50.0,
+            "center_y_pct": 50.0,
+            "step_size_mm": 0.5,
+            "amplitude": 1.0,
+            "oscillation_mode": "Sawtooth",
+            "image_fit_mode": "fill",
+            "x_offset_mm": 0.0,
+            "y_offset_mm": 0.0,
+            "variable_velocity": False,
+            "min_velocity": 0.8,
+            "max_velocity": 3.0,
+            "skip_white": True,
+            "white_threshold": 240,
+            "connected_lines": True,
+        }
+        params.update(overrides)
+        return SpiralGenerator().generate(params, canvas)
+
+    def test_skip_white_flattens_oscillation_in_white_areas(self):
+        """With skip_white=True, fully white image → flat spiral (no oscillation)."""
+        bright_img = np.full((100, 100), 255, dtype=np.uint8)
+
+        result_white_skip = self._run(image=bright_img, skip_white=True, white_threshold=240)
+        result_no_skip = self._run(image=bright_img, skip_white=False)
+
+        # Both should still produce a single polyline (connected_lines=True)
+        assert len(result_white_skip) == 1
+        assert len(result_no_skip) == 1
+
+        # With skip_white, all points in white area are flat (no oscillation).
+        # Since bright img has brightness=255 > threshold=240, all points flat.
+        # result_no_skip with bright image also has amplitude=0 effect (1-255/255=0),
+        # so they should be identical.
+        assert len(result_white_skip[0]) == len(result_no_skip[0])
+
+    def test_skip_white_connected_produces_single_polyline(self):
+        """skip_white=True + connected_lines=True → always 1 polyline."""
+        # Half-white, half-dark image
+        img = np.zeros((100, 100), dtype=np.uint8)
+        img[:, 50:] = 255  # right half is white
+
+        result = self._run(image=img, skip_white=True, connected_lines=True)
+        assert len(result) == 1
+
+    def test_skip_white_params_in_parameter_list(self):
+        gen = SpiralGenerator()
+        param_names = {p.name for p in gen.get_parameters()}
+        assert "skip_white" in param_names
+        assert "white_threshold" in param_names
+
+    def test_skip_white_default_true(self):
+        gen = SpiralGenerator()
+        p = next(p for p in gen.get_parameters() if p.name == "skip_white")
+        assert p.default is True
+
+    def test_white_threshold_default_240(self):
+        gen = SpiralGenerator()
+        p = next(p for p in gen.get_parameters() if p.name == "white_threshold")
+        assert p.default == 240
+        assert p.min == 0
+        assert p.max == 255
+
+
+# ---------------------------------------------------------------------------
+# connected_lines tests (task 67.3D)
+# ---------------------------------------------------------------------------
+
+class TestConnectedLines:
+    """Tests for connected_lines parameter."""
+
+    def _run(self, image: np.ndarray | None = None, **overrides) -> list:
+        canvas = _make_canvas()
+        img = image if image is not None else _make_gray(100, 100, 128)
+        params: dict = {
+            "_source_image": img,
+            "ring_spacing_mm": 3.0,
+            "center_x_pct": 50.0,
+            "center_y_pct": 50.0,
+            "step_size_mm": 0.5,
+            "amplitude": 0.8,
+            "oscillation_mode": "Sawtooth",
+            "image_fit_mode": "fill",
+            "x_offset_mm": 0.0,
+            "y_offset_mm": 0.0,
+            "variable_velocity": False,
+            "min_velocity": 0.8,
+            "max_velocity": 3.0,
+            "skip_white": True,
+            "white_threshold": 128,
+            "connected_lines": True,
+        }
+        params.update(overrides)
+        return SpiralGenerator().generate(params, canvas)
+
+    def test_connected_lines_true_single_polyline(self):
+        """connected_lines=True with mixed image → exactly 1 polyline."""
+        # Half black, half white
+        img = np.zeros((100, 100), dtype=np.uint8)
+        img[:, 50:] = 255
+
+        result = self._run(image=img, connected_lines=True)
+        assert len(result) == 1
+
+    def test_connected_lines_false_multiple_polylines(self):
+        """connected_lines=False with white areas → multiple polylines."""
+        # Checkerboard-like: alternating dark/white columns to force many breaks
+        img = np.zeros((100, 100), dtype=np.uint8)
+        for col in range(0, 100, 10):
+            img[:, col:col + 5] = 255  # every other strip is white
+
+        result = self._run(image=img, connected_lines=False, white_threshold=128)
+        # Should produce more than 1 polyline due to white gaps
+        assert len(result) > 1
+
+    def test_connected_lines_false_no_white_areas_still_single(self):
+        """connected_lines=False with fully dark image → 1 polyline (no breaks)."""
+        dark_img = np.zeros((100, 100), dtype=np.uint8)
+        result = self._run(image=dark_img, connected_lines=False, white_threshold=240)
+        # All pixels are 0 which is below threshold, so no breaks
+        assert len(result) == 1
+
+    def test_connected_lines_param_in_parameter_list(self):
+        gen = SpiralGenerator()
+        param_names = {p.name for p in gen.get_parameters()}
+        assert "connected_lines" in param_names
+
+    def test_connected_lines_default_true(self):
+        gen = SpiralGenerator()
+        p = next(p for p in gen.get_parameters() if p.name == "connected_lines")
+        assert p.default is True
+
+    def test_connected_lines_false_total_points_same_as_true(self):
+        """connected_lines=False should have same total points as True (just split)."""
+        img = np.zeros((100, 100), dtype=np.uint8)
+        img[:, 50:] = 255  # right half white
+
+        result_connected = self._run(image=img, connected_lines=True, white_threshold=128)
+        result_broken = self._run(image=img, connected_lines=False, white_threshold=128)
+
+        # connected=True has white points included (flat), connected=False excludes them
+        # Total points in broken mode should be fewer (white areas dropped)
+        total_connected = len(result_connected[0])
+        total_broken = sum(len(p) for p in result_broken)
+        assert total_broken < total_connected
