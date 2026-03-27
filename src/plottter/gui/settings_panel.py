@@ -377,6 +377,11 @@ class SettingsPanel(QScrollArea):
         self._pick_fmm_source_btn: object | None = None  # QPushButton or None
         self._pick_fmm_source_label: object | None = None  # QLabel or None
 
+        # Auto-regenerate other 3D layers state (task 62.2)
+        self._auto_regen_layers: list = []   # pending layers for auto-regen chain
+        self._auto_regen_idx: int = 0
+        self._auto_regen_worker: object | None = None  # active GeneratorWorker or None
+
         # 3D wireframe preview state
         self._wireframe_worker: _WireframeWorker | None = None
         # Debounce timer: 250ms after last camera change, fire wireframe update
@@ -1142,6 +1147,20 @@ class SettingsPanel(QScrollArea):
         )
         self._import_mesh_btn.clicked.connect(self._on_import_mesh)
         cam_form.addRow(self._import_mesh_btn)
+
+        # Auto-regenerate checkbox (task 62.2)
+        self._auto_regen_3d_cb = QCheckBox("Auto-regenerate other 3D layers")
+        self._auto_regen_3d_cb.setToolTip(
+            "After generating this layer, automatically regenerate all other 3D Scene\n"
+            "layers so cross-layer hidden-line removal stays accurate.\n"
+            "Default: off (avoids unexpected slowdowns)."
+        )
+        from PyQt6.QtCore import QSettings
+        self._auto_regen_3d_cb.setChecked(
+            QSettings("Plottter", "Plottter").value("3d/auto_regenerate", False, type=bool)
+        )
+        self._auto_regen_3d_cb.stateChanged.connect(self._on_auto_regen_3d_toggled)
+        cam_form.addRow(self._auto_regen_3d_cb)
 
         self._layout.addWidget(self._3d_camera_group)
         self._3d_camera_group.setVisible(False)
@@ -3033,6 +3052,13 @@ class SettingsPanel(QScrollArea):
                     pass
         self._controller.set_layer_paths(layer_id, paths, "Generate")
 
+        # Auto-regenerate other 3D layers if enabled (task 62.2)
+        if (
+            self._current_mode == "3D Scene"
+            and self._auto_regen_3d_cb.isChecked()
+        ):
+            self._trigger_auto_regen_siblings(layer_id)
+
     def _on_generation_metadata(self, meta: dict, source_layer_id: str) -> None:
         """Handle side-channel metadata emitted by GeneratorWorker after generation.
 
@@ -3041,6 +3067,114 @@ class SettingsPanel(QScrollArea):
         overlay rather than a separate layer.  This handler is kept as a no-op so
         the GeneratorWorker.metadata_ready signal still has a valid connection.
         """
+
+    # ------------------------------------------------------------------
+    # Auto-regenerate other 3D layers (task 62.2)
+    # ------------------------------------------------------------------
+
+    def _on_auto_regen_3d_toggled(self, _state: int) -> None:
+        """Persist the auto-regenerate checkbox state to QSettings."""
+        from PyQt6.QtCore import QSettings
+        settings = QSettings("Plottter", "Plottter")
+        settings.setValue("3d/auto_regenerate", self._auto_regen_3d_cb.isChecked())
+
+    def _trigger_auto_regen_siblings(self, generated_layer_id: str) -> None:
+        """Start sequential regeneration of all 3D layers *except* the one just generated."""
+        # Guard: don't start a new chain while one is already in progress
+        if self._auto_regen_layers:
+            return
+
+        try:
+            project = self._controller.current_project
+        except Exception:
+            return
+        if project is None:
+            return
+
+        siblings = [
+            layer for layer in project.layers
+            if layer.id != generated_layer_id
+            and isinstance(layer.generator_info, dict)
+            and layer.generator_info.get("mode") == "3D Scene"
+        ]
+        if not siblings:
+            return
+
+        n = len(siblings)
+        self._auto_regen_layers = siblings
+        self._auto_regen_idx = 0
+
+        # Show status message
+        mw = self.window()
+        if hasattr(mw, "statusBar"):
+            mw.statusBar().showMessage(
+                f"Auto-regenerating {n} other 3D layer{'s' if n != 1 else ''}…"
+            )
+
+        self._start_auto_regen_next()
+
+    def _start_auto_regen_next(self) -> None:
+        """Start (or continue) the auto-regen chain for sibling 3D layers."""
+        if self._auto_regen_idx >= len(self._auto_regen_layers):
+            self._finish_auto_regen()
+            return
+
+        layer = self._auto_regen_layers[self._auto_regen_idx]
+        info = layer.generator_info
+        params = dict(info.get("params", {}))
+
+        # Inject shared camera
+        try:
+            project = self._controller.current_project
+        except Exception:
+            self._finish_auto_regen()
+            return
+        cam = project.metadata.get("scene3d_camera", {})
+        if cam:
+            params["_camera"] = cam
+
+        # Inject sibling shapes for HLR occlusion
+        params["_sibling_3d_shapes"] = self._build_sibling_3d_shapes(layer.id)
+
+        from plottter.generators.scene3d_generator import Scene3DGenerator
+        from plottter.gui.generator_worker import GeneratorWorker
+
+        generator = Scene3DGenerator()
+        canvas = project.canvas
+        layer_id = layer.id
+
+        worker = GeneratorWorker(generator, params, canvas, parent=self)
+
+        def on_finished(paths: list, lid: str = layer_id) -> None:
+            self._controller.set_layer_paths(lid, paths, "Auto-regenerate 3D Layer")
+            self._auto_regen_idx += 1
+            self._start_auto_regen_next()
+            worker.deleteLater()
+
+        def on_error(_msg: str) -> None:
+            # Skip failed layer and continue
+            self._auto_regen_idx += 1
+            self._start_auto_regen_next()
+            worker.deleteLater()
+
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_error)
+        self._auto_regen_worker = worker
+        worker.start()
+
+    def _finish_auto_regen(self) -> None:
+        """Called when auto-regen chain completes."""
+        n = len(self._auto_regen_layers)
+        done = min(self._auto_regen_idx, n)
+        mw = self.window()
+        if hasattr(mw, "statusBar"):
+            mw.statusBar().showMessage(
+                f"Auto-regenerated {done} 3D layer{'s' if done != 1 else ''} successfully.",
+                5000,
+            )
+        self._auto_regen_layers = []
+        self._auto_regen_idx = 0
+        self._auto_regen_worker = None
 
     # ------------------------------------------------------------------
     # 3D Camera helpers
