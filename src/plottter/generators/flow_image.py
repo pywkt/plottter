@@ -40,11 +40,71 @@ def _sample_image_at(img: np.ndarray, px: float, py: float) -> float:
     return v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) + v01 * (1 - fx) * fy + v11 * fx * fy
 
 
+def _trace_one_direction(
+    field: np.ndarray,
+    img: np.ndarray,
+    x0_mm: float,
+    y0_mm: float,
+    direction: float,
+    step_size_mm: float,
+    max_length_mm: float,
+    draw_x1: float,
+    draw_y1: float,
+    draw_x2: float,
+    draw_y2: float,
+    img_w: int,
+    img_h: int,
+    draw_w: float,
+    draw_h: float,
+    skip_background: bool,
+    bg_threshold: float,
+) -> list[tuple[float, float]]:
+    """Trace a streamline in one direction via direct Euler integration.
+
+    direction: +1.0 for forward, -1.0 for backward along the vector field.
+    Returns list of points (not including the seed point).
+    """
+    pts: list[tuple[float, float]] = []
+    x_mm, y_mm = x0_mm, y0_mm
+    length = 0.0
+
+    while length < max_length_mm:
+        px = max(0.0, min(img_w - 1.0, (x_mm - draw_x1) / draw_w * img_w))
+        py = max(0.0, min(img_h - 1.0, (y_mm - draw_y1) / draw_h * img_h))
+
+        if skip_background and _sample_image_at(img, px, py) >= bg_threshold:
+            break
+
+        # Sample vector field at current position via bilinear interpolation
+        vx = _sample_image_at(field[:, :, 0], px, py)
+        vy = _sample_image_at(field[:, :, 1], px, py)
+        vmag = math.sqrt(vx * vx + vy * vy)
+
+        # Terminate if field magnitude is too weak
+        if vmag < 0.01:
+            break
+
+        # Normalize and step in the given direction
+        vx /= vmag
+        vy /= vmag
+        x_mm += direction * step_size_mm * vx
+        y_mm += direction * step_size_mm * vy
+        length += step_size_mm
+
+        # Terminate if streamline exits canvas bounds
+        if not (draw_x1 <= x_mm <= draw_x2 and draw_y1 <= y_mm <= draw_y2):
+            break
+
+        pts.append((x_mm, y_mm))
+
+    return pts
+
+
 def _generate_flow_streamlines(
     img: np.ndarray,
     num_lines: int,
     step_size_mm: float,
-    max_steps: int,
+    max_length_mm: float,
     curvature_strength: float,
     seed: int,
     skip_background: bool,
@@ -58,6 +118,10 @@ def _generate_flow_streamlines(
     etf_iterations: int = 3,
 ) -> list[Polyline]:
     """Generate streamlines guided by the chosen vector field.
+
+    Uses direct Euler integration along the vector field with bidirectional
+    tracing: each seed point is traced both forward (+v) and backward (-v),
+    producing longer, more natural lines centred on their seed points.
 
     vector_field choices:
     - "Edge Flow (ETF)": coherent ETF tangent field — streamlines follow edges.
@@ -87,16 +151,10 @@ def _generate_flow_streamlines(
     sigma = max(1.0, min(img_w, img_h) * 0.02)
     img_smooth = cv2.GaussianBlur(img, (0, 0), sigma)
 
-    # Compute raw Sobel gradients (before any normalisation)
+    # Compute raw Sobel gradients
     gx_raw = cv2.Sobel(img_smooth, cv2.CV_32F, 1, 0, ksize=3)
     gy_raw = cv2.Sobel(img_smooth, cv2.CV_32F, 0, 1, ksize=3)
-
-    # Gradient magnitude normalised to [0, 1] — used as steering weight so
-    # curvature_strength has a consistent effect regardless of image content.
     grad_mag = np.sqrt(gx_raw ** 2 + gy_raw ** 2)
-    max_mag = float(grad_mag.max())
-    norm_factor = max_mag if max_mag > 0.0 else 1.0
-    mag_norm = (grad_mag / norm_factor).astype(np.float32)
 
     # Build (H, W, 2) unit-direction vector field
     if vector_field == "Edge Flow (ETF)":
@@ -119,64 +177,51 @@ def _generate_flow_streamlines(
     rng = _random.Random(seed)
     polylines: list[Polyline] = []
 
+    # Half the budget per direction so total length <= max_length_mm
+    half_length = max_length_mm / 2.0
+
     for i in range(num_lines):
         if cancelled_callback and cancelled_callback():
             break
         if progress_callback and i % 50 == 0:
             progress_callback(int(i / num_lines * 100))
 
-        # Random start within drawing area
-        x_mm = rng.uniform(draw_x1, draw_x2)
-        y_mm = rng.uniform(draw_y1, draw_y2)
+        # Random seed point within drawing area
+        x_seed = rng.uniform(draw_x1, draw_x2)
+        y_seed = rng.uniform(draw_y1, draw_y2)
 
         # Skip streamlines that start in a background area
         if skip_background:
-            start_px = max(0.0, min(img_w - 1.0, (x_mm - draw_x1) / draw_w * img_w))
-            start_py = max(0.0, min(img_h - 1.0, (y_mm - draw_y1) / draw_h * img_h))
+            start_px = max(0.0, min(img_w - 1.0, (x_seed - draw_x1) / draw_w * img_w))
+            start_py = max(0.0, min(img_h - 1.0, (y_seed - draw_y1) / draw_h * img_h))
             if _sample_image_at(img, start_px, start_py) >= bg_threshold:
                 continue
 
-        # Initial direction: sample the vector field at the seed point
-        px0 = max(0.0, min(img_w - 1.0, (x_mm - draw_x1) / draw_w * img_w))
-        py0 = max(0.0, min(img_h - 1.0, (y_mm - draw_y1) / draw_h * img_h))
-        vx0 = _sample_image_at(field[:, :, 0], px0, py0)
-        vy0 = _sample_image_at(field[:, :, 1], px0, py0)
-        vmag0 = math.sqrt(vx0 * vx0 + vy0 * vy0)
-        angle = math.atan2(vy0, vx0) if vmag0 > 1e-8 else 0.0
+        common_kwargs = dict(
+            field=field,
+            img=img,
+            x0_mm=x_seed,
+            y0_mm=y_seed,
+            step_size_mm=step_size_mm,
+            max_length_mm=half_length,
+            draw_x1=draw_x1,
+            draw_y1=draw_y1,
+            draw_x2=draw_x2,
+            draw_y2=draw_y2,
+            img_w=img_w,
+            img_h=img_h,
+            draw_w=draw_w,
+            draw_h=draw_h,
+            skip_background=skip_background,
+            bg_threshold=bg_threshold,
+        )
 
-        trail: Polyline = [(x_mm, y_mm)]
+        # Bidirectional tracing: forward (+1) and backward (-1) from seed
+        forward_pts = _trace_one_direction(direction=+1.0, **common_kwargs)
+        backward_pts = _trace_one_direction(direction=-1.0, **common_kwargs)
 
-        for _ in range(max_steps):
-            # Map mm position to image pixel coordinates
-            px = (x_mm - draw_x1) / draw_w * img_w
-            py = (y_mm - draw_y1) / draw_h * img_h
-            px = max(0.0, min(img_w - 1.0, px))
-            py = max(0.0, min(img_h - 1.0, py))
-
-            # Terminate if the streamline enters a background area
-            if skip_background and _sample_image_at(img, px, py) >= bg_threshold:
-                break
-
-            # Sample unit direction from field and steering weight from gradient magnitude
-            vx = _sample_image_at(field[:, :, 0], px, py)
-            vy = _sample_image_at(field[:, :, 1], px, py)
-            mag = _sample_image_at(mag_norm, px, py)
-
-            vmag = math.sqrt(vx * vx + vy * vy)
-            if mag > 0.01 and vmag > 1e-8:
-                field_angle = math.atan2(vy, vx)
-                # Steer toward the field direction with strength proportional
-                # to the local gradient magnitude.  This ensures that lines
-                # visibly follow image features wherever edges exist.
-                local_curvature = curvature_strength * mag
-                angle = angle + local_curvature * math.sin(field_angle - angle)
-
-            x_mm += step_size_mm * math.cos(angle)
-            y_mm += step_size_mm * math.sin(angle)
-
-            if not (draw_x1 <= x_mm <= draw_x2 and draw_y1 <= y_mm <= draw_y2):
-                break
-            trail.append((x_mm, y_mm))
+        # Combine: backward (reversed to get correct order) + seed + forward
+        trail: Polyline = list(reversed(backward_pts)) + [(x_seed, y_seed)] + forward_pts
 
         if len(trail) >= 2:
             polylines.append(trail)
@@ -424,17 +469,17 @@ class FlowImageGenerator(Generator):
                 min=0.1,
                 max=10.0,
                 step=0.1,
-                default=1.0,
+                default=0.5,
                 description="Distance between consecutive points along each line in millimeters",
             ),
-            IntParam(
-                name="max_steps",
-                label="Max Steps per Line",
-                min=1,
-                max=2000,
-                step=10,
-                default=300,
-                description="Maximum number of steps per line — controls maximum line length",
+            FloatParam(
+                name="max_length_mm",
+                label="Max Length (mm)",
+                min=2.0,
+                max=100.0,
+                step=1.0,
+                default=20.0,
+                description="Maximum streamline length in mm",
             ),
             FloatParam(
                 name="curvature_strength",
@@ -669,8 +714,8 @@ class FlowImageGenerator(Generator):
                 params={
                     "mode": "flow",
                     "num_lines": 200,
-                    "step_size_mm": 1.0,
-                    "max_steps": 300,
+                    "step_size_mm": 0.5,
+                    "max_length_mm": 20.0,
                     "curvature_strength": 1.0,
                     "amplitude_mm": 3.0,
                     "frequency": 5.0,
@@ -701,7 +746,7 @@ class FlowImageGenerator(Generator):
                     "mode": "flow",
                     "num_lines": 800,
                     "step_size_mm": 0.5,
-                    "max_steps": 300,
+                    "max_length_mm": 20.0,
                     "curvature_strength": 2.0,
                     "amplitude_mm": 3.0,
                     "frequency": 5.0,
@@ -728,13 +773,13 @@ class FlowImageGenerator(Generator):
                 name="Portrait Flow",
                 params={
                     # Moderate line count with high curvature so streamlines
-                    # strongly follow facial contours; longer max_steps allows
+                    # strongly follow facial contours; longer max_length_mm allows
                     # lines to wrap fully around features; contrast boost reveals
                     # soft facial transitions.
                     "mode": "flow",
                     "num_lines": 400,
-                    "step_size_mm": 0.8,
-                    "max_steps": 500,
+                    "step_size_mm": 0.5,
+                    "max_length_mm": 30.0,
                     "curvature_strength": 2.5,
                     "amplitude_mm": 3.0,
                     "frequency": 5.0,
@@ -763,7 +808,7 @@ class FlowImageGenerator(Generator):
                     "mode": "squiggle",
                     "num_lines": 100,
                     "step_size_mm": 1.0,
-                    "max_steps": 300,
+                    "max_length_mm": 20.0,
                     "curvature_strength": 1.0,
                     "amplitude_mm": 4.0,
                     "frequency": 8.0,
@@ -792,7 +837,7 @@ class FlowImageGenerator(Generator):
                     "mode": "squiggle",
                     "num_lines": 200,
                     "step_size_mm": 1.0,
-                    "max_steps": 300,
+                    "max_length_mm": 20.0,
                     "curvature_strength": 1.0,
                     "amplitude_mm": 2.0,
                     "frequency": 15.0,
@@ -824,7 +869,7 @@ class FlowImageGenerator(Generator):
                     "mode": "squiggle",
                     "num_lines": 400,
                     "step_size_mm": 1.0,
-                    "max_steps": 300,
+                    "max_length_mm": 20.0,
                     "curvature_strength": 1.0,
                     "amplitude_mm": 5.0,
                     "frequency": 6.0,
@@ -858,7 +903,7 @@ class FlowImageGenerator(Generator):
                     "mode": "squiggle",
                     "num_lines": 150,
                     "step_size_mm": 1.0,
-                    "max_steps": 300,
+                    "max_length_mm": 20.0,
                     "curvature_strength": 1.0,
                     "amplitude_mm": 3.5,
                     "frequency": 10.0,
@@ -890,7 +935,7 @@ class FlowImageGenerator(Generator):
                     "mode": "squiggle",
                     "num_lines": 250,
                     "step_size_mm": 1.0,
-                    "max_steps": 300,
+                    "max_length_mm": 20.0,
                     "curvature_strength": 1.0,
                     "amplitude_mm": 4.0,
                     "frequency": 7.0,
@@ -922,7 +967,7 @@ class FlowImageGenerator(Generator):
                     "mode": "squiggle",
                     "num_lines": 150,
                     "step_size_mm": 1.0,
-                    "max_steps": 300,
+                    "max_length_mm": 20.0,
                     "curvature_strength": 1.0,
                     "amplitude_mm": 4.0,
                     "frequency": 8.0,
@@ -955,7 +1000,7 @@ class FlowImageGenerator(Generator):
                     "mode": "squiggle",
                     "num_lines": 100,
                     "step_size_mm": 1.0,
-                    "max_steps": 300,
+                    "max_length_mm": 20.0,
                     "curvature_strength": 1.0,
                     "amplitude_mm": 3.0,
                     "frequency": 6.0,
@@ -989,7 +1034,7 @@ class FlowImageGenerator(Generator):
                     "mode": "squiggle",
                     "num_lines": 150,
                     "step_size_mm": 1.0,
-                    "max_steps": 300,
+                    "max_length_mm": 20.0,
                     "curvature_strength": 1.0,
                     "amplitude_mm": 3.5,
                     "frequency": 10.0,
@@ -1021,7 +1066,7 @@ class FlowImageGenerator(Generator):
                     "mode": "squiggle",
                     "num_lines": 80,
                     "step_size_mm": 1.0,
-                    "max_steps": 300,
+                    "max_length_mm": 20.0,
                     "curvature_strength": 1.0,
                     "amplitude_mm": 8.0,
                     "frequency": 4.0,
@@ -1053,7 +1098,7 @@ class FlowImageGenerator(Generator):
                     "mode": "squiggle",
                     "num_lines": 100,
                     "step_size_mm": 1.0,
-                    "max_steps": 300,
+                    "max_length_mm": 20.0,
                     "curvature_strength": 1.0,
                     "amplitude_mm": 5.0,
                     "frequency": 5.0,
@@ -1118,8 +1163,8 @@ class FlowImageGenerator(Generator):
 
         mode = str(params.get("mode", "flow"))
         num_lines = int(params.get("num_lines", 200))
-        step_size_mm = float(params.get("step_size_mm", 1.0))
-        max_steps = int(params.get("max_steps", 300))
+        step_size_mm = float(params.get("step_size_mm", 0.5))
+        max_length_mm = float(params.get("max_length_mm", 20.0))
         curvature_strength = float(params.get("curvature_strength", 1.0))
         amplitude_mm = float(params.get("amplitude_mm", 3.0))
         frequency = float(params.get("frequency", 5.0))
@@ -1166,7 +1211,7 @@ class FlowImageGenerator(Generator):
             etf_kernel_radius = float(params.get("etf_kernel_radius", 5.0))
             etf_iterations = int(params.get("etf_iterations", 3))
             result = _generate_flow_streamlines(
-                source, num_lines, step_size_mm, max_steps, curvature_strength, seed,
+                source, num_lines, step_size_mm, max_length_mm, curvature_strength, seed,
                 skip_background, bg_threshold,
                 canvas, cancelled_callback, progress_callback,
                 img_rect=img_rect,
