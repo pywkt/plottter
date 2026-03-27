@@ -53,8 +53,18 @@ def _generate_flow_streamlines(
     cancelled_callback: Any,
     progress_callback: Any,
     img_rect: "tuple[float, float, float, float] | None" = None,
+    vector_field: str = "Edge Flow (ETF)",
+    etf_kernel_radius: float = 5.0,
+    etf_iterations: int = 3,
 ) -> list[Polyline]:
-    """Generate streamlines deflected by the image gradient."""
+    """Generate streamlines guided by the chosen vector field.
+
+    vector_field choices:
+    - "Edge Flow (ETF)": coherent ETF tangent field — streamlines follow edges.
+    - "Perpendicular Gradient": Sobel tangent (−gy, gx) — follows edges without
+      iterative smoothing.
+    - "Gradient": raw Sobel gradient — streamlines cross edges (legacy behavior).
+    """
     try:
         import cv2
     except ImportError as exc:
@@ -77,17 +87,34 @@ def _generate_flow_streamlines(
     sigma = max(1.0, min(img_w, img_h) * 0.02)
     img_smooth = cv2.GaussianBlur(img, (0, 0), sigma)
 
-    # Compute Sobel gradients on the smoothed image
-    grad_x = cv2.Sobel(img_smooth, cv2.CV_32F, 1, 0, ksize=3)
-    grad_y = cv2.Sobel(img_smooth, cv2.CV_32F, 0, 1, ksize=3)
+    # Compute raw Sobel gradients (before any normalisation)
+    gx_raw = cv2.Sobel(img_smooth, cv2.CV_32F, 1, 0, ksize=3)
+    gy_raw = cv2.Sobel(img_smooth, cv2.CV_32F, 0, 1, ksize=3)
 
-    # Normalise gradient magnitudes to [0, 1] so curvature_strength has a
-    # consistent, predictable effect regardless of image content or size.
-    grad_mag = np.sqrt(grad_x ** 2 + grad_y ** 2)
+    # Gradient magnitude normalised to [0, 1] — used as steering weight so
+    # curvature_strength has a consistent effect regardless of image content.
+    grad_mag = np.sqrt(gx_raw ** 2 + gy_raw ** 2)
     max_mag = float(grad_mag.max())
     norm_factor = max_mag if max_mag > 0.0 else 1.0
-    grad_x = grad_x / norm_factor
-    grad_y = grad_y / norm_factor
+    mag_norm = (grad_mag / norm_factor).astype(np.float32)
+
+    # Build (H, W, 2) unit-direction vector field
+    if vector_field == "Edge Flow (ETF)":
+        from plottter.generators._helpers import _compute_etf
+        img_f = img_smooth.astype(np.float32) / 255.0
+        tx, ty = _compute_etf(img_f, float(etf_kernel_radius), int(etf_iterations))
+        field = np.stack([tx, ty], axis=-1)
+    elif vector_field == "Perpendicular Gradient":
+        # Tangent = (−gy, gx), normalised per-pixel
+        local_mag = grad_mag + 1e-8
+        tx = (-gy_raw / local_mag).astype(np.float32)
+        ty = (gx_raw / local_mag).astype(np.float32)
+        field = np.stack([tx, ty], axis=-1)
+    else:  # "Gradient" — legacy: streamlines cross edges
+        local_mag = grad_mag + 1e-8
+        tx = (gx_raw / local_mag).astype(np.float32)
+        ty = (gy_raw / local_mag).astype(np.float32)
+        field = np.stack([tx, ty], axis=-1)
 
     rng = _random.Random(seed)
     polylines: list[Polyline] = []
@@ -109,8 +136,14 @@ def _generate_flow_streamlines(
             if _sample_image_at(img, start_px, start_py) >= bg_threshold:
                 continue
 
-        # Initial direction: random
-        angle = rng.uniform(0, 2 * math.pi)
+        # Initial direction: sample the vector field at the seed point
+        px0 = max(0.0, min(img_w - 1.0, (x_mm - draw_x1) / draw_w * img_w))
+        py0 = max(0.0, min(img_h - 1.0, (y_mm - draw_y1) / draw_h * img_h))
+        vx0 = _sample_image_at(field[:, :, 0], px0, py0)
+        vy0 = _sample_image_at(field[:, :, 1], px0, py0)
+        vmag0 = math.sqrt(vx0 * vx0 + vy0 * vy0)
+        angle = math.atan2(vy0, vx0) if vmag0 > 1e-8 else 0.0
+
         trail: Polyline = [(x_mm, y_mm)]
 
         for _ in range(max_steps):
@@ -124,19 +157,19 @@ def _generate_flow_streamlines(
             if skip_background and _sample_image_at(img, px, py) >= bg_threshold:
                 break
 
-            # Sample normalised gradient (values in [-1, 1])
-            gx = _sample_image_at(grad_x, px, py)
-            gy = _sample_image_at(grad_y, px, py)
-            mag = math.sqrt(gx * gx + gy * gy)  # already in [0, 1]
+            # Sample unit direction from field and steering weight from gradient magnitude
+            vx = _sample_image_at(field[:, :, 0], px, py)
+            vy = _sample_image_at(field[:, :, 1], px, py)
+            mag = _sample_image_at(mag_norm, px, py)
 
-            if mag > 0.01:
-                grad_angle = math.atan2(gy, gx)
-                # Steer toward the gradient direction with strength proportional
+            vmag = math.sqrt(vx * vx + vy * vy)
+            if mag > 0.01 and vmag > 1e-8:
+                field_angle = math.atan2(vy, vx)
+                # Steer toward the field direction with strength proportional
                 # to the local gradient magnitude.  This ensures that lines
-                # visibly follow image features wherever edges exist, regardless
-                # of whether those regions are bright or dark.
+                # visibly follow image features wherever edges exist.
                 local_curvature = curvature_strength * mag
-                angle = angle + local_curvature * math.sin(grad_angle - angle)
+                angle = angle + local_curvature * math.sin(field_angle - angle)
 
             x_mm += step_size_mm * math.cos(angle)
             y_mm += step_size_mm * math.sin(angle)
@@ -411,6 +444,39 @@ class FlowImageGenerator(Generator):
                 step=0.1,
                 default=1.0,
                 description="How strongly image gradients deflect flow lines — higher values create more dramatic curves following edges",
+            ),
+            ChoiceParam(
+                name="vector_field",
+                label="Vector Field",
+                choices=["Edge Flow (ETF)", "Perpendicular Gradient", "Gradient"],
+                default="Edge Flow (ETF)",
+                visible_when={"mode": ["flow"]},
+                description="Method used to compute the direction field that guides streamlines — Edge Flow (ETF) produces coherent lines that follow edges; Perpendicular Gradient is a fast tangent approximation; Gradient is the raw Sobel output (lines cross edges, legacy behavior)",
+                choice_descriptions={
+                    "Edge Flow (ETF)": "Iterative edge tangent flow — smooths the gradient tangent field so streamlines coherently follow edges across the image",
+                    "Perpendicular Gradient": "Rotate the Sobel gradient 90° to get an edge-tangent direction — faster than ETF but less coherent",
+                    "Gradient": "Raw Sobel gradient direction — streamlines cross edges rather than following them (original behavior)",
+                },
+            ),
+            FloatParam(
+                name="etf_kernel_radius",
+                label="ETF Kernel Radius",
+                min=1.0,
+                max=10.0,
+                step=0.5,
+                default=5.0,
+                visible_when={"vector_field": ["Edge Flow (ETF)"]},
+                description="Spatial scale (pixels) of the ETF smoothing kernel — larger values produce smoother, more global edge flow at the cost of speed",
+            ),
+            IntParam(
+                name="etf_iterations",
+                label="ETF Iterations",
+                min=1,
+                max=10,
+                step=1,
+                default=3,
+                visible_when={"vector_field": ["Edge Flow (ETF)"]},
+                description="Number of ETF smoothing passes — more iterations produce a more globally coherent tangent field; 3 is typically sufficient",
             ),
             FloatParam(
                 name="amplitude_mm",
@@ -1096,11 +1162,17 @@ class FlowImageGenerator(Generator):
                 seed=seed,
             )
         else:
+            vector_field = str(params.get("vector_field", "Edge Flow (ETF)"))
+            etf_kernel_radius = float(params.get("etf_kernel_radius", 5.0))
+            etf_iterations = int(params.get("etf_iterations", 3))
             result = _generate_flow_streamlines(
                 source, num_lines, step_size_mm, max_steps, curvature_strength, seed,
                 skip_background, bg_threshold,
                 canvas, cancelled_callback, progress_callback,
                 img_rect=img_rect,
+                vector_field=vector_field,
+                etf_kernel_radius=etf_kernel_radius,
+                etf_iterations=etf_iterations,
             )
 
         x_off = float(params.get("x_offset_mm", 0.0))
