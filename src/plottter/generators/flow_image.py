@@ -102,13 +102,15 @@ def _trace_one_direction(
 
 def _generate_flow_streamlines(
     img: np.ndarray,
-    num_lines: int,
+    seed_spacing_mm: float,
     step_size_mm: float,
     max_length_mm: float,
     curvature_strength: float,
     seed: int,
     skip_background: bool,
     bg_threshold: float,
+    brightness_threshold: int,
+    density_modulation: bool,
     canvas: Canvas,
     cancelled_callback: Any,
     progress_callback: Any,
@@ -118,6 +120,12 @@ def _generate_flow_streamlines(
     etf_iterations: int = 3,
 ) -> list[Polyline]:
     """Generate streamlines guided by the chosen vector field.
+
+    Uses a jittered grid of seed points for uniform coverage.  When
+    ``density_modulation`` is True the grid is generated at the minimum
+    effective spacing (``seed_spacing_mm * 0.3``) and seeds in bright areas
+    are thinned via rejection sampling so darker regions receive denser lines.
+    Seeds whose brightness exceeds ``brightness_threshold`` are always removed.
 
     Uses direct Euler integration along the vector field with bidirectional
     tracing: each seed point is traced both forward (+v) and backward (-v),
@@ -174,23 +182,72 @@ def _generate_flow_streamlines(
         ty = (gy_raw / local_mag).astype(np.float32)
         field = np.stack([tx, ty], axis=-1)
 
-    rng = _random.Random(seed)
+    rng = np.random.default_rng(seed)
     polylines: list[Polyline] = []
 
     # Half the budget per direction so total length <= max_length_mm
     half_length = max_length_mm / 2.0
 
-    for i in range(num_lines):
+    # -----------------------------------------------------------------------
+    # Build jittered grid of seed candidates
+    # -----------------------------------------------------------------------
+    # When density_modulation is enabled we generate a finer grid (at the
+    # minimum effective spacing = seed_spacing_mm * 0.3) and then thin it via
+    # rejection sampling.  When disabled we use seed_spacing_mm directly.
+    if density_modulation:
+        base_spacing = max(0.1, seed_spacing_mm * 0.3)
+    else:
+        base_spacing = max(0.1, seed_spacing_mm)
+
+    jitter_radius = seed_spacing_mm * 0.3
+    nx = max(1, int(math.ceil(draw_w / base_spacing)))
+    ny = max(1, int(math.ceil(draw_h / base_spacing)))
+
+    seed_candidates: list[tuple[float, float]] = []
+    for iy in range(ny):
+        for ix in range(nx):
+            cx = draw_x1 + (ix + 0.5) * draw_w / nx
+            cy = draw_y1 + (iy + 0.5) * draw_h / ny
+            dx = float(rng.uniform(-jitter_radius, jitter_radius))
+            dy = float(rng.uniform(-jitter_radius, jitter_radius))
+            x = max(draw_x1, min(draw_x2, cx + dx))
+            y = max(draw_y1, min(draw_y2, cy + dy))
+            seed_candidates.append((x, y))
+
+    # -----------------------------------------------------------------------
+    # Filter seeds: brightness threshold + density modulation
+    # -----------------------------------------------------------------------
+    bt_norm = float(brightness_threshold)
+    seeds: list[tuple[float, float]] = []
+    for x_cand, y_cand in seed_candidates:
+        px = max(0.0, min(img_w - 1.0, (x_cand - draw_x1) / draw_w * img_w))
+        py = max(0.0, min(img_h - 1.0, (y_cand - draw_y1) / draw_h * img_h))
+        brightness = _sample_image_at(img, px, py)
+
+        # Hard brightness threshold: skip seeds in bright areas
+        if brightness >= bt_norm:
+            continue
+
+        # Density modulation: rejection-sample brighter areas more aggressively
+        if density_modulation:
+            effective_spacing = seed_spacing_mm * (0.3 + 0.7 * brightness / 255.0)
+            keep_prob = (base_spacing / max(1e-6, effective_spacing)) ** 2
+            if float(rng.random()) > keep_prob:
+                continue
+
+        seeds.append((x_cand, y_cand))
+
+    # -----------------------------------------------------------------------
+    # Trace a streamline from each accepted seed
+    # -----------------------------------------------------------------------
+    total_seeds = max(1, len(seeds))
+    for i, (x_seed, y_seed) in enumerate(seeds):
         if cancelled_callback and cancelled_callback():
             break
         if progress_callback and i % 50 == 0:
-            progress_callback(int(i / num_lines * 100))
+            progress_callback(int(i / total_seeds * 100))
 
-        # Random seed point within drawing area
-        x_seed = rng.uniform(draw_x1, draw_x2)
-        y_seed = rng.uniform(draw_y1, draw_y2)
-
-        # Skip streamlines that start in a background area
+        # Skip streamlines that start in a background area (mid-stream guard)
         if skip_background:
             start_px = max(0.0, min(img_w - 1.0, (x_seed - draw_x1) / draw_w * img_w))
             start_py = max(0.0, min(img_h - 1.0, (y_seed - draw_y1) / draw_h * img_h))
@@ -234,7 +291,6 @@ def _generate_flow_streamlines(
 
 def _compute_squiggle_y_positions(
     img: np.ndarray,
-    num_lines: int,
     draw_y1: float,
     draw_y2: float,
     draw_h: float,
@@ -249,7 +305,14 @@ def _compute_squiggle_y_positions(
     img_h = img.shape[0]
 
     if line_spacing == "Uniform":
-        return [draw_y1 + (i + 0.5) / num_lines * draw_h for i in range(num_lines)]
+        # Use min_spacing_mm as the fixed line spacing — canvas-size adaptive
+        spacing = max(1e-3, min_spacing_mm)
+        y_positions: list[float] = []
+        y = draw_y1
+        while y <= draw_y2:
+            y_positions.append(y)
+            y += spacing
+        return y_positions
 
     # Vertical brightness profile: mean brightness per row.
     vert_profile: np.ndarray = img.mean(axis=1).astype(np.float32)
@@ -305,7 +368,6 @@ def _compute_squiggle_y_positions(
 
 def _generate_squiggle(
     img: np.ndarray,
-    num_lines: int,
     amplitude_mm: float,
     frequency: float,
     wave_spread: int,
@@ -364,7 +426,7 @@ def _generate_squiggle(
 
     # Compute Y positions for all scan lines based on spacing mode.
     y_positions = _compute_squiggle_y_positions(
-        img, num_lines, draw_y1, draw_y2, draw_h,
+        img, draw_y1, draw_y2, draw_h,
         line_spacing, min_spacing_mm, max_spacing_mm,
         group_size, group_gap_mm, group_intra_spacing_mm,
     )
@@ -454,14 +516,15 @@ class FlowImageGenerator(Generator):
                     "squiggle": "Horizontal scanning lines with amplitude and frequency modulated by per-pixel brightness — darker pixels produce larger waves",
                 },
             ),
-            IntParam(
-                name="num_lines",
-                label="Number of Lines",
-                min=1,
-                max=5000,
-                step=10,
-                default=200,
-                description="Number of flow lines or squiggle rows to generate",
+            FloatParam(
+                name="seed_spacing_mm",
+                label="Seed Spacing (mm)",
+                min=0.5,
+                max=10.0,
+                step=0.5,
+                default=2.0,
+                visible_when={"mode": ["flow"]},
+                description="Grid spacing between seed points in mm — smaller values produce more streamlines with uniform spatial coverage",
             ),
             FloatParam(
                 name="step_size_mm",
@@ -569,13 +632,13 @@ class FlowImageGenerator(Generator):
             ),
             FloatParam(
                 name="min_spacing_mm",
-                label="Min Spacing (mm)",
+                label="Line Spacing (mm)",
                 min=0.1,
                 max=10.0,
                 step=0.1,
-                default=0.5,
-                visible_when={"mode": ["squiggle"], "line_spacing": ["Adaptive", "Adaptive + Grouped"]},
-                description="Minimum spacing between scan lines in dark areas (mm) — controls the densest possible line density",
+                default=1.0,
+                visible_when={"mode": ["squiggle"]},
+                description="Spacing between scan lines in mm — for Uniform mode this is the fixed spacing; for Adaptive modes this is the minimum (darkest areas)",
             ),
             FloatParam(
                 name="max_spacing_mm",
@@ -642,6 +705,23 @@ class FlowImageGenerator(Generator):
                 default=240.0,
                 visible_when={"skip_background": [True]},
                 description="Brightness threshold above which pixels are treated as background (0–255)",
+            ),
+            IntParam(
+                name="brightness_threshold",
+                label="Seed Brightness Threshold",
+                min=0,
+                max=255,
+                step=1,
+                default=230,
+                visible_when={"mode": ["flow"]},
+                description="Seed points whose image brightness exceeds this value are discarded — removes streamlines from white/near-white areas (0–255)",
+            ),
+            BoolParam(
+                name="density_modulation",
+                label="Density Modulation",
+                default=True,
+                visible_when={"mode": ["flow"]},
+                description="When enabled, vary seed density based on local brightness — darker areas receive more streamlines, brighter areas fewer",
             ),
             IntParam(
                 name="seed",
@@ -713,7 +793,8 @@ class FlowImageGenerator(Generator):
                 name="Default Flow",
                 params={
                     "mode": "flow",
-                    "num_lines": 200,
+                    "seed_spacing_mm": 2.0,
+                    "num_lines": 100,
                     "step_size_mm": 0.5,
                     "max_length_mm": 20.0,
                     "curvature_strength": 1.0,
@@ -729,6 +810,8 @@ class FlowImageGenerator(Generator):
                     "displacement_variation": 0.0,
                     "skip_background": True,
                     "bg_threshold": 240.0,
+                    "brightness_threshold": 230,
+                    "density_modulation": True,
                     "seed": 42,
                     "invert": False,
                     "brightness": 0.0,
@@ -741,10 +824,12 @@ class FlowImageGenerator(Generator):
             Preset(
                 name="Dense Flow",
                 params={
-                    # More lines with shorter max path to cover the canvas densely.
-                    # Higher curvature_strength makes lines follow edges more tightly.
+                    # Tight seed spacing with higher curvature so streamlines
+                    # densely follow edges; density modulation concentrates lines
+                    # in dark subject areas.
                     "mode": "flow",
-                    "num_lines": 800,
+                    "seed_spacing_mm": 1.5,
+                    "num_lines": 100,
                     "step_size_mm": 0.5,
                     "max_length_mm": 20.0,
                     "curvature_strength": 2.0,
@@ -760,6 +845,8 @@ class FlowImageGenerator(Generator):
                     "displacement_variation": 0.0,
                     "skip_background": True,
                     "bg_threshold": 240.0,
+                    "brightness_threshold": 230,
+                    "density_modulation": True,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -772,12 +859,13 @@ class FlowImageGenerator(Generator):
             Preset(
                 name="Portrait Flow",
                 params={
-                    # Moderate line count with high curvature so streamlines
+                    # Moderate seed spacing with high curvature so streamlines
                     # strongly follow facial contours; longer max_length_mm allows
                     # lines to wrap fully around features; contrast boost reveals
                     # soft facial transitions.
                     "mode": "flow",
-                    "num_lines": 400,
+                    "seed_spacing_mm": 2.5,
+                    "num_lines": 100,
                     "step_size_mm": 0.5,
                     "max_length_mm": 30.0,
                     "curvature_strength": 2.5,
@@ -793,6 +881,8 @@ class FlowImageGenerator(Generator):
                     "displacement_variation": 0.0,
                     "skip_background": True,
                     "bg_threshold": 240.0,
+                    "brightness_threshold": 230,
+                    "density_modulation": True,
                     "seed": 7,
                     "invert": False,
                     "brightness": 0.0,
@@ -806,6 +896,7 @@ class FlowImageGenerator(Generator):
                 name="Classic Squiggle",
                 params={
                     "mode": "squiggle",
+                    "seed_spacing_mm": 2.0,
                     "num_lines": 100,
                     "step_size_mm": 1.0,
                     "max_length_mm": 20.0,
@@ -822,6 +913,8 @@ class FlowImageGenerator(Generator):
                     "displacement_variation": 0.0,
                     "skip_background": True,
                     "bg_threshold": 240.0,
+                    "brightness_threshold": 230,
+                    "density_modulation": True,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -835,6 +928,7 @@ class FlowImageGenerator(Generator):
                 name="Fine Squiggle",
                 params={
                     "mode": "squiggle",
+                    "seed_spacing_mm": 2.0,
                     "num_lines": 200,
                     "step_size_mm": 1.0,
                     "max_length_mm": 20.0,
@@ -851,6 +945,8 @@ class FlowImageGenerator(Generator):
                     "displacement_variation": 0.0,
                     "skip_background": True,
                     "bg_threshold": 240.0,
+                    "brightness_threshold": 230,
+                    "density_modulation": True,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -867,6 +963,7 @@ class FlowImageGenerator(Generator):
                     # produce a heavily-filled look that works well for landscape
                     # photos and high-contrast illustrations.
                     "mode": "squiggle",
+                    "seed_spacing_mm": 2.0,
                     "num_lines": 400,
                     "step_size_mm": 1.0,
                     "max_length_mm": 20.0,
@@ -883,6 +980,8 @@ class FlowImageGenerator(Generator):
                     "displacement_variation": 0.0,
                     "skip_background": True,
                     "bg_threshold": 240.0,
+                    "brightness_threshold": 230,
+                    "density_modulation": True,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -901,6 +1000,7 @@ class FlowImageGenerator(Generator):
                     # influences its neighbouring scan lines, avoiding jarring
                     # amplitude steps at sharp boundaries.
                     "mode": "squiggle",
+                    "seed_spacing_mm": 2.0,
                     "num_lines": 150,
                     "step_size_mm": 1.0,
                     "max_length_mm": 20.0,
@@ -917,6 +1017,8 @@ class FlowImageGenerator(Generator):
                     "displacement_variation": 0.0,
                     "skip_background": True,
                     "bg_threshold": 240.0,
+                    "brightness_threshold": 230,
+                    "density_modulation": True,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -933,6 +1035,7 @@ class FlowImageGenerator(Generator):
                     # the horizon gradient; wave_spread=2 smooths the transition
                     # between sky and ground without blurring detail away.
                     "mode": "squiggle",
+                    "seed_spacing_mm": 2.0,
                     "num_lines": 250,
                     "step_size_mm": 1.0,
                     "max_length_mm": 20.0,
@@ -949,6 +1052,8 @@ class FlowImageGenerator(Generator):
                     "displacement_variation": 0.0,
                     "skip_background": False,
                     "bg_threshold": 240.0,
+                    "brightness_threshold": 230,
+                    "density_modulation": True,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -965,6 +1070,7 @@ class FlowImageGenerator(Generator):
                     # lines, light areas get sparse lines.  wave_spread=2 softens
                     # the spacing transitions at brightness boundaries.
                     "mode": "squiggle",
+                    "seed_spacing_mm": 2.0,
                     "num_lines": 150,
                     "step_size_mm": 1.0,
                     "max_length_mm": 20.0,
@@ -981,6 +1087,8 @@ class FlowImageGenerator(Generator):
                     "displacement_variation": 0.0,
                     "skip_background": True,
                     "bg_threshold": 240.0,
+                    "brightness_threshold": 230,
+                    "density_modulation": True,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -998,6 +1106,7 @@ class FlowImageGenerator(Generator):
                     # displacement_variation makes each line within a group
                     # wave at a different amplitude for a hand-drawn feel.
                     "mode": "squiggle",
+                    "seed_spacing_mm": 2.0,
                     "num_lines": 100,
                     "step_size_mm": 1.0,
                     "max_length_mm": 20.0,
@@ -1014,6 +1123,8 @@ class FlowImageGenerator(Generator):
                     "displacement_variation": 0.6,
                     "skip_background": True,
                     "bg_threshold": 240.0,
+                    "brightness_threshold": 230,
+                    "density_modulation": True,
                     "seed": 42,
                     "invert": False,
                     "brightness": 0.0,
@@ -1032,6 +1143,7 @@ class FlowImageGenerator(Generator):
                     # wave_spread=3 and moderate displacement_variation produce
                     # smooth tonal gradients across facial contours.
                     "mode": "squiggle",
+                    "seed_spacing_mm": 2.0,
                     "num_lines": 150,
                     "step_size_mm": 1.0,
                     "max_length_mm": 20.0,
@@ -1048,6 +1160,8 @@ class FlowImageGenerator(Generator):
                     "displacement_variation": 0.3,
                     "skip_background": True,
                     "bg_threshold": 240.0,
+                    "brightness_threshold": 230,
+                    "density_modulation": True,
                     "seed": 7,
                     "invert": False,
                     "brightness": 0.0,
@@ -1064,6 +1178,7 @@ class FlowImageGenerator(Generator):
                     # line has a wildly different amplitude, creating an energetic
                     # chaotic texture.  Low frequency gives broad, sweeping waves.
                     "mode": "squiggle",
+                    "seed_spacing_mm": 2.0,
                     "num_lines": 80,
                     "step_size_mm": 1.0,
                     "max_length_mm": 20.0,
@@ -1080,6 +1195,8 @@ class FlowImageGenerator(Generator):
                     "displacement_variation": 1.0,
                     "skip_background": False,
                     "bg_threshold": 240.0,
+                    "brightness_threshold": 230,
+                    "density_modulation": True,
                     "seed": 13,
                     "invert": False,
                     "brightness": 0.0,
@@ -1096,6 +1213,7 @@ class FlowImageGenerator(Generator):
                     # variation.  skip_background prevents lines in blank areas,
                     # so the subject floats on white paper with gestural marks.
                     "mode": "squiggle",
+                    "seed_spacing_mm": 2.0,
                     "num_lines": 100,
                     "step_size_mm": 1.0,
                     "max_length_mm": 20.0,
@@ -1112,6 +1230,8 @@ class FlowImageGenerator(Generator):
                     "displacement_variation": 0.8,
                     "skip_background": True,
                     "bg_threshold": 240.0,
+                    "brightness_threshold": 230,
+                    "density_modulation": True,
                     "seed": 99,
                     "invert": False,
                     "brightness": 0.0,
@@ -1162,7 +1282,7 @@ class FlowImageGenerator(Generator):
         source = to_grayscale(img)
 
         mode = str(params.get("mode", "flow"))
-        num_lines = int(params.get("num_lines", 200))
+        seed_spacing_mm = float(params.get("seed_spacing_mm", 2.0))
         step_size_mm = float(params.get("step_size_mm", 0.5))
         max_length_mm = float(params.get("max_length_mm", 20.0))
         curvature_strength = float(params.get("curvature_strength", 1.0))
@@ -1172,6 +1292,8 @@ class FlowImageGenerator(Generator):
         seed = int(params.get("seed", 42))
         skip_background = bool(params.get("skip_background", True))
         bg_threshold = float(params.get("bg_threshold", 240.0))
+        brightness_threshold = int(params.get("brightness_threshold", 230))
+        density_modulation = bool(params.get("density_modulation", True))
         line_spacing = str(params.get("line_spacing", "Uniform"))
         min_spacing_mm = float(params.get("min_spacing_mm", 0.5))
         max_spacing_mm = float(params.get("max_spacing_mm", 5.0))
@@ -1211,8 +1333,9 @@ class FlowImageGenerator(Generator):
             etf_kernel_radius = float(params.get("etf_kernel_radius", 5.0))
             etf_iterations = int(params.get("etf_iterations", 3))
             result = _generate_flow_streamlines(
-                source, num_lines, step_size_mm, max_length_mm, curvature_strength, seed,
+                source, seed_spacing_mm, step_size_mm, max_length_mm, curvature_strength, seed,
                 skip_background, bg_threshold,
+                brightness_threshold, density_modulation,
                 canvas, cancelled_callback, progress_callback,
                 img_rect=img_rect,
                 vector_field=vector_field,

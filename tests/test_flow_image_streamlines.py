@@ -6,6 +6,7 @@ Covers:
 - Early termination at canvas bounds
 - max_length_mm parameter replacing max_steps
 - step_size_mm=0.5 default produces smoother curves
+- Grid-based seeding: uniform coverage, density modulation, brightness threshold
 """
 
 from __future__ import annotations
@@ -37,6 +38,56 @@ def _uniform_field(direction_deg: float, h: int = 50, w: int = 50) -> np.ndarray
 def _black_image(h: int = 50, w: int = 50) -> np.ndarray:
     """Black (all-zero) image — no background pixels, always content."""
     return np.zeros((h, w), dtype=np.uint8)
+
+
+def _white_image(h: int = 50, w: int = 50) -> np.ndarray:
+    """White (all-255) image — all pixels are background."""
+    return np.full((h, w), 255, dtype=np.uint8)
+
+
+def _gradient_image(h: int = 50, w: int = 50) -> np.ndarray:
+    """Left-dark, right-bright horizontal gradient image."""
+    return np.tile(np.linspace(0, 255, w, dtype=np.uint8), (h, 1))
+
+
+def _run_streamlines(
+    seed_spacing_mm: float = 5.0,
+    step_size_mm: float = 0.5,
+    max_length_mm: float = 20.0,
+    skip_background: bool = False,
+    brightness_threshold: int = 255,
+    density_modulation: bool = False,
+    img: np.ndarray | None = None,
+    canvas: Canvas | None = None,
+    seed: int = 42,
+):
+    """Helper: run streamline generation with optional parameters."""
+    try:
+        import cv2  # noqa: F401
+    except ImportError:
+        pytest.skip("opencv-python not available")
+
+    if canvas is None:
+        canvas = _make_canvas()
+    if img is None:
+        img = _gradient_image()
+
+    return _generate_flow_streamlines(
+        img=img,
+        seed_spacing_mm=seed_spacing_mm,
+        step_size_mm=step_size_mm,
+        max_length_mm=max_length_mm,
+        curvature_strength=1.0,
+        seed=seed,
+        skip_background=skip_background,
+        bg_threshold=240.0,
+        brightness_threshold=brightness_threshold,
+        density_modulation=density_modulation,
+        canvas=canvas,
+        cancelled_callback=None,
+        progress_callback=None,
+        vector_field="Gradient",
+    )
 
 
 class TestTraceOneDirection:
@@ -134,56 +185,15 @@ class TestTraceOneDirection:
 class TestGenerateFlowStreamlines:
     """Integration tests for _generate_flow_streamlines."""
 
-    def _run_streamlines(
-        self,
-        num_lines: int = 10,
-        step_size_mm: float = 0.5,
-        max_length_mm: float = 20.0,
-        field_dir_deg: float = 0.0,
-        skip_background: bool = False,
-    ):
-        """Helper: run streamline generation with a uniform right-pointing field."""
-        try:
-            import cv2  # noqa: F401
-        except ImportError:
-            pytest.skip("opencv-python not available")
-
-        canvas = _make_canvas()
-        img_h, img_w = 50, 50
-        img = _black_image(img_h, img_w)
-
-        # Build a synthetic image that produces a known gradient when Sobel is applied.
-        # A horizontal gradient image (bright on right, dark on left) will produce
-        # a gradient mostly in the X direction.  We test with a real image to ensure
-        # the full pipeline works.
-        img_gradient = np.tile(
-            np.linspace(0, 255, img_w, dtype=np.uint8), (img_h, 1)
-        )
-
-        return _generate_flow_streamlines(
-            img=img_gradient,
-            num_lines=num_lines,
-            step_size_mm=step_size_mm,
-            max_length_mm=max_length_mm,
-            curvature_strength=1.0,
-            seed=42,
-            skip_background=skip_background,
-            bg_threshold=240.0,
-            canvas=canvas,
-            cancelled_callback=None,
-            progress_callback=None,
-            vector_field="Gradient",
-        )
-
     def test_produces_polylines(self) -> None:
         """Should produce at least some polylines."""
-        result = self._run_streamlines(num_lines=20)
+        result = _run_streamlines(seed_spacing_mm=5.0)
         assert isinstance(result, list)
         assert len(result) > 0
 
     def test_all_polylines_have_at_least_two_points(self) -> None:
         """Every returned polyline should have at least 2 points."""
-        result = self._run_streamlines(num_lines=20)
+        result = _run_streamlines(seed_spacing_mm=5.0)
         for polyline in result:
             assert len(polyline) >= 2
 
@@ -210,13 +220,15 @@ class TestGenerateFlowStreamlines:
 
         result = _generate_flow_streamlines(
             img=img,
-            num_lines=30,
+            seed_spacing_mm=10.0,
             step_size_mm=step_size_mm,
             max_length_mm=max_length_mm,
             curvature_strength=1.0,
             seed=7,
             skip_background=False,
             bg_threshold=240.0,
+            brightness_threshold=255,
+            density_modulation=False,
             canvas=canvas,
             cancelled_callback=None,
             progress_callback=None,
@@ -253,13 +265,15 @@ class TestGenerateFlowStreamlines:
         )
         result = _generate_flow_streamlines(
             img=img,
-            num_lines=50,
+            seed_spacing_mm=5.0,
             step_size_mm=0.5,
             max_length_mm=40.0,
             curvature_strength=1.0,
             seed=0,
             skip_background=False,
             bg_threshold=240.0,
+            brightness_threshold=255,
+            density_modulation=False,
             canvas=canvas,
             cancelled_callback=None,
             progress_callback=None,
@@ -283,9 +297,10 @@ class TestGenerateFlowStreamlines:
             np.linspace(0, 200, 50, dtype=np.uint8), (50, 1)
         )
         common = dict(
-            img=img, num_lines=20, max_length_mm=10.0,
+            img=img, seed_spacing_mm=10.0, max_length_mm=10.0,
             curvature_strength=1.0, seed=42,
             skip_background=False, bg_threshold=240.0,
+            brightness_threshold=255, density_modulation=False,
             canvas=canvas, cancelled_callback=None, progress_callback=None,
             vector_field="Gradient",
         )
@@ -314,13 +329,15 @@ class TestGenerateFlowStreamlines:
 
         result = _generate_flow_streamlines(
             img=img,
-            num_lines=20,
+            seed_spacing_mm=10.0,
             step_size_mm=step_size_mm,
             max_length_mm=max_length_mm,
             curvature_strength=1.0,
             seed=0,
             skip_background=False,
             bg_threshold=240.0,
+            brightness_threshold=255,
+            density_modulation=False,
             canvas=canvas,
             cancelled_callback=None,
             progress_callback=None,
@@ -340,6 +357,202 @@ class TestGenerateFlowStreamlines:
             )
 
 
+class TestGridSeeding:
+    """Tests for the new grid-based seeding behavior."""
+
+    def test_grid_produces_uniform_coverage(self) -> None:
+        """Grid seeding should distribute seeds more uniformly than random.
+
+        Check that seeds cover the canvas reasonably by verifying that the
+        canvas is divided into quadrants and each quadrant has roughly equal
+        seed representation in the produced streamlines.
+        """
+        try:
+            import cv2  # noqa: F401
+        except ImportError:
+            pytest.skip("opencv-python not available")
+
+        canvas = _make_canvas(100.0, 100.0)
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        mid_x = (draw_x1 + draw_x2) / 2
+        mid_y = (draw_y1 + draw_y2) / 2
+
+        # Use a gradient image with actual pixel variation so the vector field is
+        # non-trivial and streamlines can be traced.  Set brightness_threshold=255
+        # so all seeds survive filtering.
+        img = _gradient_image(50, 50)
+        result = _generate_flow_streamlines(
+            img=img,
+            seed_spacing_mm=10.0,  # coarse grid → manageable number of seeds
+            step_size_mm=1.0,
+            max_length_mm=5.0,
+            curvature_strength=1.0,
+            seed=42,
+            skip_background=False,
+            bg_threshold=260.0,
+            brightness_threshold=255,
+            density_modulation=False,
+            canvas=canvas,
+            cancelled_callback=None,
+            progress_callback=None,
+            vector_field="Gradient",
+        )
+
+        # Count which quadrant each streamline's first point falls in
+        q = [0, 0, 0, 0]  # TL, TR, BL, BR
+        for polyline in result:
+            x, y = polyline[0]
+            if x < mid_x and y < mid_y:
+                q[0] += 1
+            elif x >= mid_x and y < mid_y:
+                q[1] += 1
+            elif x < mid_x and y >= mid_y:
+                q[2] += 1
+            else:
+                q[3] += 1
+
+        # Each quadrant should have at least 1 streamline
+        assert all(count >= 1 for count in q), (
+            f"Uneven quadrant coverage: {q}"
+        )
+
+        # Max/min ratio should be reasonable (not all in one quadrant)
+        total = sum(q)
+        if total > 0:
+            max_frac = max(q) / total
+            assert max_frac < 0.6, f"Too concentrated in one quadrant: {q}"
+
+    def test_smaller_spacing_produces_more_seeds(self) -> None:
+        """seed_spacing_mm=1.0 should produce more seeds than spacing=5.0."""
+        try:
+            import cv2  # noqa: F401
+        except ImportError:
+            pytest.skip("opencv-python not available")
+
+        # Use a gradient image so the vector field is non-trivial and streamlines
+        # can be traced; brightness_threshold=255 keeps all seeds
+        img = _gradient_image(50, 50)
+        canvas = _make_canvas(50.0, 50.0)
+
+        result_dense = _generate_flow_streamlines(
+            img=img,
+            seed_spacing_mm=1.0,
+            step_size_mm=0.5,
+            max_length_mm=5.0,
+            curvature_strength=1.0,
+            seed=0,
+            skip_background=False,
+            bg_threshold=260.0,
+            brightness_threshold=255,
+            density_modulation=False,
+            canvas=canvas,
+            cancelled_callback=None,
+            progress_callback=None,
+            vector_field="Gradient",
+        )
+
+        result_sparse = _generate_flow_streamlines(
+            img=img,
+            seed_spacing_mm=5.0,
+            step_size_mm=0.5,
+            max_length_mm=5.0,
+            curvature_strength=1.0,
+            seed=0,
+            skip_background=False,
+            bg_threshold=260.0,
+            brightness_threshold=255,
+            density_modulation=False,
+            canvas=canvas,
+            cancelled_callback=None,
+            progress_callback=None,
+            vector_field="Gradient",
+        )
+
+        assert len(result_dense) > len(result_sparse), (
+            f"Dense ({len(result_dense)}) should exceed sparse ({len(result_sparse)})"
+        )
+
+    def test_brightness_threshold_zero_removes_all_seeds_from_white_image(self) -> None:
+        """brightness_threshold=0 should remove all seeds from a white image."""
+        try:
+            import cv2  # noqa: F401
+        except ImportError:
+            pytest.skip("opencv-python not available")
+
+        img = _white_image(50, 50)
+        canvas = _make_canvas(50.0, 50.0)
+
+        result = _generate_flow_streamlines(
+            img=img,
+            seed_spacing_mm=2.0,
+            step_size_mm=0.5,
+            max_length_mm=10.0,
+            curvature_strength=1.0,
+            seed=42,
+            skip_background=False,
+            bg_threshold=260.0,  # high bg_threshold so skip_background never triggers
+            brightness_threshold=0,  # threshold=0 → everything >= 0 is removed
+            density_modulation=False,
+            canvas=canvas,
+            cancelled_callback=None,
+            progress_callback=None,
+            vector_field="Gradient",
+        )
+
+        assert len(result) == 0, (
+            f"Expected 0 streamlines from white image with threshold=0, got {len(result)}"
+        )
+
+    def test_density_modulation_produces_more_lines_in_dark_areas(self) -> None:
+        """With density_modulation=True, dark areas should get more streamlines."""
+        try:
+            import cv2  # noqa: F401
+        except ImportError:
+            pytest.skip("opencv-python not available")
+
+        # Left half black (dark), right half grey (bright ~128)
+        h, w = 50, 50
+        img = np.zeros((h, w), dtype=np.uint8)
+        img[:, w // 2:] = 128
+
+        canvas = _make_canvas(100.0, 100.0)
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        mid_x = (draw_x1 + draw_x2) / 2
+
+        result = _generate_flow_streamlines(
+            img=img,
+            seed_spacing_mm=2.0,
+            step_size_mm=0.5,
+            max_length_mm=5.0,
+            curvature_strength=1.0,
+            seed=0,
+            skip_background=False,
+            bg_threshold=255.0,
+            brightness_threshold=255,
+            density_modulation=True,
+            canvas=canvas,
+            cancelled_callback=None,
+            progress_callback=None,
+            vector_field="Gradient",
+        )
+
+        # Count streamlines in dark (left) vs bright (right) halves
+        dark_count = 0
+        bright_count = 0
+        for polyline in result:
+            # Use the first point to determine which half it's in
+            x0 = polyline[0][0]
+            if x0 < mid_x:
+                dark_count += 1
+            else:
+                bright_count += 1
+
+        # Dark area should have significantly more streamlines
+        assert dark_count > bright_count, (
+            f"Expected more streamlines in dark areas: dark={dark_count}, bright={bright_count}"
+        )
+
+
 class TestParameterDefinitions:
     """Verify updated parameter definitions in FlowImageGenerator."""
 
@@ -356,6 +569,45 @@ class TestParameterDefinitions:
         gen = FlowImageGenerator()
         param_names = [p.name for p in gen.get_parameters()]
         assert "max_steps" not in param_names
+
+    def test_seed_spacing_mm_param_exists(self) -> None:
+        """seed_spacing_mm should be a defined parameter."""
+        from plottter.generators.flow_image import FlowImageGenerator
+        gen = FlowImageGenerator()
+        param_names = [p.name for p in gen.get_parameters()]
+        assert "seed_spacing_mm" in param_names
+
+    def test_brightness_threshold_param_exists(self) -> None:
+        """brightness_threshold should be a defined parameter."""
+        from plottter.generators.flow_image import FlowImageGenerator
+        gen = FlowImageGenerator()
+        param_names = [p.name for p in gen.get_parameters()]
+        assert "brightness_threshold" in param_names
+
+    def test_density_modulation_param_exists(self) -> None:
+        """density_modulation should be a defined parameter."""
+        from plottter.generators.flow_image import FlowImageGenerator
+        gen = FlowImageGenerator()
+        param_names = [p.name for p in gen.get_parameters()]
+        assert "density_modulation" in param_names
+
+    def test_seed_spacing_mm_default(self) -> None:
+        """seed_spacing_mm default should be 2.0."""
+        from plottter.generators.flow_image import FlowImageGenerator
+        gen = FlowImageGenerator()
+        for p in gen.get_parameters():
+            if p.name == "seed_spacing_mm":
+                assert p.default == 2.0, f"Expected 2.0, got {p.default}"
+                break
+
+    def test_brightness_threshold_default(self) -> None:
+        """brightness_threshold default should be 230."""
+        from plottter.generators.flow_image import FlowImageGenerator
+        gen = FlowImageGenerator()
+        for p in gen.get_parameters():
+            if p.name == "brightness_threshold":
+                assert p.default == 230, f"Expected 230, got {p.default}"
+                break
 
     def test_step_size_mm_default_is_half(self) -> None:
         """step_size_mm default should be 0.5."""
@@ -374,6 +626,34 @@ class TestParameterDefinitions:
             if p.name == "max_length_mm":
                 assert p.default == 20.0, f"Expected 20.0, got {p.default}"
                 break
+
+    def test_presets_use_seed_spacing_mm_for_flow(self) -> None:
+        """All flow presets should have seed_spacing_mm."""
+        from plottter.generators.flow_image import FlowImageGenerator
+        gen = FlowImageGenerator()
+        for preset in gen.get_presets():
+            if preset.params.get("mode") == "flow":
+                assert "seed_spacing_mm" in preset.params, (
+                    f"Flow preset '{preset.name}' missing seed_spacing_mm"
+                )
+
+    def test_presets_have_brightness_threshold(self) -> None:
+        """All presets should have brightness_threshold."""
+        from plottter.generators.flow_image import FlowImageGenerator
+        gen = FlowImageGenerator()
+        for preset in gen.get_presets():
+            assert "brightness_threshold" in preset.params, (
+                f"Preset '{preset.name}' missing brightness_threshold"
+            )
+
+    def test_presets_have_density_modulation(self) -> None:
+        """All presets should have density_modulation."""
+        from plottter.generators.flow_image import FlowImageGenerator
+        gen = FlowImageGenerator()
+        for preset in gen.get_presets():
+            assert "density_modulation" in preset.params, (
+                f"Preset '{preset.name}' missing density_modulation"
+            )
 
     def test_presets_use_max_length_mm(self) -> None:
         """All presets should have max_length_mm, not max_steps."""
