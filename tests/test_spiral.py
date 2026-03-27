@@ -338,6 +338,44 @@ class TestSpiralGeneratorGenerate:
         presets = gen.get_presets()
         assert len(presets) > 0
 
+    def test_ring_spacing_controls_ring_distance(self):
+        """ring_spacing_mm sets the actual radial distance between successive rings."""
+        ring_spacing = 6.0
+        canvas = _make_canvas(200.0, 200.0)
+        params = {
+            "ring_spacing_mm": ring_spacing,
+            "center_x_pct": 50.0,
+            "center_y_pct": 50.0,
+            "step_size_mm": 0.1,  # fine steps for accurate measurement
+            "amplitude": 0.0,
+            "oscillation_mode": "Sawtooth",
+            "variable_velocity": False,
+            "skip_white": False,
+            "connected_lines": True,
+            "image_fit_mode": "fill",
+            "x_offset_mm": 0.0,
+            "y_offset_mm": 0.0,
+        }
+        result = SpiralGenerator().generate(params, canvas)
+        poly = result[0]
+
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        cx = (draw_x1 + draw_x2) / 2.0
+        cy = (draw_y1 + draw_y2) / 2.0
+        radii = [math.sqrt((x - cx) ** 2 + (y - cy) ** 2) for x, y in poly]
+
+        # Find the point closest to each ring crossing radius n*ring_spacing
+        # and verify successive gaps equal ring_spacing.
+        crossing_radii = [
+            min(radii, key=lambda r, t=n * ring_spacing: abs(r - t))
+            for n in range(1, 5)
+        ]
+        for i in range(1, len(crossing_radii)):
+            gap = crossing_radii[i] - crossing_radii[i - 1]
+            assert abs(gap - ring_spacing) < ring_spacing * 0.1, (
+                f"Ring gap {gap:.2f} mm differs from ring_spacing {ring_spacing}"
+            )
+
 
 # ---------------------------------------------------------------------------
 # _sample_image_at unit tests (task 67.2)
@@ -780,3 +818,174 @@ class TestConnectedLines:
         total_connected = len(result_connected[0])
         total_broken = sum(len(p) for p in result_broken)
         assert total_broken < total_connected
+
+
+# ---------------------------------------------------------------------------
+# Preset tests (task 67.4A/B)
+# ---------------------------------------------------------------------------
+
+class TestPresets:
+    """Tests for get_presets() — task 67.4A."""
+
+    def test_all_required_preset_names_present(self):
+        gen = SpiralGenerator()
+        names = {p.name for p in gen.get_presets()}
+        for required in ("Portrait", "Bold Spiral", "Fine Detail", "Sine Wave", "Minimal"):
+            assert required in names, f"Missing preset: {required}"
+
+    def test_all_presets_generate_valid_nonempty_output(self):
+        """Every preset must produce at least one non-empty polyline."""
+        gen = SpiralGenerator()
+        canvas = _make_canvas()
+        img = _make_gray(100, 100, 128)
+        for preset in gen.get_presets():
+            params = dict(preset.params)
+            params["_source_image"] = img
+            result = gen.generate(params, canvas)
+            assert len(result) > 0, f"Preset '{preset.name}' returned no polylines"
+            total_pts = sum(len(p) for p in result)
+            assert total_pts > 0, f"Preset '{preset.name}' returned only empty polylines"
+
+    def test_generator_registered_and_accessible(self):
+        """Spiral generator must be in the GENERATORS registry."""
+        assert "Spiral" in GENERATORS
+        assert GENERATORS["Spiral"] is SpiralGenerator
+
+    def test_portrait_preset_params(self):
+        gen = SpiralGenerator()
+        p = next(pr for pr in gen.get_presets() if pr.name == "Portrait")
+        assert p.params["ring_spacing_mm"] == 2.5
+        assert p.params["amplitude"] == 0.9
+        assert p.params["oscillation_mode"] == "Sawtooth"
+        assert p.params["variable_velocity"] is True
+        assert p.params["skip_white"] is True
+        assert p.params["white_threshold"] == 230
+
+    def test_bold_spiral_preset_params(self):
+        gen = SpiralGenerator()
+        p = next(pr for pr in gen.get_presets() if pr.name == "Bold Spiral")
+        assert p.params["ring_spacing_mm"] == 4.0
+        assert p.params["amplitude"] == 1.2
+        assert p.params["variable_velocity"] is True
+        assert p.params["min_velocity"] == 0.5
+        assert p.params["max_velocity"] == 4.0
+
+    def test_fine_detail_preset_params(self):
+        gen = SpiralGenerator()
+        p = next(pr for pr in gen.get_presets() if pr.name == "Fine Detail")
+        assert p.params["ring_spacing_mm"] == 1.5
+        assert p.params["amplitude"] == 0.7
+        assert p.params["oscillation_mode"] == "Sine"
+        assert p.params["step_size_mm"] == 0.3
+        assert p.params["variable_velocity"] is True
+
+    def test_sine_wave_preset_params(self):
+        gen = SpiralGenerator()
+        p = next(pr for pr in gen.get_presets() if pr.name == "Sine Wave")
+        assert p.params["ring_spacing_mm"] == 3.0
+        assert p.params["amplitude"] == 0.8
+        assert p.params["oscillation_mode"] == "Sine"
+        assert p.params["variable_velocity"] is False
+
+    def test_minimal_preset_params(self):
+        gen = SpiralGenerator()
+        p = next(pr for pr in gen.get_presets() if pr.name == "Minimal")
+        assert p.params["ring_spacing_mm"] == 5.0
+        assert p.params["amplitude"] == 0.6
+        assert p.params["oscillation_mode"] == "Sawtooth"
+        assert p.params["skip_white"] is True
+        assert p.params["white_threshold"] == 200
+        assert p.params["connected_lines"] is True
+
+
+# ---------------------------------------------------------------------------
+# Fit mode tests (task 67.4C-g)
+# ---------------------------------------------------------------------------
+
+class TestFitMode:
+    """Tests that image_fit_mode is respected in the spiral generator."""
+
+    def _run(self, canvas: Canvas, img: np.ndarray, fit_mode: str) -> list:
+        params = {
+            "_source_image": img,
+            "ring_spacing_mm": 3.0,
+            "center_x_pct": 50.0,
+            "center_y_pct": 50.0,
+            "step_size_mm": 0.5,
+            "amplitude": 0.0,
+            "oscillation_mode": "Sawtooth",
+            "variable_velocity": False,
+            "skip_white": False,
+            "connected_lines": True,
+            "image_fit_mode": fit_mode,
+            "image_width_mm": 80.0,
+            "image_height_mm": 80.0,
+            "image_offset_x_mm": 0.0,
+            "image_offset_y_mm": 0.0,
+            "x_offset_mm": 0.0,
+            "y_offset_mm": 0.0,
+        }
+        return SpiralGenerator().generate(params, canvas)
+
+    def test_fit_mode_spiral_smaller_than_fill(self):
+        """'fit' on a wide canvas with a tall image → smaller max radius than 'fill'."""
+        # Wide canvas (2:1), tall image (1:4 pixels) — fit letterboxes to narrow strip
+        canvas = _make_canvas(200.0, 100.0)
+        img = _make_gray(200, 50, 128)  # 50px wide × 200px tall
+
+        result_fill = self._run(canvas, img, "fill")
+        result_fit = self._run(canvas, img, "fit")
+
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        cx = (draw_x1 + draw_x2) / 2.0
+        cy = (draw_y1 + draw_y2) / 2.0
+
+        max_r_fill = max(math.sqrt((x - cx) ** 2 + (y - cy) ** 2) for x, y in result_fill[0])
+        max_r_fit = max(math.sqrt((x - cx) ** 2 + (y - cy) ** 2) for x, y in result_fit[0])
+
+        # fit image rect is much smaller → spiral reaches a smaller radius
+        assert max_r_fit < max_r_fill
+
+    def test_fill_mode_covers_full_drawing_area(self):
+        """'fill' mode: spiral should reach near the drawing-area corners."""
+        canvas = _make_canvas(200.0, 200.0)
+        img = _make_gray(100, 100, 128)
+        result = self._run(canvas, img, "fill")
+
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        cx = (draw_x1 + draw_x2) / 2.0
+        cy = (draw_y1 + draw_y2) / 2.0
+        expected_max_r = max(
+            math.sqrt((c[0] - cx) ** 2 + (c[1] - cy) ** 2)
+            for c in [(draw_x1, draw_y1), (draw_x2, draw_y1),
+                      (draw_x1, draw_y2), (draw_x2, draw_y2)]
+        )
+        max_r_found = max(math.sqrt((x - cx) ** 2 + (y - cy) ** 2) for x, y in result[0])
+        assert max_r_found >= expected_max_r * 0.9
+
+    def test_fit_mode_output_bounded_by_image_rect(self):
+        """All output points with fit mode must lie within the image rect's bounding circle."""
+        from plottter.generators._helpers import compute_image_rect
+
+        canvas = _make_canvas(200.0, 100.0)
+        img = _make_gray(200, 50, 128)  # 50px wide × 200px tall
+        result = self._run(canvas, img, "fit")
+
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        img_x1, img_y1, img_x2, img_y2 = compute_image_rect(
+            "fit", 50, 200, draw_x1, draw_y1, draw_x2, draw_y2
+        )
+        cx = (img_x1 + img_x2) / 2.0
+        cy = (img_y1 + img_y2) / 2.0
+        # max_radius = distance from image rect center to its farthest corner
+        max_r = max(
+            math.sqrt((c[0] - cx) ** 2 + (c[1] - cy) ** 2)
+            for c in [(img_x1, img_y1), (img_x2, img_y1),
+                      (img_x1, img_y2), (img_x2, img_y2)]
+        )
+        for poly in result:
+            for x, y in poly:
+                r = math.sqrt((x - cx) ** 2 + (y - cy) ** 2)
+                assert r <= max_r + 0.5, (
+                    f"Point ({x:.1f}, {y:.1f}) at r={r:.1f} exceeds image rect max_r={max_r:.1f}"
+                )

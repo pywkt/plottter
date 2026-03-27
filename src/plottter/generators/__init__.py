@@ -48,7 +48,7 @@ def _import_builtin_generators() -> None:
     from plottter.generators import penrose as _penrose  # noqa: F401
     from plottter.generators.halftone import HalftoneGenerator  # noqa: F401
     from plottter.generators.triangulated_hatch import MosaicHatchGenerator  # noqa: F401
-    from plottter.generators import spiral as _spiral  # noqa: F401
+    from plottter.generators.spiral import SpiralGenerator  # noqa: F401
 
 
 def load_plugins(extra_dirs=None) -> list[str]:
