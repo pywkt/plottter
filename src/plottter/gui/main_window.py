@@ -26,7 +26,7 @@ from plottter.gui.layer_panel import LayerPanel
 from plottter.gui.mode_panel import ModePanel
 from plottter.gui.project_controller import ProjectController
 from plottter.gui.settings_panel import SettingsPanel
-from plottter.models import Layer, Project
+from plottter.models import Canvas, Layer, Project
 from plottter.models.path import Polyline
 
 
@@ -688,6 +688,10 @@ class MainWindow(QMainWindow):
         self._act_canvas_settings.triggered.connect(self._on_canvas_settings)
         edit_menu.addAction(self._act_canvas_settings)
 
+        self._act_rotate_canvas = QAction("&Rotate Canvas (Swap Dimensions)", self)
+        self._act_rotate_canvas.triggered.connect(self._on_rotate_canvas)
+        edit_menu.addAction(self._act_rotate_canvas)
+
         self._act_preferences = QAction("&Preferences…", self)
         self._act_preferences.setShortcut(QKeySequence("Ctrl+,"))
         self._act_preferences.triggered.connect(self._on_preferences)
@@ -1284,10 +1288,21 @@ class MainWindow(QMainWindow):
 
     def _on_canvas_settings(self) -> None:
         from plottter.gui.dialogs.new_project import NewProjectDialog
-        dialog = NewProjectDialog(self)
+        current_canvas = self._controller.current_project.canvas
+        dialog = NewProjectDialog(self, initial_canvas=current_canvas)
         if dialog.exec() == NewProjectDialog.DialogCode.Accepted:
             canvas = dialog.get_canvas()
             self._controller.set_canvas(canvas)
+
+    def _on_rotate_canvas(self) -> None:
+        canvas = self._controller.current_project.canvas
+        new_canvas = Canvas(
+            width_mm=canvas.height_mm,
+            height_mm=canvas.width_mm,
+            margin_mm=canvas.margin_mm,
+            paper_preset=canvas.paper_preset,
+        )
+        self._controller.set_canvas(new_canvas, description="Rotate Canvas")
 
     def _on_preferences(self) -> None:
         from plottter.gui.dialogs.preferences import PreferencesDialog

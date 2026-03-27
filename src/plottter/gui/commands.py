@@ -169,9 +169,10 @@ class SetCanvasCommand(QUndoCommand):
         controller: ProjectController,
         new_canvas: Canvas,
         old_canvas: Canvas,
+        description: str = "Canvas Settings",
         parent: QUndoCommand | None = None,
     ) -> None:
-        super().__init__("Canvas Settings", parent)
+        super().__init__(description, parent)
         self._controller = controller
         self._new_canvas = new_canvas
         self._old_canvas = old_canvas

@@ -22,12 +22,18 @@ from plottter.models.canvas import Canvas, PAPER_PRESETS
 class NewProjectDialog(QDialog):
     """Dialog for creating a new project with paper size and margin settings."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        initial_canvas: Canvas | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("New Project")
         self.setMinimumWidth(320)
         self._unit = "mm"
         self._setup_ui()
+        if initial_canvas is not None:
+            self._apply_canvas(initial_canvas)
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -173,6 +179,39 @@ class NewProjectDialog(QDialog):
         self._height_spin.setSuffix(suffix)
         self._margin_spin.setSuffix(suffix)
         self._unit = new_unit
+
+    def _apply_canvas(self, canvas: Canvas) -> None:
+        """Pre-populate dialog fields from an existing canvas."""
+        preset = canvas.paper_preset
+        all_presets = [self._preset_combo.itemText(i) for i in range(self._preset_combo.count())]
+        if preset not in all_presets:
+            preset = "Custom"
+
+        self._preset_combo.blockSignals(True)
+        self._preset_combo.setCurrentText(preset)
+        self._preset_combo.blockSignals(False)
+
+        is_custom = preset == "Custom"
+        self._width_spin.setReadOnly(not is_custom)
+        self._height_spin.setReadOnly(not is_custom)
+
+        self._width_spin.blockSignals(True)
+        self._height_spin.blockSignals(True)
+        self._width_spin.setValue(canvas.width_mm)
+        self._height_spin.setValue(canvas.height_mm)
+        self._width_spin.blockSignals(False)
+        self._height_spin.blockSignals(False)
+
+        self._margin_spin.setValue(canvas.margin_mm)
+
+        self._portrait_radio.blockSignals(True)
+        self._landscape_radio.blockSignals(True)
+        if canvas.width_mm > canvas.height_mm:
+            self._landscape_radio.setChecked(True)
+        else:
+            self._portrait_radio.setChecked(True)
+        self._portrait_radio.blockSignals(False)
+        self._landscape_radio.blockSignals(False)
 
     def get_canvas(self) -> Canvas:
         """Return a Canvas from the dialog's current settings."""

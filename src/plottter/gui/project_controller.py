@@ -330,11 +330,11 @@ class ProjectController(QObject):
     # Canvas management (undo-aware)
     # ------------------------------------------------------------------
 
-    def set_canvas(self, canvas: Canvas) -> None:
+    def set_canvas(self, canvas: Canvas, description: str = "Canvas Settings") -> None:
         """Replace the canvas and emit canvas_changed (undoable)."""
         old_canvas = copy.copy(self._project.canvas)
         from plottter.gui.commands import SetCanvasCommand
-        cmd = SetCanvasCommand(self, canvas, old_canvas)
+        cmd = SetCanvasCommand(self, canvas, old_canvas, description=description)
         self._undo_stack.push(cmd)
 
     # ------------------------------------------------------------------
