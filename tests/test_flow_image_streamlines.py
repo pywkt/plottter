@@ -666,3 +666,164 @@ class TestParameterDefinitions:
             assert "max_steps" not in preset.params, (
                 f"Preset '{preset.name}' still has max_steps"
             )
+
+    def test_separation_distance_mm_param_exists(self) -> None:
+        """separation_distance_mm should be a defined parameter."""
+        from plottter.generators.flow_image import FlowImageGenerator
+        gen = FlowImageGenerator()
+        param_names = [p.name for p in gen.get_parameters()]
+        assert "separation_distance_mm" in param_names
+
+    def test_separation_distance_mm_default(self) -> None:
+        """separation_distance_mm default should be 0.8."""
+        from plottter.generators.flow_image import FlowImageGenerator
+        gen = FlowImageGenerator()
+        for p in gen.get_parameters():
+            if p.name == "separation_distance_mm":
+                assert p.default == 0.8, f"Expected 0.8, got {p.default}"
+                break
+
+    def test_flow_presets_have_separation_distance_mm(self) -> None:
+        """All flow presets should include separation_distance_mm."""
+        from plottter.generators.flow_image import FlowImageGenerator
+        gen = FlowImageGenerator()
+        for preset in gen.get_presets():
+            if preset.params.get("mode") == "flow":
+                assert "separation_distance_mm" in preset.params, (
+                    f"Flow preset '{preset.name}' missing separation_distance_mm"
+                )
+
+
+class TestSeparationFilter:
+    """Tests for the _filter_streamlines_by_separation helper."""
+
+    def test_closer_than_separation_removes_one(self) -> None:
+        """Two streamlines with midpoints closer than separation_distance → one removed."""
+        from plottter.generators.flow_image import _filter_streamlines_by_separation
+
+        # Two streamlines centred 0.3 mm apart
+        sl1: list[tuple[float, float]] = [(0.0, 0.0), (1.0, 0.0)]   # midpoint (0.5, 0.0)
+        sl2: list[tuple[float, float]] = [(0.2, 0.0), (1.2, 0.0)]   # midpoint (0.7, 0.0) — 0.2 mm apart
+        streamlines = [sl1, sl2]
+        brightnesses = [100.0, 100.0]  # same brightness
+
+        result = _filter_streamlines_by_separation(streamlines, brightnesses, 0.5)
+        assert len(result) == 1, f"Expected 1 streamline after filter, got {len(result)}"
+
+    def test_farther_than_separation_keeps_both(self) -> None:
+        """Two streamlines with midpoints farther apart than separation_distance → both kept."""
+        from plottter.generators.flow_image import _filter_streamlines_by_separation
+
+        # Two streamlines whose midpoints are 5 mm apart
+        sl1: list[tuple[float, float]] = [(0.0, 0.0), (2.0, 0.0)]   # midpoint (1.0, 0.0)
+        sl2: list[tuple[float, float]] = [(5.0, 0.0), (7.0, 0.0)]   # midpoint (6.0, 0.0) — 5 mm apart
+        streamlines = [sl1, sl2]
+        brightnesses = [100.0, 100.0]
+
+        result = _filter_streamlines_by_separation(streamlines, brightnesses, 1.0)
+        assert len(result) == 2, f"Expected 2 streamlines after filter, got {len(result)}"
+
+    def test_darkest_area_streamline_wins_conflict(self) -> None:
+        """When two streamlines compete, the one in the darker area survives."""
+        from plottter.generators.flow_image import _filter_streamlines_by_separation
+
+        # Two very close streamlines (midpoints 0.1 mm apart)
+        sl_dark: list[tuple[float, float]] = [(0.0, 0.0), (1.0, 0.0)]   # midpoint (0.5, 0.0), dark seed
+        sl_bright: list[tuple[float, float]] = [(0.05, 0.0), (1.05, 0.0)]  # midpoint (0.55, 0.0), bright seed
+
+        # dark seed has lower brightness value → should be processed first → wins
+        streamlines = [sl_bright, sl_dark]  # bright listed first
+        brightnesses = [200.0, 50.0]        # bright=200, dark=50
+
+        result = _filter_streamlines_by_separation(streamlines, brightnesses, 1.0)
+        assert len(result) == 1, f"Expected 1 streamline, got {len(result)}"
+        # The surviving streamline should be sl_dark (second in original order)
+        assert result[0] == sl_dark, "Dark-area streamline should survive the conflict"
+
+    def test_no_overlapping_midpoints(self) -> None:
+        """After filtering, no two accepted streamlines share a midpoint within separation_distance."""
+        from plottter.generators.flow_image import _filter_streamlines_by_separation
+        import math
+
+        separation = 2.0
+        # Build 20 streamlines with midpoints spread 0.5 mm apart (so many will be filtered)
+        streamlines = []
+        brightnesses = []
+        for i in range(20):
+            x = float(i) * 0.5
+            sl = [(x, 0.0), (x + 1.0, 0.0)]  # midpoint at (x + 0.5, 0.0)
+            streamlines.append(sl)
+            brightnesses.append(float(i * 10))  # different brightnesses
+
+        result = _filter_streamlines_by_separation(streamlines, brightnesses, separation)
+
+        # Verify no two accepted midpoints are closer than separation
+        midpoints = []
+        for sl in result:
+            mid_idx = len(sl) // 2
+            midpoints.append(sl[mid_idx])
+
+        for a in range(len(midpoints)):
+            for b in range(a + 1, len(midpoints)):
+                mx1, my1 = midpoints[a]
+                mx2, my2 = midpoints[b]
+                dist = math.hypot(mx2 - mx1, my2 - my1)
+                assert dist >= separation - 1e-9, (
+                    f"Midpoints {a} and {b} are only {dist:.3f} mm apart "
+                    f"(separation={separation})"
+                )
+
+    def test_zero_separation_distance_keeps_all(self) -> None:
+        """separation_distance_mm=0 disables the filter — all streamlines are returned."""
+        from plottter.generators.flow_image import _filter_streamlines_by_separation
+
+        streamlines = [[(float(i), 0.0), (float(i) + 0.1, 0.0)] for i in range(5)]
+        brightnesses = [float(i * 10) for i in range(5)]
+
+        result = _filter_streamlines_by_separation(streamlines, brightnesses, 0.0)
+        assert len(result) == len(streamlines)
+
+    def test_empty_streamlines_returns_empty(self) -> None:
+        """Empty input returns empty output without errors."""
+        from plottter.generators.flow_image import _filter_streamlines_by_separation
+
+        result = _filter_streamlines_by_separation([], [], 1.0)
+        assert result == []
+
+
+class TestSeparationFilterIntegration:
+    """Integration tests: separation filter applied via _generate_flow_streamlines."""
+
+    def test_large_separation_reduces_streamline_count(self) -> None:
+        """A large separation_distance_mm should produce fewer streamlines than no filter."""
+        try:
+            import cv2  # noqa: F401
+        except ImportError:
+            pytest.skip("opencv-python not available")
+
+        canvas = _make_canvas(100.0, 100.0)
+        img = _gradient_image(50, 50)
+        common = dict(
+            img=img,
+            seed_spacing_mm=3.0,
+            step_size_mm=0.5,
+            max_length_mm=10.0,
+            curvature_strength=1.0,
+            seed=42,
+            skip_background=False,
+            bg_threshold=240.0,
+            brightness_threshold=255,
+            density_modulation=False,
+            canvas=canvas,
+            cancelled_callback=None,
+            progress_callback=None,
+            vector_field="Gradient",
+        )
+
+        result_unfiltered = _generate_flow_streamlines(**common, separation_distance_mm=0.0)
+        result_filtered = _generate_flow_streamlines(**common, separation_distance_mm=10.0)
+
+        assert len(result_filtered) < len(result_unfiltered), (
+            f"Filtered ({len(result_filtered)}) should be fewer than "
+            f"unfiltered ({len(result_unfiltered)})"
+        )

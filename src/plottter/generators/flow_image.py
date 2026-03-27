@@ -100,6 +100,65 @@ def _trace_one_direction(
     return pts
 
 
+def _filter_streamlines_by_separation(
+    streamlines: list[Polyline],
+    brightnesses: list[float],
+    separation_distance_mm: float,
+) -> list[Polyline]:
+    """Remove streamlines whose midpoint is too close to an already-accepted one.
+
+    Processes in brightness-priority order (darkest first — lower value first)
+    so that when two streamlines compete for the same region the one in the
+    darker area is kept.  Proximity is measured between streamline *midpoints*
+    using a KD-tree for O(n log n) queries.
+
+    Parameters
+    ----------
+    streamlines:
+        Polylines to filter.
+    brightnesses:
+        Per-streamline brightness at the seed point (0–255; 0 = black).
+    separation_distance_mm:
+        Minimum allowed distance between accepted midpoints (mm).
+    """
+    from scipy.spatial import cKDTree
+
+    if not streamlines or separation_distance_mm <= 0.0:
+        return streamlines
+
+    n = len(streamlines)
+
+    # Compute midpoint for each streamline
+    midpoints: list[tuple[float, float]] = []
+    for sl in streamlines:
+        mid_idx = len(sl) // 2
+        midpoints.append(sl[mid_idx])
+
+    # Process darkest first (ascending brightness)
+    order = sorted(range(n), key=lambda i: float(brightnesses[i]))
+
+    accepted_midpoints: list[list[float]] = []
+    accepted_indices: set[int] = set()
+
+    for i in order:
+        mx, my = midpoints[i]
+
+        if not accepted_midpoints:
+            accepted_midpoints.append([mx, my])
+            accepted_indices.add(i)
+            continue
+
+        tree = cKDTree(accepted_midpoints)
+        dist, _ = tree.query([mx, my], k=1)
+
+        if dist >= separation_distance_mm:
+            accepted_midpoints.append([mx, my])
+            accepted_indices.add(i)
+
+    # Return accepted streamlines in original order
+    return [streamlines[i] for i in range(n) if i in accepted_indices]
+
+
 def _generate_flow_streamlines(
     img: np.ndarray,
     seed_spacing_mm: float,
@@ -118,6 +177,7 @@ def _generate_flow_streamlines(
     vector_field: str = "Edge Flow (ETF)",
     etf_kernel_radius: float = 5.0,
     etf_iterations: int = 3,
+    separation_distance_mm: float = 0.0,
 ) -> list[Polyline]:
     """Generate streamlines guided by the chosen vector field.
 
@@ -219,6 +279,7 @@ def _generate_flow_streamlines(
     # -----------------------------------------------------------------------
     bt_norm = float(brightness_threshold)
     seeds: list[tuple[float, float]] = []
+    seed_brightnesses: list[float] = []
     for x_cand, y_cand in seed_candidates:
         px = max(0.0, min(img_w - 1.0, (x_cand - draw_x1) / draw_w * img_w))
         py = max(0.0, min(img_h - 1.0, (y_cand - draw_y1) / draw_h * img_h))
@@ -236,11 +297,13 @@ def _generate_flow_streamlines(
                 continue
 
         seeds.append((x_cand, y_cand))
+        seed_brightnesses.append(brightness)
 
     # -----------------------------------------------------------------------
     # Trace a streamline from each accepted seed
     # -----------------------------------------------------------------------
     total_seeds = max(1, len(seeds))
+    polyline_brightnesses: list[float] = []
     for i, (x_seed, y_seed) in enumerate(seeds):
         if cancelled_callback and cancelled_callback():
             break
@@ -282,6 +345,16 @@ def _generate_flow_streamlines(
 
         if len(trail) >= 2:
             polylines.append(trail)
+            polyline_brightnesses.append(seed_brightnesses[i])
+
+    # -----------------------------------------------------------------------
+    # Separation filter: remove streamlines whose midpoint is too close to
+    # an already-accepted one, processing darkest-first so dark-area lines win
+    # -----------------------------------------------------------------------
+    if separation_distance_mm > 0.0:
+        polylines = _filter_streamlines_by_separation(
+            polylines, polyline_brightnesses, separation_distance_mm
+        )
 
     if progress_callback:
         progress_callback(100)
@@ -723,6 +796,16 @@ class FlowImageGenerator(Generator):
                 visible_when={"mode": ["flow"]},
                 description="When enabled, vary seed density based on local brightness — darker areas receive more streamlines, brighter areas fewer",
             ),
+            FloatParam(
+                name="separation_distance_mm",
+                label="Separation Distance (mm)",
+                min=0.2,
+                max=5.0,
+                step=0.1,
+                default=0.8,
+                visible_when={"mode": ["flow"]},
+                description="Minimum distance between streamline midpoints — streamlines closer than this are removed to prevent tangling; dark-area streamlines are kept over bright-area ones when they conflict",
+            ),
             IntParam(
                 name="seed",
                 label="Random Seed",
@@ -812,6 +895,7 @@ class FlowImageGenerator(Generator):
                     "bg_threshold": 240.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
+                    "separation_distance_mm": 0.8,
                     "seed": 42,
                     "invert": False,
                     "brightness": 0.0,
@@ -847,6 +931,7 @@ class FlowImageGenerator(Generator):
                     "bg_threshold": 240.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
+                    "separation_distance_mm": 0.8,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -883,6 +968,7 @@ class FlowImageGenerator(Generator):
                     "bg_threshold": 240.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
+                    "separation_distance_mm": 0.8,
                     "seed": 7,
                     "invert": False,
                     "brightness": 0.0,
@@ -915,6 +1001,7 @@ class FlowImageGenerator(Generator):
                     "bg_threshold": 240.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
+                    "separation_distance_mm": 0.8,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -947,6 +1034,7 @@ class FlowImageGenerator(Generator):
                     "bg_threshold": 240.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
+                    "separation_distance_mm": 0.8,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -982,6 +1070,7 @@ class FlowImageGenerator(Generator):
                     "bg_threshold": 240.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
+                    "separation_distance_mm": 0.8,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -1019,6 +1108,7 @@ class FlowImageGenerator(Generator):
                     "bg_threshold": 240.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
+                    "separation_distance_mm": 0.8,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -1054,6 +1144,7 @@ class FlowImageGenerator(Generator):
                     "bg_threshold": 240.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
+                    "separation_distance_mm": 0.8,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -1089,6 +1180,7 @@ class FlowImageGenerator(Generator):
                     "bg_threshold": 240.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
+                    "separation_distance_mm": 0.8,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
@@ -1125,6 +1217,7 @@ class FlowImageGenerator(Generator):
                     "bg_threshold": 240.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
+                    "separation_distance_mm": 0.8,
                     "seed": 42,
                     "invert": False,
                     "brightness": 0.0,
@@ -1162,6 +1255,7 @@ class FlowImageGenerator(Generator):
                     "bg_threshold": 240.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
+                    "separation_distance_mm": 0.8,
                     "seed": 7,
                     "invert": False,
                     "brightness": 0.0,
@@ -1197,6 +1291,7 @@ class FlowImageGenerator(Generator):
                     "bg_threshold": 240.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
+                    "separation_distance_mm": 0.8,
                     "seed": 13,
                     "invert": False,
                     "brightness": 0.0,
@@ -1232,6 +1327,7 @@ class FlowImageGenerator(Generator):
                     "bg_threshold": 240.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
+                    "separation_distance_mm": 0.8,
                     "seed": 99,
                     "invert": False,
                     "brightness": 0.0,
@@ -1332,6 +1428,7 @@ class FlowImageGenerator(Generator):
             vector_field = str(params.get("vector_field", "Edge Flow (ETF)"))
             etf_kernel_radius = float(params.get("etf_kernel_radius", 5.0))
             etf_iterations = int(params.get("etf_iterations", 3))
+            separation_distance_mm = float(params.get("separation_distance_mm", 0.8))
             result = _generate_flow_streamlines(
                 source, seed_spacing_mm, step_size_mm, max_length_mm, curvature_strength, seed,
                 skip_background, bg_threshold,
@@ -1341,6 +1438,7 @@ class FlowImageGenerator(Generator):
                 vector_field=vector_field,
                 etf_kernel_radius=etf_kernel_radius,
                 etf_iterations=etf_iterations,
+                separation_distance_mm=separation_distance_mm,
             )
 
         x_off = float(params.get("x_offset_mm", 0.0))
