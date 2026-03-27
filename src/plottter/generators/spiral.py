@@ -20,6 +20,22 @@ from plottter.generators.base import (
 from plottter.models import Canvas, Polyline
 
 
+def _sample_image_at(img: np.ndarray, px: float, py: float) -> float:
+    """Bilinear sample a grayscale image at non-integer pixel coordinates."""
+    h, w = img.shape[:2]
+    x0 = max(0, min(int(px), w - 1))
+    y0 = max(0, min(int(py), h - 1))
+    x1 = min(x0 + 1, w - 1)
+    y1 = min(y0 + 1, h - 1)
+    fx = px - int(px)
+    fy = py - int(py)
+    v00 = float(img[y0, x0])
+    v10 = float(img[y0, x1])
+    v01 = float(img[y1, x0])
+    v11 = float(img[y1, x1])
+    return v00 * (1 - fx) * (1 - fy) + v10 * fx * (1 - fy) + v01 * (1 - fx) * fy + v11 * fx * fy
+
+
 def _trace_spiral(
     center_x_mm: float,
     center_y_mm: float,
@@ -212,6 +228,23 @@ class SpiralGenerator(Generator):
                 randomizable=False,
                 description="Vertical offset from centered position (fit/custom mode, mm)",
             ),
+            # --- Oscillation params ---
+            FloatParam(
+                name="amplitude",
+                label="Amplitude",
+                min=0.01,
+                max=2.0,
+                step=0.01,
+                default=0.8,
+                description="Oscillation amplitude relative to ring spacing. Higher = more fill in dark areas.",
+            ),
+            ChoiceParam(
+                name="oscillation_mode",
+                label="Oscillation Mode",
+                choices=["Sawtooth", "Sine", "Square"],
+                default="Sawtooth",
+                description="Waveform shape for perpendicular oscillation",
+            ),
             # --- Output placement params ---
             FloatParam(
                 name="x_offset_mm",
@@ -244,6 +277,8 @@ class SpiralGenerator(Generator):
                     "center_x_pct": 50.0,
                     "center_y_pct": 50.0,
                     "step_size_mm": 0.5,
+                    "amplitude": 0.8,
+                    "oscillation_mode": "Sawtooth",
                     "invert": False,
                     "brightness": 0.0,
                     "contrast": 0.0,
@@ -264,6 +299,8 @@ class SpiralGenerator(Generator):
                     "center_x_pct": 50.0,
                     "center_y_pct": 50.0,
                     "step_size_mm": 0.2,
+                    "amplitude": 0.8,
+                    "oscillation_mode": "Sawtooth",
                     "invert": False,
                     "brightness": 0.0,
                     "contrast": 0.0,
@@ -284,6 +321,8 @@ class SpiralGenerator(Generator):
                     "center_x_pct": 50.0,
                     "center_y_pct": 50.0,
                     "step_size_mm": 1.0,
+                    "amplitude": 0.8,
+                    "oscillation_mode": "Sawtooth",
                     "invert": False,
                     "brightness": 0.0,
                     "contrast": 0.0,
@@ -376,8 +415,50 @@ class SpiralGenerator(Generator):
         if not spiral_pts:
             return []
 
-        # Build single polyline from spiral points (strip theta)
-        polyline: Polyline = [(x, y) for x, y, _ in spiral_pts]
+        amplitude = float(params.get("amplitude", 0.8))
+        oscillation_mode = str(params.get("oscillation_mode", "Sawtooth"))
+
+        # Convert source image to grayscale for brightness sampling
+        gray: np.ndarray | None = None
+        if source is not None and amplitude > 0.0:
+            if source.ndim == 3:
+                gray = np.mean(source[:, :, :3], axis=2).astype(np.float32)
+            else:
+                gray = source.astype(np.float32)
+
+        # Image rect dimensions for mm→pixel conversion
+        img_rect_w = img_x2 - img_x1
+        img_rect_h = img_y2 - img_y1
+
+        # Build single polyline with optional perpendicular oscillation
+        polyline: Polyline = []
+        for step_idx, (x, y, theta) in enumerate(spiral_pts):
+            if gray is not None and amplitude > 0.0 and img_rect_w > 0 and img_rect_h > 0:
+                # Sample brightness at this point
+                px = (x - img_x1) / img_rect_w * (img_w - 1)
+                py = (y - img_y1) / img_rect_h * (img_h - 1)
+                brightness = _sample_image_at(gray, px, py)
+
+                # Perpendicular direction (radially outward for Archimedean spiral)
+                perp_x = math.cos(theta)
+                perp_y = math.sin(theta)
+
+                # Offset magnitude: dark=max, bright=zero
+                # amplitude=1.0 → half ring_spacing (reaches halfway to adjacent ring)
+                offset = amplitude * ring_spacing_mm / 2.0 * (1.0 - brightness / 255.0)
+
+                # Waveform sign
+                if oscillation_mode == "Sine":
+                    sign = math.sin(step_idx * math.pi / 2)
+                elif oscillation_mode == "Square":
+                    # Hold for 2 steps then flip — square wave with period 4 steps
+                    sign = 1.0 if (step_idx // 2) % 2 == 0 else -1.0
+                else:  # Sawtooth (default)
+                    sign = 1.0 if step_idx % 2 == 0 else -1.0
+
+                polyline.append((x + perp_x * offset * sign, y + perp_y * offset * sign))
+            else:
+                polyline.append((x, y))
 
         # Apply output offset
         x_off = float(params.get("x_offset_mm", 0.0))

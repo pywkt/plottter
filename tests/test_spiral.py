@@ -1,4 +1,4 @@
-"""Tests for the SpiralGenerator (task 67.1)."""
+"""Tests for the SpiralGenerator (task 67.1 + 67.2)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from plottter.generators import GENERATORS
-from plottter.generators.spiral import SpiralGenerator, _trace_spiral
+from plottter.generators.spiral import SpiralGenerator, _trace_spiral, _sample_image_at
 from plottter.models import Canvas
 
 
@@ -222,7 +222,8 @@ class TestSpiralGeneratorGenerate:
     def test_points_approximately_step_size_apart(self):
         """Consecutive polyline points should be approximately step_size_mm apart."""
         step = 0.5
-        result = self._run(step_size_mm=step)
+        # Use amplitude=0 to test plain spiral spacing (no oscillation displacement)
+        result = self._run(step_size_mm=step, amplitude=0.0)
         poly = result[0]
         # Sample a subset of consecutive pairs
         sample_indices = range(20, min(200, len(poly) - 1), 10)
@@ -336,3 +337,202 @@ class TestSpiralGeneratorGenerate:
         gen = SpiralGenerator()
         presets = gen.get_presets()
         assert len(presets) > 0
+
+
+# ---------------------------------------------------------------------------
+# _sample_image_at unit tests (task 67.2)
+# ---------------------------------------------------------------------------
+
+class TestSampleImageAt:
+    def test_exact_pixel(self):
+        img = np.array([[0, 128], [255, 64]], dtype=np.float32)
+        assert abs(_sample_image_at(img, 0.0, 0.0) - 0.0) < 1e-6
+        assert abs(_sample_image_at(img, 1.0, 0.0) - 128.0) < 1e-6
+        assert abs(_sample_image_at(img, 0.0, 1.0) - 255.0) < 1e-6
+        assert abs(_sample_image_at(img, 1.0, 1.0) - 64.0) < 1e-6
+
+    def test_bilinear_midpoint(self):
+        # All equal values → result should be exactly that value
+        img = np.full((4, 4), 100.0, dtype=np.float32)
+        assert abs(_sample_image_at(img, 1.5, 1.5) - 100.0) < 1e-6
+
+    def test_out_of_bounds_clamped(self):
+        img = np.full((4, 4), 200.0, dtype=np.float32)
+        # Should clamp without error
+        val = _sample_image_at(img, -1.0, -1.0)
+        assert 0.0 <= val <= 255.0
+        val2 = _sample_image_at(img, 100.0, 100.0)
+        assert 0.0 <= val2 <= 255.0
+
+
+# ---------------------------------------------------------------------------
+# Oscillation tests (task 67.2)
+# ---------------------------------------------------------------------------
+
+class TestOscillation:
+    def _run(self, image: np.ndarray | None = None, **overrides) -> list:
+        canvas = _make_canvas()
+        img = image if image is not None else _make_gray(100, 100, 128)
+        params: dict = {
+            "_source_image": img,
+            "ring_spacing_mm": 3.0,
+            "center_x_pct": 50.0,
+            "center_y_pct": 50.0,
+            "step_size_mm": 0.5,
+            "amplitude": 0.8,
+            "oscillation_mode": "Sawtooth",
+            "image_fit_mode": "fill",
+            "x_offset_mm": 0.0,
+            "y_offset_mm": 0.0,
+        }
+        params.update(overrides)
+        return SpiralGenerator().generate(params, canvas)
+
+    def test_amplitude_zero_matches_plain_spiral(self):
+        """amplitude=0 should produce the same points as a plain spiral."""
+        result_zero = self._run(amplitude=0.0)
+        result_plain = self._run(_source_image=None, amplitude=0.0)
+        # Both should have same number of points and similar coordinates
+        poly_zero = result_zero[0]
+        poly_plain = result_plain[0]
+        assert len(poly_zero) == len(poly_plain)
+        # Check a few points are close
+        for (x0, y0), (x1, y1) in zip(poly_zero[:10], poly_plain[:10]):
+            assert abs(x0 - x1) < 1e-6
+            assert abs(y0 - y1) < 1e-6
+
+    def test_dark_image_large_oscillations(self):
+        """Dark pixels (value=0) should produce large perpendicular offsets."""
+        dark_img = np.zeros((100, 100), dtype=np.uint8)
+        bright_img = np.full((100, 100), 255, dtype=np.uint8)
+
+        result_dark = self._run(image=dark_img, amplitude=1.0)
+        result_bright = self._run(image=bright_img, amplitude=1.0)
+
+        poly_dark = result_dark[0]
+        poly_bright = result_bright[0]
+
+        # Find average displacement from each other across same-index points
+        # Dark should have higher variance (due to oscillation) than bright
+        dark_xs = [x for x, _ in poly_dark[10:200]]
+        bright_xs = [x for x, _ in poly_bright[10:200]]
+        dark_var = np.var(dark_xs)
+        bright_var = np.var(bright_xs)
+        assert dark_var > bright_var
+
+    def test_bright_image_near_zero_offset(self):
+        """Fully bright image should produce offsets near zero."""
+        bright_img = np.full((100, 100), 255, dtype=np.uint8)
+        result_bright = self._run(image=bright_img, amplitude=1.0)
+        result_no_amp = self._run(image=bright_img, amplitude=0.0)
+
+        poly_bright = result_bright[0]
+        poly_no_amp = result_no_amp[0]
+        # Points should be nearly identical
+        for (x0, y0), (x1, y1) in zip(poly_bright[:50], poly_no_amp[:50]):
+            assert abs(x0 - x1) < 1e-6
+            assert abs(y0 - y1) < 1e-6
+
+    def test_amplitude_1_max_offset_half_ring_spacing(self):
+        """With amplitude=1.0 and a dark image, max offset = ring_spacing / 2.
+
+        amplitude=1.0 should swing the spiral halfway to the adjacent ring in each
+        direction (±ring_spacing/2), so peak displacement from the base spiral
+        equals ring_spacing/2.
+        """
+        dark_img = np.zeros((100, 100), dtype=np.uint8)
+        ring_spacing = 3.0
+        canvas = _make_canvas()
+        params = {
+            "_source_image": dark_img,
+            "ring_spacing_mm": ring_spacing,
+            "center_x_pct": 50.0,
+            "center_y_pct": 50.0,
+            "step_size_mm": 0.5,
+            "amplitude": 1.0,
+            "oscillation_mode": "Sawtooth",
+            "image_fit_mode": "fill",
+            "x_offset_mm": 0.0,
+            "y_offset_mm": 0.0,
+        }
+        result = SpiralGenerator().generate(params, canvas)
+        poly = result[0]
+
+        # With no-image run for baseline
+        params_base = dict(params)
+        params_base["_source_image"] = None
+        params_base["amplitude"] = 0.0
+        result_base = SpiralGenerator().generate(params_base, canvas)
+        poly_base = result_base[0]
+
+        # At dark pixels with amplitude=1.0: offset = ring_spacing / 2
+        # Check that max displacement from baseline is approximately ring_spacing / 2
+        displacements = [
+            math.sqrt((x1 - x0)**2 + (y1 - y0)**2)
+            for (x0, y0), (x1, y1) in zip(poly_base[10:200], poly[10:200])
+        ]
+        max_disp = max(displacements)
+        expected = ring_spacing / 2.0
+        # Should be close to ring_spacing/2 (within 5% tolerance)
+        assert abs(max_disp - expected) < expected * 0.05
+
+    def test_oscillation_modes_produce_different_waveforms(self):
+        """Sawtooth, Sine, and Square modes should produce different point distributions."""
+        mid_img = np.full((100, 100), 0, dtype=np.uint8)  # dark for max oscillation
+
+        result_saw = self._run(image=mid_img, oscillation_mode="Sawtooth", amplitude=1.0)
+        result_sin = self._run(image=mid_img, oscillation_mode="Sine", amplitude=1.0)
+        result_sqr = self._run(image=mid_img, oscillation_mode="Square", amplitude=1.0)
+
+        # All should have same length
+        assert len(result_saw[0]) == len(result_sin[0]) == len(result_sqr[0])
+
+        # But different coordinates (sample first 100 points)
+        xs_saw = [x for x, _ in result_saw[0][5:105]]
+        xs_sin = [x for x, _ in result_sin[0][5:105]]
+        xs_sqr = [x for x, _ in result_sqr[0][5:105]]
+
+        # Each pair should differ meaningfully
+        diff_saw_sin = sum(abs(a - b) for a, b in zip(xs_saw, xs_sin))
+        diff_saw_sqr = sum(abs(a - b) for a, b in zip(xs_saw, xs_sqr))
+        diff_sin_sqr = sum(abs(a - b) for a, b in zip(xs_sin, xs_sqr))
+
+        assert diff_saw_sin > 0.1
+        assert diff_saw_sqr > 0.1
+        assert diff_sin_sqr > 0.1
+
+    def test_sine_mode_actually_oscillates(self):
+        """Sine mode must produce non-zero displacements (not a flat spiral)."""
+        dark_img = np.zeros((100, 100), dtype=np.uint8)
+        result_sin = self._run(image=dark_img, oscillation_mode="Sine", amplitude=1.0)
+        result_base = self._run(image=dark_img, amplitude=0.0)
+
+        poly_sin = result_sin[0]
+        poly_base = result_base[0]
+
+        # Compute max displacement from base spiral
+        max_disp = max(
+            math.sqrt((x1 - x0)**2 + (y1 - y0)**2)
+            for (x0, y0), (x1, y1) in zip(poly_base[1:200], poly_sin[1:200])
+        )
+        # Sine mode should produce actual oscillation, not flat spiral
+        assert max_disp > 0.01
+
+    def test_get_parameters_includes_oscillation_params(self):
+        gen = SpiralGenerator()
+        param_names = {p.name for p in gen.get_parameters()}
+        assert "amplitude" in param_names
+        assert "oscillation_mode" in param_names
+
+    def test_amplitude_param_range(self):
+        gen = SpiralGenerator()
+        amp_param = next(p for p in gen.get_parameters() if p.name == "amplitude")
+        assert amp_param.min == 0.01
+        assert amp_param.max == 2.0
+        assert amp_param.default == 0.8
+
+    def test_oscillation_mode_choices(self):
+        gen = SpiralGenerator()
+        mode_param = next(p for p in gen.get_parameters() if p.name == "oscillation_mode")
+        assert set(mode_param.choices) == {"Sawtooth", "Sine", "Square"}
+        assert mode_param.default == "Sawtooth"
