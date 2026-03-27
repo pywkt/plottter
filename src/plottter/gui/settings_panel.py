@@ -2921,6 +2921,11 @@ class SettingsPanel(QScrollArea):
         if idx >= 0:
             self._preset_combo.setCurrentIndex(idx)
 
+    @property
+    def current_mode(self) -> str:
+        """The currently active mode string (e.g. '3D Scene', 'Math Art')."""
+        return self._current_mode
+
     def trigger_generate(self) -> None:
         """Public entry point — can be called from a menu action."""
         self._on_generate()

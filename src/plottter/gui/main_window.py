@@ -792,6 +792,14 @@ class MainWindow(QMainWindow):
         self._act_optimize_all.triggered.connect(self._on_optimize_all)
         tools_menu.addAction(self._act_optimize_all)
 
+        self._act_regen_all_3d = QAction("Regenerate All 3D Layers", self)
+        self._act_regen_all_3d.setShortcut(QKeySequence("Ctrl+Shift+G"))
+        self._act_regen_all_3d.setToolTip(
+            "Sequentially regenerate all 3D Scene layers with up-to-date sibling occlusion"
+        )
+        self._act_regen_all_3d.triggered.connect(self._on_regenerate_all_3d)
+        tools_menu.addAction(self._act_regen_all_3d)
+
         tools_menu.addSeparator()
 
         self._act_simplify = QAction("Simplify Paths", self)
@@ -1366,6 +1374,129 @@ class MainWindow(QMainWindow):
         bounds = project.canvas.drawing_area()
         self._run_optimization(layers, bounds)
 
+    def _on_regenerate_all_3d(self) -> None:
+        """Sequentially regenerate all 3D Scene layers with up-to-date sibling occlusion."""
+        # Only flush when the settings panel is actually showing 3D controls.
+        # Flushing while the panel is in a different mode (e.g. Math Art) would
+        # overwrite a 3D layer's generator_info with the wrong mode's UI state.
+        if self._settings_panel.current_mode == "3D Scene":
+            self._settings_panel.flush_current_snapshot()
+
+        project = self._controller.current_project
+        d3_layers = [
+            layer for layer in project.layers
+            if isinstance(layer.generator_info, dict)
+            and layer.generator_info.get("mode") == "3D Scene"
+        ]
+
+        if not d3_layers:
+            QMessageBox.information(
+                self,
+                "Regenerate All 3D Layers",
+                "No 3D Scene layers found in the project.",
+            )
+            return
+
+        n = len(d3_layers)
+        self._regen3d_layers = d3_layers
+        self._regen3d_idx = 0
+
+        progress = QProgressDialog(
+            f"Generating 3D layer 1 of {n}…", "Cancel", 0, n * 100, self
+        )
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.show()
+        self._regen3d_progress = progress
+
+        # Wrap all path changes in a single undo macro
+        self._controller.undo_stack.beginMacro("Regenerate All 3D Layers")
+        self._start_next_3d_regen()
+
+    def _start_next_3d_regen(self) -> None:
+        if self._regen3d_idx >= len(self._regen3d_layers):
+            self._finish_3d_regen()
+            return
+
+        if self._regen3d_progress.wasCanceled():
+            self._finish_3d_regen(cancelled=True)
+            return
+
+        layer = self._regen3d_layers[self._regen3d_idx]
+        n = len(self._regen3d_layers)
+        base_progress = self._regen3d_idx * 100
+
+        self._regen3d_progress.setLabelText(
+            f"Generating 3D layer {self._regen3d_idx + 1} of {n}: '{layer.name}'…"
+        )
+        self._regen3d_progress.setValue(base_progress)
+
+        info = layer.generator_info
+        params = dict(info.get("params", {}))
+
+        # Inject shared camera from project metadata
+        project = self._controller.current_project
+        cam = project.metadata.get("scene3d_camera", {})
+        if cam:
+            params["_camera"] = cam
+
+        # Inject sibling shapes for HLR occlusion using up-to-date generator_info
+        params["_sibling_3d_shapes"] = self._settings_panel._build_sibling_3d_shapes(layer.id)
+
+        from plottter.generators.scene3d_generator import Scene3DGenerator
+        from plottter.gui.generator_worker import GeneratorWorker
+
+        generator = Scene3DGenerator()
+        canvas = project.canvas
+        layer_id = layer.id
+
+        worker = GeneratorWorker(generator, params, canvas, parent=self)
+
+        def on_progress(pct: int) -> None:
+            self._regen3d_progress.setValue(base_progress + pct)
+
+        def on_finished(paths: list, lid: str = layer_id) -> None:
+            self._controller.set_layer_paths(lid, paths, "Regenerate 3D Layer")
+            self._regen3d_idx += 1
+            self._regen3d_progress.setValue(self._regen3d_idx * 100)
+            self._start_next_3d_regen()
+            worker.deleteLater()
+
+        def on_error(msg: str) -> None:
+            QMessageBox.critical(self, "3D Regeneration Error", msg)
+            self._regen3d_idx += 1
+            self._regen3d_progress.setValue(self._regen3d_idx * 100)
+            self._start_next_3d_regen()
+            worker.deleteLater()
+
+        # Disconnect previous layer's cancel connection to avoid stacking
+        prev = getattr(self, "_regen3d_worker", None)
+        if prev is not None:
+            try:
+                self._regen3d_progress.canceled.disconnect(prev.cancel)
+            except (RuntimeError, TypeError):
+                pass
+        self._regen3d_progress.canceled.connect(worker.cancel)
+
+        worker.progress.connect(on_progress)
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_error)
+        self._regen3d_worker = worker
+        worker.start()
+
+    def _finish_3d_regen(self, cancelled: bool = False) -> None:
+        self._controller.undo_stack.endMacro()
+        self._regen3d_progress.close()
+        n = len(self._regen3d_layers)
+        if cancelled:
+            done = self._regen3d_idx
+            self.statusBar().showMessage(
+                f"3D regeneration cancelled after {done}/{n} layers.", 4000
+            )
+        else:
+            self.statusBar().showMessage(
+                f"Regenerated {n} 3D layer{'s' if n != 1 else ''} successfully.", 5000
+            )
+
     def _on_simplify_layer(self) -> None:
         layer_id = self._controller.active_layer_id
         layer = self._controller.get_layer(layer_id) if layer_id else None
@@ -1861,6 +1992,7 @@ class MainWindow(QMainWindow):
             ("Undo", "Ctrl+Z"),
             ("Redo", "Ctrl+Y"),
             ("Generate", "Ctrl+G"),
+            ("Regenerate all 3D layers", "Ctrl+Shift+G"),
             ("Randomize parameters", "Ctrl+R"),
             ("Zoom in", "Ctrl+="),
             ("Zoom out", "Ctrl+-"),
