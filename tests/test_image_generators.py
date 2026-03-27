@@ -3332,6 +3332,62 @@ class TestFDoGGenerator:
         # Both should produce the same polylines
         assert len(result_default) == len(result_false)
 
+    # --- New presets (Phase 65.1) ---
+
+    def test_all_eight_presets_exist(self):
+        """There should be exactly 8 presets (3 original + 5 new)."""
+        presets = self.gen.get_presets()
+        names = [p.name for p in presets]
+        for expected in (
+            "Coherent Lines", "Fine Lines", "Bold Strokes",
+            "Portrait", "Ink Sketch", "Stylized Illustration",
+            "Noisy Photo", "Ultra-Fine Detail",
+        ):
+            assert expected in names, f"Missing preset: {expected}"
+        assert len(presets) == 8
+
+    def test_all_presets_generate_valid_output(self):
+        """All 8 presets must produce non-empty valid polylines on a test image."""
+        img = make_checkerboard(80, 80, tile=10)
+        for preset in self.gen.get_presets():
+            params = {**preset.params, "_source_image": img}
+            result = self.gen.generate(params, self.canvas)
+            assert isinstance(result, list), f"Preset '{preset.name}' did not return a list"
+            assert len(result) > 0, f"Preset '{preset.name}' returned empty output"
+            for poly in result:
+                assert len(poly) >= 2, f"Preset '{preset.name}' has a polyline with < 2 points"
+
+    def test_ink_sketch_preset_has_centerline_true(self):
+        """Ink Sketch preset must have centerline=True."""
+        presets = {p.name: p for p in self.gen.get_presets()}
+        assert "Ink Sketch" in presets
+        assert presets["Ink Sketch"].params.get("centerline") is True
+
+    def test_stylized_illustration_preset_has_smooth_curves_true(self):
+        """Stylized Illustration preset must have smooth_curves=True."""
+        presets = {p.name: p for p in self.gen.get_presets()}
+        assert "Stylized Illustration" in presets
+        assert presets["Stylized Illustration"].params.get("smooth_curves") is True
+
+    def test_portrait_fewer_longer_polylines_than_fine_lines(self):
+        """Portrait preset (higher sigma_m) should produce fewer, longer lines than Fine Lines."""
+        img = make_dark_center_image(100, 100)
+        presets = {p.name: p for p in self.gen.get_presets()}
+        portrait_params = {**presets["Portrait"].params, "_source_image": img}
+        fine_params = {**presets["Fine Lines"].params, "_source_image": img}
+        portrait_result = self.gen.generate(portrait_params, self.canvas)
+        fine_result = self.gen.generate(fine_params, self.canvas)
+        if not portrait_result or not fine_result:
+            pytest.skip("One or both presets returned no output — cannot compare")
+        portrait_avg_len = sum(len(p) for p in portrait_result) / len(portrait_result)
+        fine_avg_len = sum(len(p) for p in fine_result) / len(fine_result)
+        # Portrait has higher sigma_m → longer, more coherent strokes
+        assert len(portrait_result) <= len(fine_result) or portrait_avg_len >= fine_avg_len, (
+            f"Portrait (avg_len={portrait_avg_len:.1f}, count={len(portrait_result)}) "
+            f"should have fewer or longer lines than Fine Lines "
+            f"(avg_len={fine_avg_len:.1f}, count={len(fine_result)})"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Skeletonize helpers (Phase 16.29)
