@@ -9,6 +9,41 @@ if TYPE_CHECKING:
     from plottter.models.path import Polyline
 
 
+def scale_paths_keep_aspect(
+    paths: list[Polyline],
+    old_canvas: Canvas,
+    new_canvas: Canvas,
+) -> list[Polyline]:
+    """Scale polylines uniformly (preserving aspect ratio) to fit new_canvas drawing area.
+
+    The art is scaled by ``min(new_draw_w / old_draw_w, new_draw_h / old_draw_h)``
+    and centered within the new drawing area.
+    """
+    old_left, old_top, old_right, old_bottom = old_canvas.drawing_area()
+    new_left, new_top, new_right, new_bottom = new_canvas.drawing_area()
+
+    old_draw_w = old_right - old_left
+    old_draw_h = old_bottom - old_top
+    new_draw_w = new_right - new_left
+    new_draw_h = new_bottom - new_top
+
+    if old_draw_w == 0.0 or old_draw_h == 0.0:
+        return [list(poly) for poly in paths]
+
+    scale = min(new_draw_w / old_draw_w, new_draw_h / old_draw_h)
+    offset_x = new_left + (new_draw_w - scale * old_draw_w) / 2.0
+    offset_y = new_top + (new_draw_h - scale * old_draw_h) / 2.0
+
+    result: list[Polyline] = []
+    for polyline in paths:
+        scaled = [
+            (offset_x + (x - old_left) * scale, offset_y + (y - old_top) * scale)
+            for x, y in polyline
+        ]
+        result.append(scaled)
+    return result
+
+
 def scale_paths_to_canvas(
     paths: list[Polyline],
     old_canvas: Canvas,
