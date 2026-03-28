@@ -2473,7 +2473,7 @@ class SettingsPanel(QScrollArea):
         try:
             from plottter.generators.base import (
                 FloatParam, IntParam, ExpressionParam, ChoiceParam, BoolParam,
-                StringParam, FontParam,
+                StringParam, FontParam, ImageParam,
             )
             from plottter.gui.widgets.font_picker import FontPicker
         except ImportError:
@@ -2532,6 +2532,39 @@ class SettingsPanel(QScrollArea):
                 widget = FontPicker()
                 if param.default:
                     widget.set_font_path(param.default)  # type: ignore[attr-defined]
+            elif isinstance(param, ImageParam):
+                from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QPushButton
+                import functools
+                container = QWidget()
+                row_layout = QHBoxLayout(container)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                line_edit = QLineEdit(str(param.default) if param.default else "")
+                browse_btn = QPushButton("Browse…")
+                browse_btn.setFixedWidth(70)
+
+                def _browse(le: QLineEdit) -> None:
+                    path, _ = QFileDialog.getOpenFileName(
+                        self,
+                        "Select Image",
+                        "",
+                        "Images (*.jpg *.jpeg *.png *.webp *.gif *.bmp *.tiff);;All Files (*)",
+                    )
+                    if path:
+                        le.setText(path)
+
+                browse_btn.clicked.connect(functools.partial(_browse, line_edit))
+                row_layout.addWidget(line_edit)
+                row_layout.addWidget(browse_btn)
+                # Store container reference so _update_param_visibility can
+                # hide/show the whole row (QLineEdit + Browse button) together.
+                line_edit.setProperty("_image_container", container)
+                if param.description:
+                    container.setToolTip(param.description)
+                    label.setToolTip(param.description)
+                self._param_widgets[param.name] = line_edit
+                self._param_labels[param.name] = label
+                self._params_form.addRow(label, container)
+                continue
             else:
                 widget = QLineEdit(str(getattr(param, "default", "")))
 
