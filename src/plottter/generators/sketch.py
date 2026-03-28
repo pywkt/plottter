@@ -133,6 +133,25 @@ class SketchGenerator(Generator):
                 default=2,
                 description="Pixel distance to advance per tracing step",
             ),
+            # --- erase params ---
+            IntParam(
+                name="erase_radius",
+                label="Erase Radius (px)",
+                min=1,
+                max=20,
+                step=1,
+                default=3,
+                description="Radius of erased area around each drawn line — larger = sparser result",
+            ),
+            IntParam(
+                name="erase_amount",
+                label="Erase Amount",
+                min=10,
+                max=200,
+                step=1,
+                default=50,
+                description="How much to brighten drawn areas — higher = lines spread out faster",
+            ),
             # --- offset params ---
             FloatParam(
                 name="x_offset_mm",
@@ -176,6 +195,8 @@ class SketchGenerator(Generator):
                     "line_max_length": 100,
                     "angle_tests": 8,
                     "step_size_px": 2,
+                    "erase_radius": 3,
+                    "erase_amount": 50,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
                 },
@@ -364,6 +385,66 @@ class SketchGenerator(Generator):
         return path
 
     # ------------------------------------------------------------------
+    # Erase helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _erase_along_path(
+        lightened: np.ndarray,
+        path: list[tuple[float, float]],
+        erase_radius: int,
+        erase_amount: int,
+    ) -> None:
+        """Brighten a circular region around each point in *path*.
+
+        Modifies *lightened* in-place.  For each ``(px_x, px_y)`` coordinate
+        in the path, a filled circle of radius *erase_radius* pixels is drawn
+        onto a scratch buffer (value = *erase_amount*), then the scratch is
+        additively blended into *lightened* and clamped to 255.
+
+        Parameters
+        ----------
+        lightened:
+            2-D uint8 grayscale image that is modified in-place.
+        path:
+            List of ``(px_x, px_y)`` float pixel coordinates.
+        erase_radius:
+            Radius in pixels of the erased circle around each point.
+        erase_amount:
+            How much to add to pixel values within the erased region (0–255).
+        """
+        if not path:
+            return
+
+        try:
+            import cv2
+
+            h, w = lightened.shape[:2]
+            scratch = np.zeros((h, w), dtype=np.uint8)
+            for px_x, px_y in path:
+                cx = int(round(px_x))
+                cy = int(round(px_y))
+                cv2.circle(scratch, (cx, cy), erase_radius, erase_amount, -1)
+            # cv2.add does saturating addition (clamps to 255 for uint8)
+            lightened[:] = cv2.add(lightened, scratch)
+        except ImportError:
+            # Fallback without OpenCV
+            h, w = lightened.shape[:2]
+            r2 = erase_radius * erase_radius
+            for px_x, px_y in path:
+                cx = int(round(px_x))
+                cy = int(round(px_y))
+                for dy in range(-erase_radius, erase_radius + 1):
+                    ny = cy + dy
+                    if ny < 0 or ny >= h:
+                        continue
+                    for dx in range(-erase_radius, erase_radius + 1):
+                        if dx * dx + dy * dy <= r2:
+                            nx = cx + dx
+                            if 0 <= nx < w:
+                                lightened[ny, nx] = min(255, int(lightened[ny, nx]) + erase_amount)
+
+    # ------------------------------------------------------------------
     # Generate
     # ------------------------------------------------------------------
 
@@ -426,13 +507,72 @@ class SketchGenerator(Generator):
         block_size = int(params.get("block_size", 16))
         block_size = max(1, block_size)
 
-        # Validate darkest-area finder (raises if image is empty)
-        br, bc = self._find_darkest_region(lightened, block_size)
-        _px_y, _px_x = self._find_darkest_pixel(lightened, br, bc, block_size)
+        # --- generation parameters ---
+        line_density = float(params.get("line_density", 50.0))
+        line_max_limit = int(params.get("line_max_limit", 10_000))
+        line_min_length = int(params.get("line_min_length", 5))
+        line_max_length = int(params.get("line_max_length", 100))
+        angle_tests = int(params.get("angle_tests", 8))
+        step_size_px = int(params.get("step_size_px", 2))
+        erase_radius = int(params.get("erase_radius", 3))
+        erase_amount = int(params.get("erase_amount", 50))
 
-        # Future phases will use img_rect, br/bc, px_y/px_x to build strokes.
-        # For now, return empty polylines.
+        # --- coordinate mapping: pixel → mm ---
+        rect_x1, rect_y1, rect_x2, rect_y2 = img_rect
+        rect_w = rect_x2 - rect_x1
+        rect_h = rect_y2 - rect_y1
+
+        # --- brightness targets ---
+        initial_avg_brightness = float(lightened.mean())
+        # target_brightness: how bright the lightened image must become before
+        # we stop.  Higher line_density → brighter target → more lines drawn.
+        target_brightness = initial_avg_brightness + (255.0 - initial_avg_brightness) * (line_density / 100.0)
+
         result: list[Polyline] = []
+        total_segments = 0
+
+        if target_brightness > initial_avg_brightness:
+            while total_segments < line_max_limit:
+                if cancelled_callback and cancelled_callback():
+                    break
+
+                current_avg = float(lightened.mean())
+                if current_avg >= target_brightness:
+                    break
+
+                # Find darkest region → darkest seed pixel
+                br, bc = self._find_darkest_region(lightened, block_size)
+                seed_y, seed_x = self._find_darkest_pixel(lightened, br, bc, block_size)
+
+                # Trace path from seed
+                path = self._trace_darkest_path(
+                    lightened, seed_y, seed_x, angle_tests, line_max_length, step_size_px
+                )
+
+                # Erase regardless of path length to prevent infinite loops
+                if path:
+                    self._erase_along_path(lightened, path, erase_radius, erase_amount)
+
+                # Only keep paths that meet minimum length
+                if len(path) >= line_min_length:
+                    mm_path: Polyline = [
+                        (
+                            rect_x1 + px_x * rect_w / img_w,
+                            rect_y1 + px_y * rect_h / img_h,
+                        )
+                        for px_x, px_y in path
+                    ]
+                    result.append(mm_path)
+                    total_segments += len(path) - 1
+
+                # Update progress
+                if progress_callback:
+                    denom = target_brightness - initial_avg_brightness
+                    if denom > 0:
+                        pct = int(100.0 * (current_avg - initial_avg_brightness) / denom)
+                    else:
+                        pct = 100
+                    progress_callback(min(99, max(0, pct)))
 
         x_off = float(params.get("x_offset_mm", 0.0))
         y_off = float(params.get("y_offset_mm", 0.0))

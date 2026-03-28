@@ -197,19 +197,28 @@ class TestGenerateScaffold:
         result = self.gen.generate({}, self.canvas)
         assert result == []
 
-    def test_returns_empty_list_with_source_image(self):
-        """Current scaffold always returns [] even with a real image."""
+    def test_returns_polylines_with_dark_source_image(self):
+        """An image with a dark region should produce at least one polyline."""
         img = make_single_dark_block()
         params = {"_source_image": img}
         result = self.gen.generate(params, self.canvas)
         assert isinstance(result, list)
-        assert result == []
+        assert len(result) > 0
 
     def test_pure_white_image_does_not_crash(self):
+        """All-white image: no dark areas to trace, so result is empty."""
         img = make_white_image()
         params = {"_source_image": img}
         result = self.gen.generate(params, self.canvas)
+        assert isinstance(result, list)
+        # White image has nothing to draw (all pixels above brightness ceiling)
         assert result == []
+
+    def test_erase_radius_and_erase_amount_params(self):
+        params = self.gen.get_parameters()
+        names = {p.name for p in params}
+        assert "erase_radius" in names
+        assert "erase_amount" in names
 
     def test_parameters_defined(self):
         params = self.gen.get_parameters()
@@ -318,3 +327,153 @@ class TestTraceDarkestPath:
         # Should return only the seed (stopped immediately due to brightness)
         assert len(path) == 1
         assert path[0] == (16.0, 16.0)
+
+
+# ---------------------------------------------------------------------------
+# _erase_along_path
+# ---------------------------------------------------------------------------
+
+
+class TestEraseAlongPath:
+    def setup_method(self):
+        self.gen = SketchGenerator()
+
+    def test_erase_brightens_along_path(self):
+        """After erasing, pixels along the path should be brighter."""
+        img = np.zeros((32, 32), dtype=np.uint8)  # all black
+        path = [(16.0, 16.0), (17.0, 16.0), (18.0, 16.0)]
+        erase_radius = 2
+        erase_amount = 50
+        self.gen._erase_along_path(img, path, erase_radius, erase_amount)
+        # Pixels at the path centers should have been brightened
+        assert img[16, 16] >= erase_amount
+
+    def test_erase_does_not_exceed_255(self):
+        """Erasing on a bright image must clamp to 255."""
+        img = np.full((32, 32), 230, dtype=np.uint8)
+        path = [(16.0, 16.0)]
+        self.gen._erase_along_path(img, path, erase_radius=5, erase_amount=100)
+        assert img[16, 16] == 255
+
+    def test_empty_path_no_change(self):
+        """Empty path must not modify the image."""
+        img = np.zeros((16, 16), dtype=np.uint8)
+        original = img.copy()
+        self.gen._erase_along_path(img, [], erase_radius=3, erase_amount=50)
+        np.testing.assert_array_equal(img, original)
+
+    def test_erase_affects_circular_region(self):
+        """Pixels within erase_radius of a path point should be brightened."""
+        img = np.zeros((32, 32), dtype=np.uint8)
+        path = [(16.0, 16.0)]
+        erase_radius = 4
+        erase_amount = 80
+        self.gen._erase_along_path(img, path, erase_radius, erase_amount)
+        # Centre and nearby pixels should be brightened
+        assert img[16, 16] >= erase_amount
+        assert img[16, 16 + erase_radius] >= erase_amount  # edge of circle
+        # Pixel beyond the radius should be unchanged
+        assert img[16, 16 + erase_radius + 2] == 0
+
+
+# ---------------------------------------------------------------------------
+# Main generation loop
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateLoop:
+    def setup_method(self):
+        self.gen = SketchGenerator()
+        self.canvas = make_canvas()
+
+    def _make_dark_image(self, h: int = 64, w: int = 64, dark_value: int = 0) -> np.ndarray:
+        """Solid dark image."""
+        return np.full((h, w), dark_value, dtype=np.uint8)
+
+    def test_higher_density_produces_more_paths(self):
+        """Higher line_density → more output polylines."""
+        img = make_single_dark_block(h=64, w=64, dark_block_row=1, dark_block_col=1)
+        params_low = {"_source_image": img.copy(), "line_density": 10.0, "line_max_limit": 500}
+        params_high = {"_source_image": img.copy(), "line_density": 80.0, "line_max_limit": 500}
+        result_low = self.gen.generate(params_low, self.canvas)
+        result_high = self.gen.generate(params_high, self.canvas)
+        assert len(result_high) >= len(result_low)
+
+    def test_lines_concentrate_in_dark_areas(self):
+        """Paths should originate from dark regions, not bright regions."""
+        # Image with left half black, right half white
+        h, w = 64, 64
+        img = np.full((h, w), 255, dtype=np.uint8)
+        img[:, : w // 2] = 0  # left half black
+        params = {
+            "_source_image": img,
+            "line_density": 30.0,
+            "line_max_limit": 200,
+            "line_min_length": 2,
+        }
+        canvas = self.canvas
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        result = self.gen.generate(params, canvas)
+        assert len(result) > 0
+        # Most path points should be in the left (dark) half of the mm range
+        draw_mid_x = (draw_x1 + draw_x2) / 2.0
+        points_in_dark = sum(
+            1 for path in result for x, _y in path if x < draw_mid_x
+        )
+        total_points = sum(len(p) for p in result)
+        assert points_in_dark > total_points * 0.7
+
+    def test_output_in_mm_coordinates(self):
+        """All path points must be within the canvas drawing area (mm)."""
+        img = make_single_dark_block()
+        params = {"_source_image": img, "line_density": 30.0}
+        result = self.gen.generate(params, self.canvas)
+        assert len(result) > 0
+        draw_x1, draw_y1, draw_x2, draw_y2 = self.canvas.drawing_area()
+        # Allow a small floating-point margin
+        margin = 0.5
+        for path in result:
+            for x, y in path:
+                assert draw_x1 - margin <= x <= draw_x2 + margin, f"x={x} out of range"
+                assert draw_y1 - margin <= y <= draw_y2 + margin, f"y={y} out of range"
+
+    def test_line_max_limit_respected(self):
+        """Total line segments must stay close to line_max_limit.
+
+        The limit governs when we *stop starting* new paths, so the total can
+        overshoot by at most ``line_max_length - 1`` segments (the tail of the
+        last path).
+        """
+        line_max_limit = 50
+        line_max_length = 10
+        img = self._make_dark_image()
+        params = {
+            "_source_image": img,
+            "line_density": 90.0,
+            "line_max_limit": line_max_limit,
+            "line_min_length": 2,
+            "line_max_length": line_max_length,
+        }
+        result = self.gen.generate(params, self.canvas)
+        total_segments = sum(len(p) - 1 for p in result if len(p) > 1)
+        # Allow the last path to push slightly over the limit
+        assert total_segments <= line_max_limit + line_max_length - 1
+
+    def test_x_y_offset_applied(self):
+        """x_offset_mm / y_offset_mm must shift all output coordinates."""
+        img = make_single_dark_block()
+        params_base = {"_source_image": img.copy(), "line_density": 20.0}
+        params_shifted = {
+            "_source_image": img.copy(),
+            "line_density": 20.0,
+            "x_offset_mm": 10.0,
+            "y_offset_mm": 5.0,
+        }
+        result_base = self.gen.generate(params_base, self.canvas)
+        result_shifted = self.gen.generate(params_shifted, self.canvas)
+        assert len(result_base) > 0
+        assert len(result_shifted) == len(result_base)
+        for path_b, path_s in zip(result_base, result_shifted):
+            for (xb, yb), (xs, ys) in zip(path_b, path_s):
+                assert abs(xs - xb - 10.0) < 1e-6
+                assert abs(ys - yb - 5.0) < 1e-6
