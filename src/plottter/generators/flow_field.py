@@ -111,6 +111,24 @@ class FlowFieldGenerator(Generator):
                 randomizable=False,
                 description="Vertical offset applied to the generated output on the canvas page (mm)",
             ),
+            IntParam(
+                name="quantize_directions",
+                label="Quantize directions",
+                min=0,
+                max=36,
+                step=1,
+                default=0,
+                description="Snap flow angles to this many discrete directions. 0 = off (smooth), 4 = cardinal (N/S/E/W), 8 = cardinal + diagonal, higher = more directions. Creates angular, architectural patterns.",
+            ),
+            FloatParam(
+                name="quantize_offset_deg",
+                label="Direction offset (degrees)",
+                min=0.0,
+                max=360.0,
+                step=1.0,
+                default=0.0,
+                description="Rotate the set of discrete directions by this angle. E.g. offset=45° turns cardinal into diagonal.",
+            ),
         ]
 
     def get_presets(self) -> list[Preset]:
@@ -187,6 +205,8 @@ class FlowFieldGenerator(Generator):
         octaves = int(params.get("noise_octaves", 4))
         seed = int(params.get("seed", 42))
         angle_range = float(params.get("angle_range", _TWO_PI))
+        quantize_directions = int(params.get("quantize_directions", 0))
+        quantize_offset_rad = math.radians(float(params.get("quantize_offset_deg", 0.0)))
 
         rng = _random.Random(seed)
         noise_base = seed % 256
@@ -210,6 +230,10 @@ class FlowFieldGenerator(Generator):
                     base=noise_base,
                 )
                 angle = n * angle_range
+                if quantize_directions > 0:
+                    step_angle = _TWO_PI / quantize_directions
+                    angle_shifted = angle - quantize_offset_rad
+                    angle = round(angle_shifted / step_angle) * step_angle + quantize_offset_rad
                 x += step_size * math.cos(angle)
                 y += step_size * math.sin(angle)
 
