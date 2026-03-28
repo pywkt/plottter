@@ -152,6 +152,25 @@ class SketchGenerator(Generator):
                 default=50,
                 description="How much to brighten drawn areas — higher = lines spread out faster",
             ),
+            # --- directionality / edge params ---
+            FloatParam(
+                name="directionality",
+                label="Directionality",
+                min=0.0,
+                max=100.0,
+                step=1.0,
+                default=0.0,
+                description="Follow natural contours — higher values push lines along directions of lowest brightness variance",
+            ),
+            FloatParam(
+                name="edge_power",
+                label="Edge Power",
+                min=0.0,
+                max=100.0,
+                step=1.0,
+                default=0.0,
+                description="Attract lines toward detected edges",
+            ),
             # --- offset params ---
             FloatParam(
                 name="x_offset_mm",
@@ -197,6 +216,8 @@ class SketchGenerator(Generator):
                     "step_size_px": 2,
                     "erase_radius": 3,
                     "erase_amount": 50,
+                    "directionality": 0.0,
+                    "edge_power": 0.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
                 },
@@ -305,9 +326,22 @@ class SketchGenerator(Generator):
         angle_tests: int,
         max_length: int,
         step_size_px: int,
+        sobel_x: np.ndarray | None = None,
+        sobel_y: np.ndarray | None = None,
+        edge_map: np.ndarray | None = None,
+        directionality: float = 0.0,
+        edge_power: float = 0.0,
     ) -> list[tuple[float, float]]:
-        """Trace a path from (seed_y, seed_x) by greedily choosing the darkest
+        """Trace a path from (seed_y, seed_x) by greedily choosing the best
         neighbouring direction at each step.
+
+        Direction scoring blends three components:
+        - **luminance**: prefers darker pixels (brightness-seeking)
+        - **directionality**: prefers directions aligned with the local
+          iso-brightness contour tangent (i.e. perpendicular to the image
+          gradient), so lines tend to follow edges instead of crossing them.
+        - **edge_power**: prefers directions whose target pixel lies on a
+          detected Canny edge.
 
         Parameters
         ----------
@@ -322,6 +356,16 @@ class SketchGenerator(Generator):
             the seed). The tracing loop runs at most ``max_length - 1`` times.
         step_size_px:
             Distance in pixels to advance per step.
+        sobel_x, sobel_y:
+            Float32 Sobel gradient arrays (same shape as *lightened*).  Required
+            when *directionality* > 0; ignored otherwise.
+        edge_map:
+            uint8 binary edge map (0 or 255, same shape as *lightened*).
+            Required when *edge_power* > 0; ignored otherwise.
+        directionality:
+            Weight (0–100) for contour-following.
+        edge_power:
+            Weight (0–100) for edge-attraction.
 
         Returns
         -------
@@ -333,6 +377,19 @@ class SketchGenerator(Generator):
         # Seed must be inside the image
         if not (0 <= seed_y < h and 0 <= seed_x < w):
             return []
+
+        # Compute normalised blending weights so they sum to 1.
+        lum_power = max(0.0, 100.0 - directionality - edge_power)
+        total_power = lum_power + directionality + edge_power
+        if total_power < 1e-9:
+            lum_w, dir_w, edge_w = 1.0, 0.0, 0.0
+        else:
+            lum_w = lum_power / total_power
+            dir_w = directionality / total_power
+            edge_w = edge_power / total_power
+
+        use_dir = dir_w > 1e-6 and sobel_x is not None and sobel_y is not None
+        use_edge = edge_w > 1e-6 and edge_map is not None
 
         # Pre-compute direction unit vectors (cos, sin) for all test angles
         angles = [i * 2.0 * np.pi / angle_tests for i in range(angle_tests)]
@@ -349,10 +406,20 @@ class SketchGenerator(Generator):
             if lightened[iy, ix] > CEIL:
                 break
 
-            # Test all directions; pick the darkest look-ahead
+            # Sample gradient at current position for directionality scoring.
+            # The contour tangent is perpendicular to the gradient: (-gy, gx).
+            if use_dir:
+                gx_cur = float(sobel_x[iy, ix])
+                gy_cur = float(sobel_y[iy, ix])
+                grad_mag = (gx_cur * gx_cur + gy_cur * gy_cur) ** 0.5
+            else:
+                gx_cur = gy_cur = grad_mag = 0.0
+
+            # Test all directions; pick the lowest-score look-ahead.
+            # Score = lum_w*(brightness/255) - dir_w*alignment - edge_w*(edge/255)
             best_dx: float = 0.0
             best_dy: float = 0.0
-            best_brightness: float = 256.0
+            best_score: float = float("inf")
             found = False
 
             for dx, dy in dirs:
@@ -360,12 +427,26 @@ class SketchGenerator(Generator):
                 ny = cur_y + dy * step_size_px
                 iny = int(round(ny))
                 inx = int(round(nx))
-                if 0 <= iny < h and 0 <= inx < w:
-                    brightness = int(lightened[iny, inx])
-                    if brightness < best_brightness:
-                        best_brightness = brightness
-                        best_dx, best_dy = dx, dy
-                        found = True
+                if not (0 <= iny < h and 0 <= inx < w):
+                    continue
+
+                brightness = float(lightened[iny, inx])
+                score = lum_w * (brightness / 255.0)
+
+                if use_dir and grad_mag > 1e-6:
+                    # Alignment with contour tangent (-gy, gx):
+                    # alignment = |dx*(-gy) + dy*gx| / grad_mag
+                    alignment = abs(-gy_cur * dx + gx_cur * dy) / grad_mag
+                    score -= dir_w * alignment
+
+                if use_edge:
+                    edge_val = float(edge_map[iny, inx]) / 255.0
+                    score -= edge_w * edge_val
+
+                if score < best_score:
+                    best_score = score
+                    best_dx, best_dy = dx, dy
+                    found = True
 
             if not found:
                 break  # All look-ahead positions are out of bounds
@@ -516,6 +597,30 @@ class SketchGenerator(Generator):
         step_size_px = int(params.get("step_size_px", 2))
         erase_radius = int(params.get("erase_radius", 3))
         erase_amount = int(params.get("erase_amount", 50))
+        directionality = float(params.get("directionality", 0.0))
+        edge_power = float(params.get("edge_power", 0.0))
+
+        # --- precompute gradient and edge maps ---
+        sobel_x_map: np.ndarray | None = None
+        sobel_y_map: np.ndarray | None = None
+        edge_map: np.ndarray | None = None
+
+        if directionality > 0.0:
+            try:
+                import cv2
+                sobel_x_map = cv2.Sobel(img, cv2.CV_32F, 1, 0, ksize=3)
+                sobel_y_map = cv2.Sobel(img, cv2.CV_32F, 0, 1, ksize=3)
+            except ImportError:
+                gy_np, gx_np = np.gradient(img.astype(np.float32))
+                sobel_x_map = gx_np
+                sobel_y_map = gy_np
+
+        if edge_power > 0.0:
+            try:
+                import cv2
+                edge_map = cv2.Canny(img, 50, 150)
+            except ImportError:
+                pass  # Canny unavailable without OpenCV; edge_power has no effect
 
         # --- coordinate mapping: pixel → mm ---
         rect_x1, rect_y1, rect_x2, rect_y2 = img_rect
@@ -546,7 +651,12 @@ class SketchGenerator(Generator):
 
                 # Trace path from seed
                 path = self._trace_darkest_path(
-                    lightened, seed_y, seed_x, angle_tests, line_max_length, step_size_px
+                    lightened, seed_y, seed_x, angle_tests, line_max_length, step_size_px,
+                    sobel_x=sobel_x_map,
+                    sobel_y=sobel_y_map,
+                    edge_map=edge_map,
+                    directionality=directionality,
+                    edge_power=edge_power,
                 )
 
                 # Erase regardless of path length to prevent infinite loops
