@@ -819,6 +819,15 @@ class TestAllPresets:
                         f"Preset {preset.name!r}: point is not a 2-tuple"
                     )
 
+    def test_mst_mode_in_render_mode_choices(self):
+        from plottter.generators.voronoi import VoronoiGenerator
+        from plottter.generators.base import ChoiceParam
+        gen = VoronoiGenerator()
+        params = gen.get_parameters()
+        rp = next(p for p in params if p.name == "render_mode")
+        assert isinstance(rp, ChoiceParam)
+        assert "MST (Tree)" in rp.choices
+
     def test_preset_output_within_canvas_bounds(self):
         """Preset output coordinates must lie within the canvas drawing area."""
         presets = self.gen.get_presets()
@@ -841,3 +850,166 @@ class TestAllPresets:
                     assert y <= y2 + tol, (
                         f"Preset {preset.name!r}: y={y:.3f} > y_max={y2}"
                     )
+
+
+# ---------------------------------------------------------------------------
+# _render_mst — Task 72.1
+# ---------------------------------------------------------------------------
+
+
+class TestRenderMST:
+    """Tests for _render_mst: N-1 edges, subset of Delaunay, connected tree, clipped."""
+
+    def setup_method(self):
+        from plottter.generators.voronoi import _render_mst
+        self._fn = _render_mst
+        self.canvas = make_canvas()
+        self.x1, self.y1, self.x2, self.y2 = self.canvas.drawing_area()
+        self.bbox = (self.x1, self.y1, self.x2, self.y2)
+
+    def _make_interior_seeds(self, n: int, seed: int = 42) -> np.ndarray:
+        """Seeds strictly inside the bbox so no clipping removes any MST edge."""
+        rng = np.random.default_rng(seed)
+        margin = 5.0
+        seeds = rng.random((n, 2))
+        seeds[:, 0] = self.x1 + margin + seeds[:, 0] * (self.x2 - self.x1 - 2 * margin)
+        seeds[:, 1] = self.y1 + margin + seeds[:, 1] * (self.y2 - self.y1 - 2 * margin)
+        return seeds
+
+    # (a) MST produces exactly N-1 edges for N interior points
+    def test_mst_produces_n_minus_1_edges(self):
+        n = 50
+        seeds = self._make_interior_seeds(n)
+        result = self._fn(seeds, self.bbox)
+        assert len(result) == n - 1, (
+            f"MST should produce exactly N-1={n-1} edges, got {len(result)}"
+        )
+
+    # (b) MST edges are a subset of Delaunay edges
+    def test_mst_edges_are_subset_of_delaunay_edges(self):
+        from scipy.spatial import Delaunay
+        from scipy.sparse import csr_matrix
+        from scipy.sparse.csgraph import minimum_spanning_tree
+
+        n = 40
+        seeds = self._make_interior_seeds(n)
+
+        tri = Delaunay(seeds)
+        delaunay_edges: set[frozenset] = set()
+        for simplex in tri.simplices:
+            for i in range(3):
+                a = int(simplex[i])
+                b = int(simplex[(i + 1) % 3])
+                delaunay_edges.add(frozenset([a, b]))
+
+        # Rebuild MST index pairs the same way _render_mst does
+        seen: set[tuple[int, int]] = set()
+        rows, cols, data = [], [], []
+        for simplex in tri.simplices:
+            for i in range(3):
+                a_idx = int(simplex[i])
+                b_idx = int(simplex[(i + 1) % 3])
+                key = (min(a_idx, b_idx), max(a_idx, b_idx))
+                if key in seen:
+                    continue
+                seen.add(key)
+                dist = float(
+                    np.hypot(
+                        seeds[a_idx, 0] - seeds[b_idx, 0],
+                        seeds[a_idx, 1] - seeds[b_idx, 1],
+                    )
+                )
+                rows.append(key[0])
+                cols.append(key[1])
+                data.append(dist)
+
+        dist_matrix = csr_matrix((data, (rows, cols)), shape=(n, n))
+        mst = minimum_spanning_tree(dist_matrix)
+        mst_coo = mst.tocoo()
+
+        for a_idx, b_idx in zip(mst_coo.row, mst_coo.col):
+            key = frozenset([int(a_idx), int(b_idx)])
+            assert key in delaunay_edges, (
+                f"MST edge ({a_idx}, {b_idx}) not in Delaunay edges"
+            )
+
+    # (c) MST is a connected tree (no cycles, all nodes reachable)
+    def test_mst_is_connected_tree(self):
+        n = 30
+        seeds = self._make_interior_seeds(n)
+        result = self._fn(seeds, self.bbox)
+        assert len(result) == n - 1, f"Tree must have N-1={n-1} edges, got {len(result)}"
+
+        # Map polyline endpoints back to nearest seed index
+        def nearest(pt: tuple[float, float]) -> int:
+            return int(np.argmin(np.hypot(seeds[:, 0] - pt[0], seeds[:, 1] - pt[1])))
+
+        adj: dict[int, set[int]] = {i: set() for i in range(n)}
+        for pl in result:
+            a = nearest(pl[0])
+            b = nearest(pl[-1])
+            assert a != b, "MST edge endpoints should map to distinct seeds"
+            adj[a].add(b)
+            adj[b].add(a)
+
+        # BFS connectivity check
+        visited = {0}
+        queue = [0]
+        while queue:
+            node = queue.pop()
+            for nb in adj[node]:
+                if nb not in visited:
+                    visited.add(nb)
+                    queue.append(nb)
+        assert len(visited) == n, (
+            f"MST should connect all {n} nodes; only reached {len(visited)}"
+        )
+
+    # (d) Edges clipped to canvas bounds
+    def test_edges_clipped_to_canvas(self):
+        n = 50
+        seeds = self._make_interior_seeds(n)
+        result = self._fn(seeds, self.bbox)
+        tol = 1e-6
+        for pl in result:
+            for x, y in pl:
+                assert x >= self.x1 - tol, f"x={x:.4f} < x_min={self.x1}"
+                assert x <= self.x2 + tol, f"x={x:.4f} > x_max={self.x2}"
+                assert y >= self.y1 - tol, f"y={y:.4f} < y_min={self.y1}"
+                assert y <= self.y2 + tol, f"y={y:.4f} > y_max={self.y2}"
+
+    def test_returns_valid_polylines(self):
+        seeds = self._make_interior_seeds(20)
+        result = self._fn(seeds, self.bbox)
+        assert isinstance(result, list)
+        for pl in result:
+            assert isinstance(pl, list)
+            assert len(pl) >= 2
+            for pt in pl:
+                assert len(pt) == 2
+                assert isinstance(pt[0], float)
+                assert isinstance(pt[1], float)
+
+    def test_returns_empty_for_single_point(self):
+        seeds = self._make_interior_seeds(1)
+        result = self._fn(seeds, self.bbox)
+        assert result == []
+
+    def test_mst_mode_in_generate(self):
+        """generate() with render_mode='MST (Tree)' returns valid non-empty polylines."""
+        from plottter.generators.voronoi import VoronoiGenerator
+        gen = VoronoiGenerator()
+        result = gen.generate(
+            {
+                "render_mode": "MST (Tree)",
+                "num_points": 50,
+                "seed_method": "Random",
+                "random_seed": 7,
+            },
+            self.canvas,
+        )
+        assert isinstance(result, list)
+        assert len(result) > 0
+        for pl in result:
+            assert isinstance(pl, list)
+            assert len(pl) >= 2

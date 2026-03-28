@@ -551,6 +551,93 @@ def _lloyd_relax(
     return pts
 
 
+def _render_mst(
+    seeds: np.ndarray, bbox: tuple[float, float, float, float]
+) -> list[Polyline]:
+    """Render the Minimum Spanning Tree of seed points, clipped to *bbox*.
+
+    Uses Delaunay triangulation as the candidate edge set (MST edges are always
+    a subset of Delaunay edges), then computes the MST via
+    ``scipy.sparse.csgraph.minimum_spanning_tree``.
+
+    Parameters
+    ----------
+    seeds:
+        Array of shape (N, 2) with seed coordinates in canvas mm.
+    bbox:
+        ``(x_min, y_min, x_max, y_max)`` clipping rectangle in canvas mm.
+    """
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import minimum_spanning_tree
+    from scipy.spatial import Delaunay  # lazy import
+
+    n = len(seeds)
+    if n < 2:
+        return []
+
+    clip_rect = shapely_box(*bbox)
+
+    if n == 2:
+        line = LineString([seeds[0], seeds[1]])
+        clipped = line.intersection(clip_rect)
+        if clipped.is_empty:
+            return []
+        coords = list(clipped.coords)
+        if len(coords) >= 2:
+            return [[(float(x), float(y)) for x, y in coords]]
+        return []
+
+    tri = Delaunay(seeds)
+
+    # Build upper-triangular sparse distance matrix from Delaunay edges
+    seen: set[tuple[int, int]] = set()
+    rows: list[int] = []
+    cols: list[int] = []
+    data: list[float] = []
+
+    for simplex in tri.simplices:
+        for i in range(3):
+            a_idx = int(simplex[i])
+            b_idx = int(simplex[(i + 1) % 3])
+            key = (min(a_idx, b_idx), max(a_idx, b_idx))
+            if key in seen:
+                continue
+            seen.add(key)
+            dist = float(
+                np.hypot(
+                    seeds[a_idx, 0] - seeds[b_idx, 0],
+                    seeds[a_idx, 1] - seeds[b_idx, 1],
+                )
+            )
+            rows.append(key[0])
+            cols.append(key[1])
+            data.append(dist)
+
+    dist_matrix = csr_matrix((data, (rows, cols)), shape=(n, n))
+    mst = minimum_spanning_tree(dist_matrix)
+    mst_coo = mst.tocoo()
+
+    polylines: list[Polyline] = []
+    for a_idx, b_idx in zip(mst_coo.row, mst_coo.col):
+        a = seeds[int(a_idx)]
+        b = seeds[int(b_idx)]
+        line = LineString([a, b])
+        clipped = line.intersection(clip_rect)
+        if clipped.is_empty:
+            continue
+        if clipped.geom_type == "LineString":
+            coords = list(clipped.coords)
+            if len(coords) >= 2:
+                polylines.append([(float(x), float(y)) for x, y in coords])
+        elif clipped.geom_type == "MultiLineString":
+            for part in clipped.geoms:
+                coords = list(part.coords)
+                if len(coords) >= 2:
+                    polylines.append([(float(x), float(y)) for x, y in coords])
+
+    return polylines
+
+
 def _render_centroids(seeds: np.ndarray, radius: float) -> list[Polyline]:
     """Render a small circle at each seed location to mark Voronoi centroids."""
     n_pts = 12
@@ -596,11 +683,12 @@ class VoronoiGenerator(Generator):
                     "Delaunay Edges",
                     "Both",
                     "Voronoi + Centroids",
+                    "MST (Tree)",
                 ],
                 default="Voronoi Edges",
                 description=(
                     "What to draw: Voronoi cell edges, Delaunay triangulation edges, "
-                    "both, or Voronoi edges with centroid markers."
+                    "both, Voronoi edges with centroid markers, or Minimum Spanning Tree."
                 ),
             ),
             FloatParam(
@@ -923,6 +1011,9 @@ class VoronoiGenerator(Generator):
 
         if render_mode == "Voronoi + Centroids":
             polylines.extend(_render_centroids(seeds, centroid_radius))
+
+        if render_mode == "MST (Tree)":
+            polylines.extend(_render_mst(seeds, bbox))
 
         if progress_callback:
             progress_callback(100)
