@@ -148,6 +148,7 @@ class _PresetCard(QFrame):
         preset_name: str,
         generator_display_name: str,
         is_user: bool = False,
+        description: str = "",
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -156,6 +157,8 @@ class _PresetCard(QFrame):
         self._is_user = is_user
         self._selected = False
         self._deleted: bool = False
+        if description:
+            self.setToolTip(description)
 
         self.setFrameShape(QFrame.Shape.Box)
         self.setLineWidth(1)
@@ -337,7 +340,7 @@ class PresetGalleryDialog(QDialog):
 
         # --- Built-in presets ---
         for gen_cls, preset in builtin_presets:
-            card = _PresetCard(gen_cls, preset.name, gen_cls.name, is_user=False, parent=self)
+            card = _PresetCard(gen_cls, preset.name, gen_cls.name, is_user=False, description=preset.description, parent=self)
             card.clicked.connect(self._on_card_clicked)
             self._grid_layout.addWidget(card, row, col)
             self._cards.append(card)
@@ -369,7 +372,7 @@ class PresetGalleryDialog(QDialog):
 
             for gen_cls, preset in user_presets:
                 card = _PresetCard(
-                    gen_cls, preset.name, gen_cls.name, is_user=True, parent=self
+                    gen_cls, preset.name, gen_cls.name, is_user=True, description=preset.description, parent=self
                 )
                 card.clicked.connect(self._on_card_clicked)
                 card.delete_requested.connect(self._on_delete_user_preset)

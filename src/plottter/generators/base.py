@@ -102,6 +102,7 @@ class FontParam(Parameter):
 class Preset:
     name: str
     params: dict[str, Any] = field(default_factory=dict)
+    description: str = ""
 
 
 class Generator(ABC):

@@ -2662,6 +2662,8 @@ class SettingsPanel(QScrollArea):
                 idx = self._preset_combo.count()
                 self._preset_combo.addItem(preset.name)
                 self._preset_combo.setItemData(idx, "builtin", Qt.ItemDataRole.UserRole)
+                if preset.description:
+                    self._preset_combo.setItemData(idx, preset.description, Qt.ItemDataRole.ToolTipRole)
 
             # Load and cache user presets for this generator.
             try:

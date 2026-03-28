@@ -350,6 +350,39 @@ class DotGridGenerator(Generator):
                     "pen_width_mm": 0.2,
                 },
             ),
+            Preset(
+                name="Convergent Dots",
+                params={
+                    "dot_shape": "Circle",
+                    "convergence": 0.5,
+                    "noise_strength": 0.0,
+                    "base_size_mm": 2.0,
+                    "spacing_mm": 5.0,
+                    "grid_cols": 25,
+                    "grid_rows": 25,
+                },
+                description=(
+                    "Grid points attracted toward darker areas of a source image.\n"
+                    "Requires a source image (_source_image) to drive convergence."
+                ),
+            ),
+            Preset(
+                name="Warped Grid",
+                params={
+                    "dot_shape": "Square",
+                    "convergence": 0.8,
+                    "noise_strength": 0.2,
+                    "base_size_mm": 2.5,
+                    "spacing_mm": 5.0,
+                    "grid_cols": 25,
+                    "grid_rows": 25,
+                    "noise_scale": 0.08,
+                },
+                description=(
+                    "Squares warped toward darker image regions with subtle noise distortion.\n"
+                    "Requires a source image (_source_image) to drive convergence."
+                ),
+            ),
         ]
 
     def generate(

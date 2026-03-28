@@ -462,3 +462,83 @@ class TestDotGridGenerator:
                 assert x <= draw_x2 + 2.0, f"Point x={x:.3f} outside right bound {draw_x2:.3f}"
                 assert y >= draw_y1 - 2.0, f"Point y={y:.3f} outside top bound {draw_y1:.3f}"
                 assert y <= draw_y2 + 2.0, f"Point y={y:.3f} outside bottom bound {draw_y2:.3f}"
+
+    # ------------------------------------------------------------------
+    # Convergence presets
+    # ------------------------------------------------------------------
+
+    def test_preset_convergent_dots_exists(self):
+        """Convergent Dots preset should exist with correct params."""
+        presets = {p.name: p for p in self.gen.get_presets()}
+        assert "Convergent Dots" in presets
+        p = presets["Convergent Dots"]
+        assert p.params["convergence"] == 0.5
+        assert p.params["dot_shape"] == "Circle"
+        assert p.params["noise_strength"] == 0.0
+        assert "_source_image" in p.description
+
+    def test_preset_warped_grid_exists(self):
+        """Warped Grid preset should exist with correct params."""
+        presets = {p.name: p for p in self.gen.get_presets()}
+        assert "Warped Grid" in presets
+        p = presets["Warped Grid"]
+        assert p.params["convergence"] == 0.8
+        assert p.params["dot_shape"] == "Square"
+        assert p.params["noise_strength"] == 0.2
+        assert "_source_image" in p.description
+
+    def test_convergent_dots_preset_without_image(self):
+        """Convergent Dots preset should produce valid output even without source image."""
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Convergent Dots"]
+        paths = self.gen.generate(p.params, self.canvas)
+        assert len(paths) > 0
+
+    def test_convergent_dots_preset_with_image(self):
+        """Convergent Dots preset should shift dots when a source image is provided."""
+        try:
+            import numpy as np
+        except ImportError:
+            pytest.skip("numpy not available")
+
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Convergent Dots"]
+
+        img_size = 64
+        img = np.zeros((img_size, img_size), dtype=np.uint8)
+        for col in range(img_size):
+            img[:, col] = int(col / (img_size - 1) * 255)
+
+        paths_no_img = self.gen.generate(p.params, self.canvas)
+        paths_with_img = self.gen.generate({**p.params, "_source_image": img}, self.canvas)
+
+        def center(path):
+            xs = [x for x, _ in path]
+            ys = [y for _, y in path]
+            return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
+
+        centers_no = [center(path) for path in paths_no_img]
+        centers_with = [center(path) for path in paths_with_img]
+        diffs = [
+            math.hypot(c1[0] - c2[0], c1[1] - c2[1])
+            for c1, c2 in zip(centers_no, centers_with)
+        ]
+        assert any(d > 1e-6 for d in diffs), \
+            "Convergent Dots preset with image should shift some dot centers"
+
+    def test_warped_grid_preset_with_image(self):
+        """Warped Grid preset should produce valid output with a source image."""
+        try:
+            import numpy as np
+        except ImportError:
+            pytest.skip("numpy not available")
+
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Warped Grid"]
+
+        img_size = 64
+        img = np.zeros((img_size, img_size), dtype=np.uint8)
+        img[:, img_size // 2:] = 255
+
+        paths = self.gen.generate({**p.params, "_source_image": img}, self.canvas)
+        assert len(paths) > 0
