@@ -107,27 +107,51 @@ def _apply_oscillation(
     osc_amplitude: float,
     osc_wavelength_mm: float,
     osc_mode: str,
-    brightness_scale: float,
+    img: np.ndarray,
+    img_rect: "tuple[float, float, float, float]",
 ) -> Polyline:
     """Displace each point in polyline perpendicular to hatch direction using a wave.
 
     cos_a/sin_a define the hatch direction. Displacement is along the perpendicular
-    (-sin_a, cos_a). brightness_scale in [0,1]: 1=full amplitude (dark), 0=none (white).
+    (-sin_a, cos_a). Amplitude scales per-point with local brightness (darker = more
+    displacement). Phase is based on cumulative arc length along the polyline.
     """
-    amp = osc_amplitude * brightness_scale
-    if amp == 0.0 or osc_wavelength_mm <= 0.0:
+    if osc_amplitude == 0.0 or osc_wavelength_mm <= 0.0:
         return polyline
+
+    draw_x1, draw_y1, draw_x2, draw_y2 = img_rect
+    draw_w = draw_x2 - draw_x1
+    draw_h = draw_y2 - draw_y1
+    img_h, img_w = img.shape[:2]
+
     result: Polyline = []
-    for x, y in polyline:
-        # Project point onto hatch direction to get distance along line
-        d = x * cos_a + y * sin_a
-        phase = 2.0 * math.pi * d / osc_wavelength_mm
-        if osc_mode == "Sawtooth":
-            wave = 2.0 * ((d / osc_wavelength_mm) % 1.0) - 1.0
+    arc_length = 0.0
+
+    for i, (x, y) in enumerate(polyline):
+        if i > 0:
+            px0, py0 = polyline[i - 1]
+            arc_length += math.sqrt((x - px0) ** 2 + (y - py0) ** 2)
+
+        # Sample brightness at (x, y) using bilinear interpolation
+        if draw_w > 0 and draw_h > 0:
+            px = max(0.0, min(img_w - 1.0, (x - draw_x1) / draw_w * img_w))
+            py_img = max(0.0, min(img_h - 1.0, (y - draw_y1) / draw_h * img_h))
+            brightness = _sample_image_at(img, px, py_img)
         else:
-            wave = math.sin(phase)
+            brightness = 0.0
+
+        # Scale amplitude by darkness (bright areas → small displacement)
+        amp = osc_amplitude * max(0.0, 1.0 - brightness / 255.0)
+
+        t = arc_length / osc_wavelength_mm
+        if osc_mode == "Sawtooth":
+            wave = 2.0 * (t % 1.0) - 1.0
+        else:
+            wave = math.sin(2.0 * math.pi * t)
+
         offset = amp * wave
         result.append((x + offset * (-sin_a), y + offset * cos_a))
+
     return result
 
 
@@ -289,9 +313,8 @@ def _generate_parallel_hatch(
             line_segments.append(current_segment)
 
         if oscillation and line_segments:
-            brightness_scale = max(0.0, 1.0 - avg_brightness / 255.0)
             line_segments = [
-                _apply_oscillation(seg, cos_a, sin_a, osc_amplitude, osc_wavelength_mm, osc_mode, brightness_scale)
+                _apply_oscillation(seg, cos_a, sin_a, osc_amplitude, osc_wavelength_mm, osc_mode, img, (draw_x1, draw_y1, draw_x2, draw_y2))
                 for seg in line_segments
             ]
 
