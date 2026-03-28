@@ -59,7 +59,7 @@ class SketchGenerator(Generator):
                 min=4,
                 max=64,
                 step=1,
-                default=16,
+                default=8,
                 description="Search region size in pixels — smaller = more precise seed placement",
             ),
             # --- standard image preprocessing params ---
@@ -112,7 +112,7 @@ class SketchGenerator(Generator):
                 min=10,
                 max=500,
                 step=1,
-                default=100,
+                default=150,
                 description="Maximum number of steps to trace per path",
             ),
             IntParam(
@@ -121,7 +121,7 @@ class SketchGenerator(Generator):
                 min=4,
                 max=36,
                 step=1,
-                default=8,
+                default=16,
                 description="Number of directions to test at each step — 4 = square grid, 8 = octagonal, higher = smoother",
             ),
             IntParam(
@@ -130,7 +130,7 @@ class SketchGenerator(Generator):
                 min=1,
                 max=10,
                 step=1,
-                default=2,
+                default=1,
                 description="Pixel distance to advance per tracing step",
             ),
             # --- erase params ---
@@ -140,7 +140,7 @@ class SketchGenerator(Generator):
                 min=1,
                 max=20,
                 step=1,
-                default=3,
+                default=4,
                 description="Radius of erased area around each drawn line — larger = sparser result",
             ),
             IntParam(
@@ -149,8 +149,17 @@ class SketchGenerator(Generator):
                 min=10,
                 max=200,
                 step=1,
-                default=50,
+                default=30,
                 description="How much to brighten drawn areas — higher = lines spread out faster",
+            ),
+            IntParam(
+                name="brightness_ceiling",
+                label="Brightness Ceiling",
+                min=200,
+                max=255,
+                step=1,
+                default=250,
+                description="Tracing stops when a pixel exceeds this brightness — lower = trace more into bright areas",
             ),
             # --- directionality / edge params ---
             FloatParam(
@@ -202,19 +211,20 @@ class SketchGenerator(Generator):
         _base = {
             "line_density": 50.0,
             "line_max_limit": 10_000,
-            "block_size": 16,
+            "block_size": 8,
             "invert": False,
             "brightness": 0.0,
             "contrast": 0.0,
             "blur_radius": 1.0,
             "line_min_length": 5,
-            "line_max_length": 100,
-            "angle_tests": 8,
-            "step_size_px": 2,
-            "erase_radius": 3,
-            "erase_amount": 50,
+            "line_max_length": 150,
+            "angle_tests": 16,
+            "step_size_px": 1,
+            "erase_radius": 4,
+            "erase_amount": 30,
             "directionality": 0.0,
             "edge_power": 0.0,
+            "brightness_ceiling": 250,
             "x_offset_mm": 0.0,
             "y_offset_mm": 0.0,
         }
@@ -224,21 +234,14 @@ class SketchGenerator(Generator):
                 name="Sketch Lines",
                 params={
                     **_base,
-                    "angle_tests": 8,
                     "line_max_length": 80,
-                    "erase_radius": 3,
-                    "erase_amount": 50,
-                    "directionality": 0.0,
-                    "edge_power": 0.0,
                 },
             ),
             Preset(
                 name="Contour Sketch",
                 params={
                     **_base,
-                    "angle_tests": 16,
                     "line_max_length": 120,
-                    "erase_radius": 4,
                     "erase_amount": 40,
                     "directionality": 60.0,
                     "edge_power": 20.0,
@@ -251,7 +254,6 @@ class SketchGenerator(Generator):
                     "angle_tests": 4,
                     "line_max_length": 60,
                     "erase_radius": 2,
-                    "erase_amount": 30,
                     "line_density": 80.0,
                 },
             ),
@@ -270,11 +272,8 @@ class SketchGenerator(Generator):
                 name="Edge Trace",
                 params={
                     **_base,
-                    "angle_tests": 16,
-                    "line_max_length": 150,
                     "directionality": 30.0,
                     "edge_power": 60.0,
-                    "erase_radius": 3,
                 },
             ),
         ]
@@ -381,8 +380,6 @@ class SketchGenerator(Generator):
     # Darkest-path tracing
     # ------------------------------------------------------------------
 
-    _BRIGHTNESS_CEILING = 250
-
     @staticmethod
     def _trace_darkest_path(
         lightened: np.ndarray,
@@ -396,6 +393,7 @@ class SketchGenerator(Generator):
         edge_map: np.ndarray | None = None,
         directionality: float = 0.0,
         edge_power: float = 0.0,
+        brightness_ceiling: int = 250,
     ) -> list[tuple[float, float]]:
         """Trace a path from (seed_y, seed_x) by greedily choosing the best
         neighbouring direction at each step.
@@ -437,7 +435,7 @@ class SketchGenerator(Generator):
         List of ``(px_x, px_y)`` pixel coordinates.
         """
         h, w = lightened.shape[:2]
-        CEIL = SketchGenerator._BRIGHTNESS_CEILING
+        CEIL = brightness_ceiling
 
         # Seed must be inside the image
         if not (0 <= seed_y < h and 0 <= seed_x < w):
@@ -647,20 +645,21 @@ class SketchGenerator(Generator):
         # Working copy for darkness search
         lightened = img.copy()
 
-        block_size = int(params.get("block_size", 16))
+        block_size = int(params.get("block_size", 8))
         block_size = max(1, block_size)
 
         # --- generation parameters ---
         line_density = float(params.get("line_density", 50.0))
         line_max_limit = int(params.get("line_max_limit", 10_000))
         line_min_length = int(params.get("line_min_length", 5))
-        line_max_length = int(params.get("line_max_length", 100))
-        angle_tests = int(params.get("angle_tests", 8))
-        step_size_px = int(params.get("step_size_px", 2))
-        erase_radius = int(params.get("erase_radius", 3))
-        erase_amount = int(params.get("erase_amount", 50))
+        line_max_length = int(params.get("line_max_length", 150))
+        angle_tests = int(params.get("angle_tests", 16))
+        step_size_px = int(params.get("step_size_px", 1))
+        erase_radius = int(params.get("erase_radius", 4))
+        erase_amount = int(params.get("erase_amount", 30))
         directionality = float(params.get("directionality", 0.0))
         edge_power = float(params.get("edge_power", 0.0))
+        brightness_ceiling = int(params.get("brightness_ceiling", 250))
 
         # --- running brightness sum (avoids full-image mean() each iteration) ---
         total_pixels = img_h * img_w
@@ -730,6 +729,7 @@ class SketchGenerator(Generator):
                     edge_map=edge_map,
                     directionality=directionality,
                     edge_power=edge_power,
+                    brightness_ceiling=brightness_ceiling,
                 )
 
                 # Erase regardless of path length to prevent infinite loops;
