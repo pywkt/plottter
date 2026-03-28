@@ -11,12 +11,19 @@ try:
 except ImportError:
     _NOISE_AVAILABLE = False
 
+try:
+    import numpy as _np
+    _NUMPY_AVAILABLE = True
+except ImportError:
+    _NUMPY_AVAILABLE = False
+
 from plottter.generators import register_generator
 from plottter.generators.base import (
     BoolParam,
     ChoiceParam,
     FloatParam,
     Generator,
+    ImageParam,
     IntParam,
     Parameter,
     Preset,
@@ -223,6 +230,27 @@ class DotGridGenerator(Generator):
                 visible_when={"filled": [True]},
             ),
             FloatParam(
+                name="convergence",
+                label="Convergence",
+                min=0.0,
+                max=1.0,
+                step=0.05,
+                default=0.0,
+                description=(
+                    "Nudge grid points toward darker image areas — "
+                    "0 = regular grid, 1 = maximum attraction"
+                ),
+            ),
+            ImageParam(
+                name="_source_image",
+                label="Source Image",
+                randomizable=False,
+                description=(
+                    "Image used to drive point convergence (dark areas attract grid points). "
+                    "Only active when Convergence > 0."
+                ),
+            ),
+            FloatParam(
                 name="x_offset_mm",
                 label="X Offset (mm)",
                 min=-500.0,
@@ -345,12 +373,39 @@ class DotGridGenerator(Generator):
         jitter_mm = float(params.get("jitter_mm", 0.0))
         filled = bool(params.get("filled", False))
         pen_width = float(params.get("pen_width_mm", 0.3))
+        convergence = float(params.get("convergence", 0.0))
+        source_image = params.get("_source_image")
         x_off = float(params.get("x_offset_mm", 0.0))
         y_off = float(params.get("y_offset_mm", 0.0))
 
         draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
         draw_w = draw_x2 - draw_x1
         draw_h = draw_y2 - draw_y1
+
+        # --- Precompute convergence maps (Sobel gradient) ---
+        _gray_img = None
+        _sobel_x = None
+        _sobel_y = None
+        _conv_img_w = 0
+        _conv_img_h = 0
+
+        if convergence > 0.0 and source_image is not None and _NUMPY_AVAILABLE:
+            gray = source_image
+            if gray.ndim == 3:
+                try:
+                    import cv2 as _cv2
+                    gray = _cv2.cvtColor(gray, _cv2.COLOR_RGB2GRAY)
+                except ImportError:
+                    gray = gray.mean(axis=2).astype(_np.uint8)
+            _gray_img = gray.astype(_np.float32)
+            _conv_img_h, _conv_img_w = _gray_img.shape
+            try:
+                import cv2 as _cv2
+                _sobel_x = _cv2.Sobel(_gray_img, _cv2.CV_32F, 1, 0, ksize=3)
+                _sobel_y = _cv2.Sobel(_gray_img, _cv2.CV_32F, 0, 1, ksize=3)
+            except ImportError:
+                # Fallback: numpy gradient (central differences)
+                _sobel_y, _sobel_x = _np.gradient(_gray_img)
 
         # Centre the grid on the drawing area
         grid_w = (grid_cols - 1) * spacing
@@ -416,6 +471,29 @@ class DotGridGenerator(Generator):
                     )
                     cx_final += dx_noise * jitter_mm
                     cy_final += dy_noise * jitter_mm
+
+                # ---- convergence: attract toward darker image areas ----
+                if _gray_img is not None and _sobel_x is not None and _sobel_y is not None:
+                    # Map mm position to image pixel coordinates
+                    px = (cx_final - draw_x1) / draw_w * _conv_img_w
+                    py = (cy_final - draw_y1) / draw_h * _conv_img_h
+                    px_i = int(max(0, min(_conv_img_w - 1, round(px))))
+                    py_i = int(max(0, min(_conv_img_h - 1, round(py))))
+
+                    brightness = float(_gray_img[py_i, px_i])
+                    gx_val = float(_sobel_x[py_i, px_i])
+                    gy_val = float(_sobel_y[py_i, px_i])
+                    gmag = math.hypot(gx_val, gy_val)
+
+                    if gmag > 1e-6:
+                        # Gradient points toward brighter areas; negate to move toward darker
+                        scale = convergence * spacing * (1.0 - brightness / 255.0)
+                        cx_final += (-gx_val / gmag) * scale
+                        cy_final += (-gy_val / gmag) * scale
+
+                    # Clamp to canvas drawing area
+                    cx_final = max(draw_x1, min(draw_x2, cx_final))
+                    cy_final = max(draw_y1, min(draw_y2, cy_final))
 
                 # ---- emit shape(s) ----
                 if filled:

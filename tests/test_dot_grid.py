@@ -357,3 +357,108 @@ class TestDotGridGenerator:
         paths_wide = self.gen.generate({**base_params, "pen_width_mm": 1.0}, self.canvas)
         assert len(paths_narrow) > len(paths_wide), \
             "Smaller pen_width_mm should produce more concentric lines per dot"
+
+    # ------------------------------------------------------------------
+    # Convergence
+    # ------------------------------------------------------------------
+
+    def test_convergence_zero_produces_regular_grid(self):
+        """convergence=0 should produce the same output as without convergence param."""
+        base_params = {
+            "dot_shape": "Square", "grid_cols": 4, "grid_rows": 4,
+            "base_size_mm": 1.0, "spacing_mm": 10.0, "noise_strength": 0.0,
+            "rotation_noise": 0.0, "jitter_mm": 0.0,
+        }
+        paths_default = self.gen.generate(base_params, self.canvas)
+        paths_conv0 = self.gen.generate({**base_params, "convergence": 0.0}, self.canvas)
+        # Identical output
+        assert len(paths_default) == len(paths_conv0)
+        for p1, p2 in zip(paths_default, paths_conv0):
+            for (x1, y1), (x2, y2) in zip(p1, p2):
+                assert abs(x1 - x2) < 1e-9 and abs(y1 - y2) < 1e-9
+
+    def test_convergence_without_image_no_effect(self):
+        """convergence > 0 with no source image should produce the same grid as convergence=0."""
+        base_params = {
+            "dot_shape": "Circle", "grid_cols": 4, "grid_rows": 4,
+            "base_size_mm": 2.0, "spacing_mm": 8.0, "noise_strength": 0.0,
+        }
+        paths_no_conv = self.gen.generate({**base_params, "convergence": 0.0}, self.canvas)
+        paths_conv = self.gen.generate(
+            {**base_params, "convergence": 0.5, "_source_image": None}, self.canvas
+        )
+        assert len(paths_no_conv) == len(paths_conv)
+        for p1, p2 in zip(paths_no_conv, paths_conv):
+            for (x1, y1), (x2, y2) in zip(p1, p2):
+                assert abs(x1 - x2) < 1e-9 and abs(y1 - y2) < 1e-9
+
+    def test_convergence_shifts_toward_dark_areas(self):
+        """convergence=0.5 with an image should shift dot centers compared to convergence=0."""
+        try:
+            import numpy as np
+        except ImportError:
+            pytest.skip("numpy not available")
+
+        # Create a simple gradient image: left side dark, right side bright
+        img_size = 64
+        img = np.zeros((img_size, img_size), dtype=np.uint8)
+        for col in range(img_size):
+            img[:, col] = int(col / (img_size - 1) * 255)
+
+        base_params = {
+            "dot_shape": "Square", "grid_cols": 5, "grid_rows": 5,
+            "base_size_mm": 1.0, "spacing_mm": 8.0, "noise_strength": 0.0,
+            "rotation_noise": 0.0, "jitter_mm": 0.0,
+        }
+
+        def center(path):
+            xs = [x for x, _ in path]
+            ys = [y for _, y in path]
+            return ((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0)
+
+        paths_no_conv = self.gen.generate({**base_params, "convergence": 0.0}, self.canvas)
+        paths_conv = self.gen.generate(
+            {**base_params, "convergence": 0.5, "_source_image": img}, self.canvas
+        )
+
+        centers_no = [center(p) for p in paths_no_conv]
+        centers_conv = [center(p) for p in paths_conv]
+
+        # At least some centers should have shifted
+        diffs = [
+            math.hypot(c1[0] - c2[0], c1[1] - c2[1])
+            for c1, c2 in zip(centers_no, centers_conv)
+        ]
+        assert any(d > 1e-6 for d in diffs), \
+            "convergence=0.5 with a gradient image should shift some dot centers"
+
+    def test_convergence_points_within_canvas_bounds(self):
+        """All dot centers after convergence should lie within the canvas drawing area."""
+        try:
+            import numpy as np
+        except ImportError:
+            pytest.skip("numpy not available")
+
+        # Strong gradient image with very dark and very bright areas
+        img_size = 64
+        img = np.zeros((img_size, img_size), dtype=np.uint8)
+        img[:, img_size // 2:] = 255  # left dark, right white
+
+        draw_x1, draw_y1, draw_x2, draw_y2 = self.canvas.drawing_area()
+
+        paths = self.gen.generate(
+            {
+                "dot_shape": "Circle", "grid_cols": 6, "grid_rows": 6,
+                "base_size_mm": 1.0, "spacing_mm": 8.0, "noise_strength": 0.0,
+                "convergence": 1.0, "_source_image": img,
+            },
+            self.canvas,
+        )
+
+        for path in paths:
+            for x, y in path:
+                # Allow a dot-radius margin since dots extend past center
+                assert x >= draw_x1 - 2.0, f"Point x={x:.3f} outside left bound {draw_x1:.3f}"
+                assert x <= draw_x2 + 2.0, f"Point x={x:.3f} outside right bound {draw_x2:.3f}"
+                assert y >= draw_y1 - 2.0, f"Point y={y:.3f} outside top bound {draw_y1:.3f}"
+                assert y <= draw_y2 + 2.0, f"Point y={y:.3f} outside bottom bound {draw_y2:.3f}"
