@@ -381,7 +381,7 @@ class SketchGenerator(Generator):
     # Darkest-path tracing
     # ------------------------------------------------------------------
 
-    _BRIGHTNESS_CEILING = 240
+    _BRIGHTNESS_CEILING = 250
 
     @staticmethod
     def _trace_darkest_path(
@@ -697,17 +697,24 @@ class SketchGenerator(Generator):
         initial_avg_brightness = running_sum / total_pixels
         # target_brightness: how bright the lightened image must become before
         # we stop.  Higher line_density → brighter target → more lines drawn.
-        target_brightness = initial_avg_brightness + (255.0 - initial_avg_brightness) * (line_density / 100.0)
+        target_brightness = initial_avg_brightness + (255.0 - initial_avg_brightness) * (line_density / 100.0) ** 0.5
 
         result: list[Polyline] = []
         total_segments = 0
+        _iter_count = 0
+        current_avg = initial_avg_brightness
 
         if target_brightness > initial_avg_brightness:
             while total_segments < line_max_limit:
                 if cancelled_callback and cancelled_callback():
                     break
 
-                current_avg = running_sum / total_pixels
+                # Check brightness target every 50 iterations to avoid per-iteration
+                # mean computation overhead on large images.
+                if _iter_count % 50 == 0:
+                    current_avg = running_sum / total_pixels
+                _iter_count += 1
+
                 if current_avg >= target_brightness:
                     break
 

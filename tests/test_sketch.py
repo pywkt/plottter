@@ -321,8 +321,8 @@ class TestTraceDarkestPath:
 
     def test_bright_seed_stops_immediately(self):
         """If the seed pixel is above the brightness ceiling, stop after the seed."""
-        # All pixels set to 245 (above ceiling of 240)
-        img = np.full((32, 32), 245, dtype=np.uint8)
+        # All pixels set to 252 (above ceiling of 250)
+        img = np.full((32, 32), 252, dtype=np.uint8)
         path = self.gen._trace_darkest_path(img, 16, 16, 8, 50, 2)
         # Should return only the seed (stopped immediately due to brightness)
         assert len(path) == 1
