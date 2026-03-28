@@ -643,9 +643,27 @@ class StippleGenerator(Generator):
                     "iterations and stops early when no splits/merges occur."
                 ),
             ),
+            ChoiceParam(
+                name="render_mode",
+                label="Render Mode",
+                choices=["Dots", "TSP Path"],
+                default="Dots",
+                description=(
+                    "Output mode — 'Dots': draw each stipple point as a small circle; "
+                    "'TSP Path': connect all stipple points into a single continuous path "
+                    "using nearest-neighbor TSP with optional 2-opt improvement."
+                ),
+            ),
+            BoolParam(
+                name="tsp_optimize",
+                label="2-opt Optimization",
+                default=True,
+                description="Apply 2-opt optimization to reduce travel distance of the TSP path",
+                visible_when={"render_mode": ["TSP Path"]},
+            ),
             BoolParam(
                 name="connect_tsp",
-                label="Connect via TSP Path",
+                label="Connect via TSP Path (legacy)",
                 default=False,
                 description="Connect all dots into a single continuous path using a nearest-neighbor TSP approximation",
             ),
@@ -832,6 +850,8 @@ class StippleGenerator(Generator):
                 params={
                     "num_points": 5000,
                     "iterations": 30,
+                    "render_mode": "Dots",
+                    "tsp_optimize": True,
                     "connect_tsp": False,
                     "min_dot_spacing_mm": 0.5,
                     "seed": 42,
@@ -849,6 +869,8 @@ class StippleGenerator(Generator):
                 params={
                     "num_points": 15000,
                     "iterations": 30,
+                    "render_mode": "Dots",
+                    "tsp_optimize": True,
                     "connect_tsp": False,
                     "min_dot_spacing_mm": 0.3,
                     "seed": 0,
@@ -866,7 +888,9 @@ class StippleGenerator(Generator):
                 params={
                     "num_points": 5000,
                     "iterations": 30,
-                    "connect_tsp": True,
+                    "render_mode": "TSP Path",
+                    "tsp_optimize": True,
+                    "connect_tsp": False,
                     "min_dot_spacing_mm": 0.5,
                     "seed": 42,
                     "invert": False,
@@ -886,6 +910,8 @@ class StippleGenerator(Generator):
                     # to a high-quality render.
                     "num_points": 1000,
                     "iterations": 5,
+                    "render_mode": "Dots",
+                    "tsp_optimize": True,
                     "connect_tsp": False,
                     "min_dot_spacing_mm": 0.5,
                     "seed": 42,
@@ -906,6 +932,8 @@ class StippleGenerator(Generator):
                     # contrast boost separates highlights from shadows.
                     "num_points": 8000,
                     "iterations": 40,
+                    "render_mode": "Dots",
+                    "tsp_optimize": True,
                     "connect_tsp": False,
                     "min_dot_spacing_mm": 0.4,
                     "seed": 7,
@@ -925,6 +953,8 @@ class StippleGenerator(Generator):
                     # and better blue-noise distribution than Lloyd.
                     "num_points": 5000,
                     "iterations": 30,
+                    "render_mode": "Dots",
+                    "tsp_optimize": True,
                     "connect_tsp": False,
                     "min_dot_spacing_mm": 0.5,
                     "seed": 42,
@@ -951,6 +981,8 @@ class StippleGenerator(Generator):
                     # images with large bright/dark regions.
                     "num_points": 5000,
                     "iterations": 40,
+                    "render_mode": "Dots",
+                    "tsp_optimize": True,
                     "connect_tsp": False,
                     "min_dot_spacing_mm": 0.5,
                     "seed": 42,
@@ -976,7 +1008,9 @@ class StippleGenerator(Generator):
                     # LBG stipple with TSP path connection.
                     "num_points": 5000,
                     "iterations": 30,
-                    "connect_tsp": True,
+                    "render_mode": "TSP Path",
+                    "tsp_optimize": True,
+                    "connect_tsp": False,
                     "min_dot_spacing_mm": 0.5,
                     "seed": 42,
                     "invert": False,
@@ -1043,6 +1077,8 @@ class StippleGenerator(Generator):
         algorithm = str(params.get("algorithm", "Lloyd"))
         num_points = int(params.get("num_points", 5000))
         iterations = int(params.get("iterations", 30))
+        render_mode = str(params.get("render_mode", "Dots"))
+        tsp_optimize = bool(params.get("tsp_optimize", True))
         connect_tsp = bool(params.get("connect_tsp", False))
         min_dot_spacing_mm = float(params.get("min_dot_spacing_mm", 0.5))
         seed = int(params.get("seed", 42))
@@ -1141,15 +1177,37 @@ class StippleGenerator(Generator):
         if progress_callback:
             progress_callback(90)
 
-        if connect_tsp:
-            # KDTree-accelerated nearest-neighbor TSP path
+        if render_mode == "TSP Path":
+            # New TSP path mode: use reorder_paths + optimize_2opt
+            from plottter.processing.optimize import reorder_paths, optimize_2opt
+
+            # Create zero-length segment for each stipple point
+            point_paths: list[Polyline] = [
+                [(float(x), float(y)), (float(x), float(y))]
+                for x, y in mm_points
+            ]
+
+            # NN reorder with multiple starts for a good initial tour
+            ordered = reorder_paths(point_paths, num_starts=5)
+
+            # 2-opt improvement to reduce travel distance
+            if tsp_optimize:
+                ordered = optimize_2opt(ordered)
+
+            # Extract ordered positions as a single connected polyline
+            tsp_path: Polyline = [path[0] for path in ordered]
+            if progress_callback:
+                progress_callback(100)
+            result: list[Polyline] = [tsp_path] if len(tsp_path) >= 2 else []
+        elif connect_tsp:
+            # Legacy TSP mode: KDTree-accelerated nearest-neighbor path
             order = _nearest_neighbor_tsp(mm_points)
             path: Polyline = [tuple(mm_points[i]) for i in order]  # type: ignore[misc]
             if progress_callback:
                 progress_callback(100)
-            result: list[Polyline] = [path] if len(path) >= 2 else []
+            result = [path] if len(path) >= 2 else []
         else:
-            # Draw each point as a tiny circle
+            # Dots mode: draw each point as a tiny circle
             result = []
             for px, py in mm_points:
                 result.append(_tiny_circle(px, py))
