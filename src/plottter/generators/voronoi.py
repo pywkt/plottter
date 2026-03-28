@@ -924,6 +924,36 @@ class VoronoiGenerator(Generator):
                 name="Phyllotaxis Spiral",
                 params={"num_points": 500, "seed_method": "Phyllotaxis"},
             ),
+            Preset(
+                name="Organic Tree",
+                params={
+                    "num_points": 500,
+                    "seed_method": "Random",
+                    "render_mode": "MST (Tree)",
+                    "lloyd_iterations": 0,
+                    "random_seed": 42,
+                },
+            ),
+            Preset(
+                name="Dense Branches",
+                params={
+                    "num_points": 2000,
+                    "seed_method": "Poisson Disk",
+                    "poisson_spacing_mm": 2.0,
+                    "render_mode": "MST (Tree)",
+                    "random_seed": 42,
+                },
+            ),
+            Preset(
+                name="Image Tree",
+                params={
+                    "num_points": 1000,
+                    "seed_method": "Random",
+                    "render_mode": "MST (Tree)",
+                    "image_density": True,
+                    "random_seed": 42,
+                },
+            ),
         ]
 
     def generate(

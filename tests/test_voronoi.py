@@ -1013,3 +1013,132 @@ class TestRenderMST:
         for pl in result:
             assert isinstance(pl, list)
             assert len(pl) >= 2
+
+
+# ---------------------------------------------------------------------------
+# MST presets — Task 72.2
+# ---------------------------------------------------------------------------
+
+
+class TestMSTPresets:
+    """Tests for the three MST presets: Organic Tree, Dense Branches, Image Tree."""
+
+    def setup_method(self):
+        from plottter.generators.voronoi import VoronoiGenerator
+
+        self.gen = VoronoiGenerator()
+        self.canvas = _small_canvas()
+
+    # (a) All MST presets generate valid non-empty output
+
+    def test_all_mst_presets_present(self):
+        presets = self.gen.get_presets()
+        names = {p.name for p in presets}
+        assert "Organic Tree" in names
+        assert "Dense Branches" in names
+        assert "Image Tree" in names
+
+    def test_organic_tree_preset_valid_output(self):
+        presets = self.gen.get_presets()
+        preset = next(p for p in presets if p.name == "Organic Tree")
+        assert preset.params["render_mode"] == "MST (Tree)"
+        assert preset.params["seed_method"] == "Random"
+        assert preset.params["num_points"] == 500
+        assert preset.params["lloyd_iterations"] == 0
+        result = self.gen.generate(preset.params, self.canvas)
+        assert isinstance(result, list)
+        assert len(result) > 0
+        for pl in result:
+            assert isinstance(pl, list)
+            assert len(pl) >= 2
+            for pt in pl:
+                assert len(pt) == 2
+
+    def test_dense_branches_preset_valid_output(self):
+        presets = self.gen.get_presets()
+        preset = next(p for p in presets if p.name == "Dense Branches")
+        assert preset.params["render_mode"] == "MST (Tree)"
+        assert preset.params["seed_method"] == "Poisson Disk"
+        assert preset.params["poisson_spacing_mm"] == 2.0
+        assert preset.params["num_points"] == 2000
+        result = self.gen.generate(preset.params, self.canvas)
+        assert isinstance(result, list)
+        assert len(result) > 0
+        for pl in result:
+            assert isinstance(pl, list)
+            assert len(pl) >= 2
+            for pt in pl:
+                assert len(pt) == 2
+
+    def test_image_tree_preset_valid_output(self):
+        """Image Tree without a source image falls back to uniform random seeds."""
+        presets = self.gen.get_presets()
+        preset = next(p for p in presets if p.name == "Image Tree")
+        assert preset.params["render_mode"] == "MST (Tree)"
+        assert preset.params["image_density"] is True
+        assert preset.params["num_points"] == 1000
+        result = self.gen.generate(preset.params, self.canvas)
+        assert isinstance(result, list)
+        assert len(result) > 0
+        for pl in result:
+            assert isinstance(pl, list)
+            assert len(pl) >= 2
+            for pt in pl:
+                assert len(pt) == 2
+
+    def test_mst_presets_output_within_canvas_bounds(self):
+        """All MST preset outputs must lie within the canvas drawing area."""
+        presets = self.gen.get_presets()
+        mst_presets = [p for p in presets if p.params.get("render_mode") == "MST (Tree)"]
+        x1, y1, x2, y2 = self.canvas.drawing_area()
+        tol = 1.0
+        for preset in mst_presets:
+            result = self.gen.generate(preset.params, self.canvas)
+            for pl in result:
+                for x, y in pl:
+                    assert x >= x1 - tol, f"Preset {preset.name!r}: x={x:.3f} < x_min={x1}"
+                    assert x <= x2 + tol, f"Preset {preset.name!r}: x={x:.3f} > x_max={x2}"
+                    assert y >= y1 - tol, f"Preset {preset.name!r}: y={y:.3f} < y_min={y1}"
+                    assert y <= y2 + tol, f"Preset {preset.name!r}: y={y:.3f} > y_max={y2}"
+
+    # (b) MST with image density produces denser branches in dark areas
+
+    def test_mst_image_density_denser_in_dark_areas(self):
+        """MST with image_density: dark half of image should have more seed nodes
+        (shorter average MST edge lengths) than the bright half."""
+        # Half-black (left), half-white (right) image
+        size = 64
+        half_bw = np.zeros((size, size, 3), dtype=np.uint8)
+        half_bw[:, size // 2 :] = 255  # right half is white, left is black
+
+        canvas = self.canvas
+        x1, y1, x2, y2 = canvas.drawing_area()
+        mid_x = (x1 + x2) / 2.0
+
+        result = self.gen.generate(
+            {
+                "render_mode": "MST (Tree)",
+                "seed_method": "Random",
+                "num_points": 300,
+                "image_density": True,
+                "_source_image": half_bw,
+                "random_seed": 0,
+            },
+            canvas,
+        )
+        assert len(result) > 0, "MST with image density should produce output"
+
+        # Count edges whose midpoint falls in dark half vs bright half
+        dark_count = 0
+        bright_count = 0
+        for pl in result:
+            mid = ((pl[0][0] + pl[-1][0]) / 2.0, (pl[0][1] + pl[-1][1]) / 2.0)
+            if mid[0] < mid_x:
+                dark_count += 1
+            else:
+                bright_count += 1
+
+        assert dark_count > bright_count, (
+            f"Dark half should have more MST edges ({dark_count}) "
+            f"than bright half ({bright_count})"
+        )
