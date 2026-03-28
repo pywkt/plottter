@@ -477,3 +477,110 @@ class TestGenerateLoop:
             for (xb, yb), (xs, ys) in zip(path_b, path_s):
                 assert abs(xs - xb - 10.0) < 1e-6
                 assert abs(ys - yb - 5.0) < 1e-6
+
+    def test_dark_image_produces_more_lines_than_bright(self):
+        """A dark image should produce more polylines than a bright image.
+
+        Uses short paths (line_max_length=10) and a high segment limit so the
+        density target — not the segment cap — controls when each run stops.
+        A very dark image (avg=10) needs much more brightening to reach its
+        50%-density target than a bright image (avg=200), so it produces
+        significantly more paths.
+        """
+        dark_img = np.full((64, 64), 10, dtype=np.uint8)
+        bright_img = np.full((64, 64), 200, dtype=np.uint8)
+        common = {
+            "line_density": 50.0,
+            "line_max_limit": 10_000,
+            "line_max_length": 10,
+            "line_min_length": 2,
+            "step_size_px": 2,
+        }
+        result_dark = self.gen.generate({"_source_image": dark_img, **common}, self.canvas)
+        result_bright = self.gen.generate({"_source_image": bright_img, **common}, self.canvas)
+        assert len(result_dark) > len(result_bright)
+
+    def test_fit_mode_respected(self):
+        """'fit' mode should map output to a smaller coordinate rect than 'fill' mode.
+
+        A wide image (4:1 aspect ratio) on a portrait A4 canvas:
+        - fill: maps to the full drawing area in y
+        - fit:  maps to a height-constrained centered rect (~47.5mm tall)
+
+        The maximum y-coordinate in 'fit' mode must be well below the full
+        canvas height seen in 'fill' mode.
+        """
+        # Wide image (4:1 aspect) — in 'fit' mode this will be width-limited,
+        # producing a much shorter y extent than in 'fill' mode.
+        img = make_single_dark_block(h=32, w=128)
+        common = {
+            "line_density": 20.0,
+            "line_max_limit": 200,
+            "line_min_length": 2,
+        }
+        result_fill = self.gen.generate(
+            {"_source_image": img.copy(), "image_fit_mode": "fill", **common},
+            self.canvas,
+        )
+        result_fit = self.gen.generate(
+            {"_source_image": img.copy(), "image_fit_mode": "fit", **common},
+            self.canvas,
+        )
+        assert len(result_fill) > 0, "fill mode produced no output"
+        assert len(result_fit) > 0, "fit mode produced no output"
+
+        draw_x1, draw_y1, draw_x2, draw_y2 = self.canvas.drawing_area()
+        draw_h = draw_y2 - draw_y1
+
+        max_y_fill = max(y for path in result_fill for _, y in path)
+        max_y_fit = max(y for path in result_fit for _, y in path)
+
+        # fit rect for a 4:1 image on portrait canvas ≈ 47.5mm tall (centred).
+        # The fill max_y should reach much further down the canvas than fit max_y.
+        assert max_y_fit < max_y_fill, (
+            f"Expected fit max_y ({max_y_fit:.1f}) < fill max_y ({max_y_fill:.1f})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Presets
+# ---------------------------------------------------------------------------
+
+
+class TestPresets:
+    def setup_method(self):
+        self.gen = SketchGenerator()
+        self.canvas = make_canvas()
+
+    def test_preset_names(self):
+        names = [p.name for p in self.gen.get_presets()]
+        assert "Default" in names
+        assert "Sketch Lines" in names
+        assert "Contour Sketch" in names
+        assert "Dense Crosshatch" in names
+        assert "Loose Sketch" in names
+        assert "Edge Trace" in names
+
+    def test_all_presets_generate_valid_output(self):
+        """Every preset must produce a non-empty list of polylines on a dark image."""
+        img = make_single_dark_block(h=64, w=64)
+        for preset in self.gen.get_presets():
+            params = dict(preset.params)
+            params["_source_image"] = img.copy()
+            # Keep limits small for speed
+            params["line_max_limit"] = 200
+            params["line_min_length"] = 2
+            result = self.gen.generate(params, self.canvas)
+            assert isinstance(result, list), f"Preset '{preset.name}' did not return a list"
+            assert len(result) > 0, f"Preset '{preset.name}' produced no output"
+            for path in result:
+                assert len(path) >= 2, f"Preset '{preset.name}' produced a degenerate path"
+
+    def test_presets_are_complete(self):
+        """Every preset must include all generator parameters (no partial presets)."""
+        param_names = {p.name for p in self.gen.get_parameters()}
+        for preset in self.gen.get_presets():
+            missing = param_names - set(preset.params.keys())
+            assert not missing, (
+                f"Preset '{preset.name}' is missing params: {missing}"
+            )
