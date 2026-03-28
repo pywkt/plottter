@@ -100,6 +100,37 @@ def _clip_polylines_to_max_length(
     return result
 
 
+def _apply_oscillation(
+    polyline: Polyline,
+    cos_a: float,
+    sin_a: float,
+    osc_amplitude: float,
+    osc_wavelength_mm: float,
+    osc_mode: str,
+    brightness_scale: float,
+) -> Polyline:
+    """Displace each point in polyline perpendicular to hatch direction using a wave.
+
+    cos_a/sin_a define the hatch direction. Displacement is along the perpendicular
+    (-sin_a, cos_a). brightness_scale in [0,1]: 1=full amplitude (dark), 0=none (white).
+    """
+    amp = osc_amplitude * brightness_scale
+    if amp == 0.0 or osc_wavelength_mm <= 0.0:
+        return polyline
+    result: Polyline = []
+    for x, y in polyline:
+        # Project point onto hatch direction to get distance along line
+        d = x * cos_a + y * sin_a
+        phase = 2.0 * math.pi * d / osc_wavelength_mm
+        if osc_mode == "Sawtooth":
+            wave = 2.0 * ((d / osc_wavelength_mm) % 1.0) - 1.0
+        else:
+            wave = math.sin(phase)
+        offset = amp * wave
+        result.append((x + offset * (-sin_a), y + offset * cos_a))
+    return result
+
+
 def _generate_parallel_hatch(
     img: np.ndarray,
     angle_deg: float,
@@ -113,6 +144,10 @@ def _generate_parallel_hatch(
     progress_end: int = 100,
     line_length_mm: float = 0.0,
     img_rect: "tuple[float, float, float, float] | None" = None,
+    oscillation: bool = False,
+    osc_amplitude: float = 1.0,
+    osc_wavelength_mm: float = 2.0,
+    osc_mode: str = "Sine",
 ) -> list[Polyline]:
     """Generate variable-density parallel hatch lines at the given angle."""
     try:
@@ -221,6 +256,7 @@ def _generate_parallel_hatch(
         step_mm = max(0.5, min_spacing_mm * 0.5)
         n_steps = max(2, int((para_max - para_min) / step_mm))
 
+        line_segments: list[Polyline] = []
         current_segment: Polyline = []
         for k in range(n_steps + 1):
             t = para_min + k / n_steps * (para_max - para_min)
@@ -231,7 +267,7 @@ def _generate_parallel_hatch(
             if not (draw_x1 - 0.01 <= wx <= draw_x2 + 0.01 and
                     draw_y1 - 0.01 <= wy <= draw_y2 + 0.01):
                 if len(current_segment) >= 2:
-                    polylines.append(current_segment)
+                    line_segments.append(current_segment)
                 current_segment = []
                 continue
 
@@ -246,11 +282,20 @@ def _generate_parallel_hatch(
                 current_segment.append((wx, wy))
             else:
                 if len(current_segment) >= 2:
-                    polylines.append(current_segment)
+                    line_segments.append(current_segment)
                 current_segment = []
 
         if len(current_segment) >= 2:
-            polylines.append(current_segment)
+            line_segments.append(current_segment)
+
+        if oscillation and line_segments:
+            brightness_scale = max(0.0, 1.0 - avg_brightness / 255.0)
+            line_segments = [
+                _apply_oscillation(seg, cos_a, sin_a, osc_amplitude, osc_wavelength_mm, osc_mode, brightness_scale)
+                for seg in line_segments
+            ]
+
+        polylines.extend(line_segments)
 
         perp_pos += spacing
 
@@ -501,6 +546,40 @@ class HatchingGenerator(Generator):
                 randomizable=False,
                 description="Vertical offset applied to the generated output on the canvas page (mm)",
             ),
+            BoolParam(
+                name="oscillation",
+                label="Oscillation",
+                default=False,
+                description="Add perpendicular wave oscillation to hatch lines — amplitude varies by brightness",
+            ),
+            FloatParam(
+                name="osc_amplitude",
+                label="Osc Amplitude (mm)",
+                min=0.1,
+                max=5.0,
+                step=0.1,
+                default=1.0,
+                visible_when={"oscillation": [True]},
+                description="Maximum oscillation amplitude in mm",
+            ),
+            FloatParam(
+                name="osc_wavelength_mm",
+                label="Osc Wavelength (mm)",
+                min=0.5,
+                max=10.0,
+                step=0.5,
+                default=2.0,
+                visible_when={"oscillation": [True]},
+                description="Wavelength of oscillation in mm",
+            ),
+            ChoiceParam(
+                name="osc_mode",
+                label="Osc Waveform",
+                choices=["Sine", "Sawtooth"],
+                default="Sine",
+                visible_when={"oscillation": [True]},
+                description="Waveform shape for oscillation",
+            ),
         ]
 
     def get_presets(self) -> list[Preset]:
@@ -674,6 +753,10 @@ class HatchingGenerator(Generator):
         max_spacing = float(params.get("max_spacing_mm", 5.0))
         density_curve = str(params.get("density_curve", "linear"))
         line_length_mm = float(params.get("line_length_mm", 0.0))
+        oscillation = bool(params.get("oscillation", False))
+        osc_amplitude = float(params.get("osc_amplitude", 1.0))
+        osc_wavelength_mm = float(params.get("osc_wavelength_mm", 2.0))
+        osc_mode = str(params.get("osc_mode", "Sine"))
 
         # Ensure valid range
         if min_spacing > max_spacing:
@@ -708,6 +791,10 @@ class HatchingGenerator(Generator):
                 progress_start=0, progress_end=50,
                 line_length_mm=line_length_mm,
                 img_rect=img_rect,
+                oscillation=oscillation,
+                osc_amplitude=osc_amplitude,
+                osc_wavelength_mm=osc_wavelength_mm,
+                osc_mode=osc_mode,
             )
             if cancelled_callback and cancelled_callback():
                 result = lines1
@@ -718,6 +805,10 @@ class HatchingGenerator(Generator):
                     progress_start=50, progress_end=100,
                     line_length_mm=line_length_mm,
                     img_rect=img_rect,
+                    oscillation=oscillation,
+                    osc_amplitude=osc_amplitude,
+                    osc_wavelength_mm=osc_wavelength_mm,
+                    osc_mode=osc_mode,
                 )
                 result = lines1 + lines2
         else:  # parallel
@@ -727,6 +818,10 @@ class HatchingGenerator(Generator):
                 progress_start=0, progress_end=100,
                 line_length_mm=line_length_mm,
                 img_rect=img_rect,
+                oscillation=oscillation,
+                osc_amplitude=osc_amplitude,
+                osc_wavelength_mm=osc_wavelength_mm,
+                osc_mode=osc_mode,
             )
 
         x_off = float(params.get("x_offset_mm", 0.0))
