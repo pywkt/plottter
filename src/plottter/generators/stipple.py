@@ -1029,6 +1029,49 @@ class StippleGenerator(Generator):
                     "y_offset_mm": 0.0,
                 },
             ),
+            Preset(
+                name="TSP Portrait",
+                params={
+                    # Portrait-optimised TSP path: moderate point count with
+                    # contrast boost and slight blur to emphasise facial tones;
+                    # renders as a single continuous line for pen plotters.
+                    "num_points": 2000,
+                    "iterations": 30,
+                    "render_mode": "TSP Path",
+                    "tsp_optimize": True,
+                    "connect_tsp": False,
+                    "min_dot_spacing_mm": 0.4,
+                    "seed": 7,
+                    "invert": False,
+                    "brightness": 0.0,
+                    "contrast": 20.0,
+                    "blur_radius": 1.5,
+                    **_shared,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="TSP Dense",
+                params={
+                    # Dense TSP path with 5000 points and tight dot spacing;
+                    # produces fine detail as a single connected line.
+                    "num_points": 5000,
+                    "iterations": 30,
+                    "render_mode": "TSP Path",
+                    "tsp_optimize": True,
+                    "connect_tsp": False,
+                    "min_dot_spacing_mm": 0.3,
+                    "seed": 0,
+                    "invert": False,
+                    "brightness": 0.0,
+                    "contrast": 0.0,
+                    "blur_radius": 1.0,
+                    **_shared,
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
         ]
 
     def generate(
