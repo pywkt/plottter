@@ -18,6 +18,7 @@ except ImportError:
     _NUMPY_AVAILABLE = False
 
 from plottter.generators import register_generator
+from plottter.generators._helpers import _load_source_image
 from plottter.generators.base import (
     BoolParam,
     ChoiceParam,
@@ -407,7 +408,7 @@ class DotGridGenerator(Generator):
         filled = bool(params.get("filled", False))
         pen_width = float(params.get("pen_width_mm", 0.3))
         convergence = float(params.get("convergence", 0.0))
-        source_image = params.get("_source_image")
+        source_image = _load_source_image(params.get("_source_image"))
         x_off = float(params.get("x_offset_mm", 0.0))
         y_off = float(params.get("y_offset_mm", 0.0))
 

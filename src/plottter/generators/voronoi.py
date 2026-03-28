@@ -13,6 +13,7 @@ import numpy as np
 from shapely.geometry import LineString, box as shapely_box
 
 from plottter.generators import register_generator
+from plottter.generators._helpers import _load_source_image
 from plottter.generators.base import (
     BoolParam,
     ChoiceParam,
@@ -984,7 +985,7 @@ class VoronoiGenerator(Generator):
         # Prepare density image when image-density mode is active
         density_img: np.ndarray | None = None
         if image_density:
-            source: np.ndarray | None = params.get("_source_image")
+            source: np.ndarray | None = _load_source_image(params.get("_source_image"))
             if source is not None:
                 density_img = _prepare_density_image(source, params, draw_w, draw_h)
 

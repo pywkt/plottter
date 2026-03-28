@@ -5,6 +5,24 @@ from __future__ import annotations
 import numpy as np
 
 
+def _load_source_image(value: object) -> np.ndarray | None:
+    """Load a source image from a file path or return an array as-is.
+
+    Parameters
+    ----------
+    value:
+        - ``np.ndarray``: returned unchanged.
+        - Non-empty ``str``: loaded via :func:`plottter.io.image_import.load_image`.
+        - ``None`` or empty string: returns ``None``.
+    """
+    if isinstance(value, np.ndarray):
+        return value
+    if isinstance(value, str) and value:
+        from plottter.io.image_import import load_image
+        return load_image(value)
+    return None
+
+
 def _compute_etf(
     gray_f: np.ndarray,
     sigma_m: float,
