@@ -181,6 +181,62 @@ class FlowFieldGenerator(Generator):
                     "angle_range": _TWO_PI * 2,
                 },
             ),
+            Preset(
+                name="Quantized Grid",
+                params={
+                    "num_particles": 2000,
+                    "step_size_mm": 0.8,
+                    "max_steps": 150,
+                    "noise_scale": 0.008,
+                    "noise_octaves": 3,
+                    "seed": 42,
+                    "angle_range": _TWO_PI,
+                    "quantize_directions": 4,
+                    "quantize_offset_deg": 0,
+                },
+            ),
+            Preset(
+                name="Circuit Board",
+                params={
+                    "num_particles": 3000,
+                    "step_size_mm": 0.5,
+                    "max_steps": 100,
+                    "noise_scale": 0.015,
+                    "noise_octaves": 2,
+                    "seed": 42,
+                    "angle_range": _TWO_PI,
+                    "quantize_directions": 8,
+                    "quantize_offset_deg": 0,
+                },
+            ),
+            Preset(
+                name="Hex Directions",
+                params={
+                    "num_particles": 1500,
+                    "step_size_mm": 1.0,
+                    "max_steps": 120,
+                    "noise_scale": 0.01,
+                    "noise_octaves": 4,
+                    "seed": 42,
+                    "angle_range": _TWO_PI,
+                    "quantize_directions": 6,
+                    "quantize_offset_deg": 0,
+                },
+            ),
+            Preset(
+                name="Angular Turbulence",
+                params={
+                    "num_particles": 2500,
+                    "step_size_mm": 1.2,
+                    "max_steps": 80,
+                    "noise_scale": 0.04,
+                    "noise_octaves": 6,
+                    "seed": 42,
+                    "angle_range": _TWO_PI,
+                    "quantize_directions": 12,
+                    "quantize_offset_deg": 15,
+                },
+            ),
         ]
 
     def generate(
