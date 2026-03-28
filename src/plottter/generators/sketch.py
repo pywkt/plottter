@@ -96,6 +96,43 @@ class SketchGenerator(Generator):
                 default=1.0,
                 description="Gaussian blur applied before processing — smooths brightness transitions",
             ),
+            # --- tracing params ---
+            IntParam(
+                name="line_min_length",
+                label="Min Line Length (steps)",
+                min=2,
+                max=100,
+                step=1,
+                default=5,
+                description="Minimum number of steps a traced path must have to be kept",
+            ),
+            IntParam(
+                name="line_max_length",
+                label="Max Line Length (steps)",
+                min=10,
+                max=500,
+                step=1,
+                default=100,
+                description="Maximum number of steps to trace per path",
+            ),
+            IntParam(
+                name="angle_tests",
+                label="Angle Tests",
+                min=4,
+                max=36,
+                step=1,
+                default=8,
+                description="Number of directions to test at each step — 4 = square grid, 8 = octagonal, higher = smoother",
+            ),
+            IntParam(
+                name="step_size_px",
+                label="Step Size (px)",
+                min=1,
+                max=10,
+                step=1,
+                default=2,
+                description="Pixel distance to advance per tracing step",
+            ),
             # --- offset params ---
             FloatParam(
                 name="x_offset_mm",
@@ -135,6 +172,10 @@ class SketchGenerator(Generator):
                     "brightness": 0.0,
                     "contrast": 0.0,
                     "blur_radius": 1.0,
+                    "line_min_length": 5,
+                    "line_max_length": 100,
+                    "angle_tests": 8,
+                    "step_size_px": 2,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
                 },
@@ -228,6 +269,99 @@ class SketchGenerator(Generator):
         local_x = flat_idx % block.shape[1]
 
         return r0 + local_y, c0 + local_x
+
+    # ------------------------------------------------------------------
+    # Darkest-path tracing
+    # ------------------------------------------------------------------
+
+    _BRIGHTNESS_CEILING = 240
+
+    @staticmethod
+    def _trace_darkest_path(
+        lightened: np.ndarray,
+        seed_y: int,
+        seed_x: int,
+        angle_tests: int,
+        max_length: int,
+        step_size_px: int,
+    ) -> list[tuple[float, float]]:
+        """Trace a path from (seed_y, seed_x) by greedily choosing the darkest
+        neighbouring direction at each step.
+
+        Parameters
+        ----------
+        lightened:
+            2-D uint8 grayscale image (0=black, 255=white).
+        seed_y, seed_x:
+            Starting pixel coordinates (row, col).
+        angle_tests:
+            Number of evenly-spaced directions to evaluate at each step.
+        max_length:
+            Maximum total number of positions in the returned path (including
+            the seed). The tracing loop runs at most ``max_length - 1`` times.
+        step_size_px:
+            Distance in pixels to advance per step.
+
+        Returns
+        -------
+        List of ``(px_x, px_y)`` pixel coordinates.
+        """
+        h, w = lightened.shape[:2]
+        CEIL = SketchGenerator._BRIGHTNESS_CEILING
+
+        # Seed must be inside the image
+        if not (0 <= seed_y < h and 0 <= seed_x < w):
+            return []
+
+        # Pre-compute direction unit vectors (cos, sin) for all test angles
+        angles = [i * 2.0 * np.pi / angle_tests for i in range(angle_tests)]
+        dirs = [(np.cos(a), np.sin(a)) for a in angles]
+
+        cur_x = float(seed_x)
+        cur_y = float(seed_y)
+        path: list[tuple[float, float]] = [(cur_x, cur_y)]
+
+        for _ in range(max_length - 1):
+            # Stop if current position is too bright
+            iy = int(round(cur_y))
+            ix = int(round(cur_x))
+            if lightened[iy, ix] > CEIL:
+                break
+
+            # Test all directions; pick the darkest look-ahead
+            best_dx: float = 0.0
+            best_dy: float = 0.0
+            best_brightness: float = 256.0
+            found = False
+
+            for dx, dy in dirs:
+                nx = cur_x + dx * step_size_px
+                ny = cur_y + dy * step_size_px
+                iny = int(round(ny))
+                inx = int(round(nx))
+                if 0 <= iny < h and 0 <= inx < w:
+                    brightness = int(lightened[iny, inx])
+                    if brightness < best_brightness:
+                        best_brightness = brightness
+                        best_dx, best_dy = dx, dy
+                        found = True
+
+            if not found:
+                break  # All look-ahead positions are out of bounds
+
+            # Advance one step
+            cur_x += best_dx * step_size_px
+            cur_y += best_dy * step_size_px
+
+            # Stop if the new position is outside the image
+            iy = int(round(cur_y))
+            ix = int(round(cur_x))
+            if not (0 <= iy < h and 0 <= ix < w):
+                break
+
+            path.append((cur_x, cur_y))
+
+        return path
 
     # ------------------------------------------------------------------
     # Generate

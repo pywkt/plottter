@@ -228,3 +228,93 @@ class TestGenerateScaffold:
         presets = self.gen.get_presets()
         assert len(presets) >= 1
         assert presets[0].name == "Default"
+
+    def test_new_parameters_defined(self):
+        """line_min_length, line_max_length, angle_tests, step_size_px must exist."""
+        params = self.gen.get_parameters()
+        names = {p.name for p in params}
+        assert "line_min_length" in names
+        assert "line_max_length" in names
+        assert "angle_tests" in names
+        assert "step_size_px" in names
+
+
+# ---------------------------------------------------------------------------
+# _trace_darkest_path
+# ---------------------------------------------------------------------------
+
+
+class TestTraceDarkestPath:
+    def setup_method(self):
+        self.gen = SketchGenerator()
+
+    def test_path_starts_at_seed(self):
+        """First point of the path must be the seed pixel."""
+        img = make_white_image(64, 64)
+        path = self.gen._trace_darkest_path(img, 10, 20, 8, 50, 2)
+        assert len(path) >= 1
+        assert path[0] == (20.0, 10.0)  # (px_x, px_y) = (seed_x, seed_y)
+
+    def test_path_moves_toward_dark_area(self):
+        """Path should advance toward a dark column on the right of the seed."""
+        # Image: left half light-grey (below brightness ceiling), right half black
+        h, w = 64, 64
+        img = np.full((h, w), 200, dtype=np.uint8)  # 200 < 240 ceiling
+        img[:, w // 2 :] = 0  # right half is black — clearly darker
+        # Seed just left of the midpoint; 8-direction search will find rightward dark
+        seed_y, seed_x = h // 2, w // 2 - 2
+        path = self.gen._trace_darkest_path(img, seed_y, seed_x, 8, 30, 2)
+        assert len(path) > 1
+        # The x-coordinate should generally increase (moving right toward dark)
+        xs = [p[0] for p in path]
+        assert xs[-1] > xs[0]
+
+    def test_path_stops_at_image_boundary(self):
+        """Path coordinates must stay within image bounds even when tracing near an edge."""
+        # All-black image: brightness never exceeds the ceiling, so the boundary
+        # (not the brightness check) must be what stops the path.
+        img = np.zeros((32, 32), dtype=np.uint8)
+        path = self.gen._trace_darkest_path(img, 1, 1, 8, 200, 3)
+        assert len(path) > 1, "Path should trace before hitting boundary"
+        for px_x, px_y in path:
+            assert 0 <= round(px_x) < 32, f"px_x={px_x} out of bounds"
+            assert 0 <= round(px_y) < 32, f"px_y={px_y} out of bounds"
+
+    def test_path_length_bounded_by_max_length(self):
+        """Returned path must have at most max_length positions."""
+        # All-black image: brightness never exceeds the ceiling, so max_length
+        # (not the brightness check) must be what caps the path.
+        img = np.zeros((128, 128), dtype=np.uint8)
+        max_length = 20
+        path = self.gen._trace_darkest_path(img, 64, 64, 8, max_length, 2)
+        assert len(path) == max_length  # should reach the cap, not stop early
+
+    def test_angle_tests_4_axis_aligned(self):
+        """With 4 directions (0°, 90°, 180°, 270°), each step must be axis-aligned."""
+        # Horizontal dark stripe to give the path a clear dark direction
+        h, w = 64, 128
+        img = np.full((h, w), 255, dtype=np.uint8)
+        img[32, :] = 0  # horizontal dark line at row 32
+        path = self.gen._trace_darkest_path(img, 32, 0, 4, 30, 1)
+        assert len(path) > 1
+        # Each step must move purely horizontally or purely vertically (step_size_px=1)
+        for (x0, y0), (x1, y1) in zip(path, path[1:]):
+            dx = abs(x1 - x0)
+            dy = abs(y1 - y0)
+            # One of dx, dy must be ~0 and the other ~step_size (1)
+            assert (dx < 0.01 or dy < 0.01), f"Non-axis-aligned step: dx={dx}, dy={dy}"
+
+    def test_out_of_bounds_seed_returns_empty(self):
+        """Seed outside image bounds should return an empty path."""
+        img = make_white_image(32, 32)
+        path = self.gen._trace_darkest_path(img, 100, 100, 8, 50, 2)
+        assert path == []
+
+    def test_bright_seed_stops_immediately(self):
+        """If the seed pixel is above the brightness ceiling, stop after the seed."""
+        # All pixels set to 245 (above ceiling of 240)
+        img = np.full((32, 32), 245, dtype=np.uint8)
+        path = self.gen._trace_darkest_path(img, 16, 16, 8, 50, 2)
+        # Should return only the seed (stopped immediately due to brightness)
+        assert len(path) == 1
+        assert path[0] == (16.0, 16.0)
