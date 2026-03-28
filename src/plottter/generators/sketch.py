@@ -310,21 +310,31 @@ class SketchGenerator(Generator):
         n_rows = max(1, (h + block_size - 1) // block_size)
         n_cols = max(1, (w + block_size - 1) // block_size)
 
-        best_row, best_col = 0, 0
-        best_mean = 256.0  # above max possible value
+        # Pad to exact block multiples so cv2 / numpy block boundaries align with
+        # _find_darkest_pixel which uses region_y * block_size offsets.
+        pad_h = n_rows * block_size - h
+        pad_w = n_cols * block_size - w
+        padded = (
+            np.pad(lightened, ((0, pad_h), (0, pad_w)), mode="edge")
+            if (pad_h or pad_w)
+            else lightened
+        )
 
-        for br in range(n_rows):
-            r0 = br * block_size
-            r1 = min(r0 + block_size, h)
-            for bc in range(n_cols):
-                c0 = bc * block_size
-                c1 = min(c0 + block_size, w)
-                block = lightened[r0:r1, c0:c1]
-                mean_val = float(block.mean())
-                if mean_val < best_mean:
-                    best_mean = mean_val
-                    best_row, best_col = br, bc
+        try:
+            import cv2
+            # INTER_AREA on a padded image whose size == n_rows*block_size × n_cols*block_size
+            # gives exactly the mean of each block_size×block_size tile.
+            block_means = cv2.resize(
+                padded, (n_cols, n_rows), interpolation=cv2.INTER_AREA
+            )
+        except ImportError:
+            block_means = padded.reshape(
+                n_rows, block_size, n_cols, block_size
+            ).mean(axis=(1, 3))
 
+        flat_idx = int(np.argmin(block_means))
+        best_row = flat_idx // n_cols
+        best_col = flat_idx % n_cols
         return best_row, best_col
 
     @staticmethod
@@ -530,13 +540,11 @@ class SketchGenerator(Generator):
         path: list[tuple[float, float]],
         erase_radius: int,
         erase_amount: int,
-    ) -> None:
-        """Brighten a circular region around each point in *path*.
+    ) -> float:
+        """Brighten a square region around each point in *path*.
 
-        Modifies *lightened* in-place.  For each ``(px_x, px_y)`` coordinate
-        in the path, a filled circle of radius *erase_radius* pixels is drawn
-        onto a scratch buffer (value = *erase_amount*), then the scratch is
-        additively blended into *lightened* and clamped to 255.
+        Modifies *lightened* in-place using numpy slice assignment — faster than
+        allocating a scratch buffer and drawing circles for small radii.
 
         Parameters
         ----------
@@ -545,40 +553,39 @@ class SketchGenerator(Generator):
         path:
             List of ``(px_x, px_y)`` float pixel coordinates.
         erase_radius:
-            Radius in pixels of the erased circle around each point.
+            Half-side of the square brightening region in pixels.
         erase_amount:
-            How much to add to pixel values within the erased region (0–255).
+            How much to add to pixel values within the region (0–255).
+
+        Returns
+        -------
+        Total sum of actual pixel increments (accounting for 255 clamping).
+        Use this to maintain an incremental running brightness sum.
         """
         if not path:
-            return
+            return 0.0
 
-        try:
-            import cv2
+        h, w = lightened.shape[:2]
+        r = erase_radius
+        total_delta = 0.0
 
-            h, w = lightened.shape[:2]
-            scratch = np.zeros((h, w), dtype=np.uint8)
-            for px_x, px_y in path:
-                cx = int(round(px_x))
-                cy = int(round(px_y))
-                cv2.circle(scratch, (cx, cy), erase_radius, erase_amount, -1)
-            # cv2.add does saturating addition (clamps to 255 for uint8)
-            lightened[:] = cv2.add(lightened, scratch)
-        except ImportError:
-            # Fallback without OpenCV
-            h, w = lightened.shape[:2]
-            r2 = erase_radius * erase_radius
-            for px_x, px_y in path:
-                cx = int(round(px_x))
-                cy = int(round(px_y))
-                for dy in range(-erase_radius, erase_radius + 1):
-                    ny = cy + dy
-                    if ny < 0 or ny >= h:
-                        continue
-                    for dx in range(-erase_radius, erase_radius + 1):
-                        if dx * dx + dy * dy <= r2:
-                            nx = cx + dx
-                            if 0 <= nx < w:
-                                lightened[ny, nx] = min(255, int(lightened[ny, nx]) + erase_amount)
+        for px_x, px_y in path:
+            cx = int(round(px_x))
+            cy = int(round(px_y))
+            y0 = max(0, cy - r)
+            y1 = min(h, cy + r + 1)
+            x0 = max(0, cx - r)
+            x1 = min(w, cx + r + 1)
+            if y0 >= y1 or x0 >= x1:
+                continue
+            region = lightened[y0:y1, x0:x1]
+            new_region = np.minimum(
+                region.astype(np.uint16) + erase_amount, 255
+            ).astype(np.uint8)
+            total_delta += float(new_region.sum()) - float(region.sum())
+            lightened[y0:y1, x0:x1] = new_region
+
+        return total_delta
 
     # ------------------------------------------------------------------
     # Generate
@@ -655,6 +662,10 @@ class SketchGenerator(Generator):
         directionality = float(params.get("directionality", 0.0))
         edge_power = float(params.get("edge_power", 0.0))
 
+        # --- running brightness sum (avoids full-image mean() each iteration) ---
+        total_pixels = img_h * img_w
+        running_sum = float(lightened.sum())
+
         # --- precompute gradient and edge maps ---
         sobel_x_map: np.ndarray | None = None
         sobel_y_map: np.ndarray | None = None
@@ -683,7 +694,7 @@ class SketchGenerator(Generator):
         rect_h = rect_y2 - rect_y1
 
         # --- brightness targets ---
-        initial_avg_brightness = float(lightened.mean())
+        initial_avg_brightness = running_sum / total_pixels
         # target_brightness: how bright the lightened image must become before
         # we stop.  Higher line_density → brighter target → more lines drawn.
         target_brightness = initial_avg_brightness + (255.0 - initial_avg_brightness) * (line_density / 100.0)
@@ -696,7 +707,7 @@ class SketchGenerator(Generator):
                 if cancelled_callback and cancelled_callback():
                     break
 
-                current_avg = float(lightened.mean())
+                current_avg = running_sum / total_pixels
                 if current_avg >= target_brightness:
                     break
 
@@ -714,9 +725,11 @@ class SketchGenerator(Generator):
                     edge_power=edge_power,
                 )
 
-                # Erase regardless of path length to prevent infinite loops
+                # Erase regardless of path length to prevent infinite loops;
+                # accumulate the actual brightness delta into the running sum
                 if path:
-                    self._erase_along_path(lightened, path, erase_radius, erase_amount)
+                    delta = self._erase_along_path(lightened, path, erase_radius, erase_amount)
+                    running_sum += delta
 
                 # Only keep paths that meet minimum length
                 if len(path) >= line_min_length:

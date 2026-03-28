@@ -371,9 +371,33 @@ class TestEraseAlongPath:
         self.gen._erase_along_path(img, path, erase_radius, erase_amount)
         # Centre and nearby pixels should be brightened
         assert img[16, 16] >= erase_amount
-        assert img[16, 16 + erase_radius] >= erase_amount  # edge of circle
+        assert img[16, 16 + erase_radius] >= erase_amount  # edge of square region
         # Pixel beyond the radius should be unchanged
         assert img[16, 16 + erase_radius + 2] == 0
+
+    def test_erase_delta_matches_actual_sum_change(self):
+        """Returned delta equals the actual change in array sum (within ±1 fp tolerance).
+
+        This verifies criterion (b) from the task: the incremental running-sum
+        approach tracks `lightened.mean()` within ±1 of the full computation.
+        """
+        rng = np.random.default_rng(42)
+        # Mix of dark, mid, and near-white pixels so clamping is exercised.
+        img = rng.integers(50, 250, (32, 32), dtype=np.uint8)
+        path = [(10.0, 10.0), (12.0, 10.0), (14.0, 10.0), (14.0, 12.0)]
+        before_sum = float(img.sum())
+        delta = self.gen._erase_along_path(img, path, erase_radius=3, erase_amount=60)
+        after_sum = float(img.sum())
+        assert abs(delta - (after_sum - before_sum)) < 1.0
+
+    def test_erase_delta_with_full_clamping(self):
+        """Delta is correct even when all affected pixels clamp to 255."""
+        img = np.full((32, 32), 230, dtype=np.uint8)
+        path = [(16.0, 16.0)]
+        before_sum = float(img.sum())
+        delta = self.gen._erase_along_path(img, path, erase_radius=5, erase_amount=100)
+        after_sum = float(img.sum())
+        assert abs(delta - (after_sum - before_sum)) < 1.0
 
 
 # ---------------------------------------------------------------------------
