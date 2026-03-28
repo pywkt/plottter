@@ -518,6 +518,7 @@ class SpiralGenerator(Generator):
         polylines: list[Polyline] = []
         current: Polyline = []
         step_idx = 0
+        arc_length = 0.0  # cumulative arc length for smooth sine/square phase
 
         while True:
             r = ring_spacing_mm * theta / two_pi
@@ -549,9 +550,14 @@ class SpiralGenerator(Generator):
                     perp_y = math.sin(theta)
                     offset = amplitude * ring_spacing_mm / 2.0 * (1.0 - brightness / 255.0)
                     if oscillation_mode == "Sine":
-                        sign = math.sin(step_idx * math.pi / 2)
+                        # Smooth sine wave with wavelength = ring_spacing.
+                        # Uses cumulative arc length for phase so the wave
+                        # stays consistent regardless of variable velocity.
+                        sign = math.sin(2.0 * math.pi * arc_length / ring_spacing_mm)
                     elif oscillation_mode == "Square":
-                        sign = 1.0 if (step_idx // 2) % 2 == 0 else -1.0
+                        # Square wave with same wavelength as sine
+                        phase = (arc_length / ring_spacing_mm) % 1.0
+                        sign = 1.0 if phase < 0.5 else -1.0
                     else:  # Sawtooth
                         sign = 1.0 if step_idx % 2 == 0 else -1.0
                     current.append((x + perp_x * offset * sign + x_off, y + perp_y * offset * sign + y_off))
@@ -567,6 +573,7 @@ class SpiralGenerator(Generator):
             else:
                 effective_step = step_size_mm
 
+            arc_length += effective_step
             theta += effective_step / r
             step_idx += 1
 
