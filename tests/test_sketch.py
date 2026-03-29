@@ -244,94 +244,146 @@ class TestGenerateScaffold:
         assert presets[0].name == "Default"
 
     def test_new_parameters_defined(self):
-        """line_min_length, line_max_length, angle_tests, step_size_px must exist."""
+        """line_min_length, line_max_length, angle_tests, line_length_px must exist."""
         params = self.gen.get_parameters()
         names = {p.name for p in params}
         assert "line_min_length" in names
         assert "line_max_length" in names
         assert "angle_tests" in names
-        assert "step_size_px" in names
+        assert "line_length_px" in names
+        assert "step_size_px" not in names
 
 
 # ---------------------------------------------------------------------------
-# _trace_darkest_path
+# _bresenham_line
 # ---------------------------------------------------------------------------
 
 
-class TestTraceDarkestPath:
+class TestBresenhamLine:
     def setup_method(self):
         self.gen = SketchGenerator()
 
-    def test_path_starts_at_seed(self):
-        """First point of the path must be the seed pixel."""
-        img = make_white_image(64, 64)
-        path = self.gen._trace_darkest_path(img, 10, 20, 8, 50, 2)
-        assert len(path) >= 1
-        assert path[0] == (20.0, 10.0)  # (px_x, px_y) = (seed_x, seed_y)
+    def test_horizontal_line(self):
+        """Horizontal line should yield all x values between start and end."""
+        pts = list(self.gen._bresenham_line(0, 5, 4, 5))
+        assert pts == [(0, 5), (1, 5), (2, 5), (3, 5), (4, 5)]
 
-    def test_path_moves_toward_dark_area(self):
-        """Path should advance toward a dark column on the right of the seed."""
-        # Image: left half light-grey (below brightness ceiling), right half black
+    def test_vertical_line(self):
+        """Vertical line should yield all y values between start and end."""
+        pts = list(self.gen._bresenham_line(3, 0, 3, 3))
+        assert pts == [(3, 0), (3, 1), (3, 2), (3, 3)]
+
+    def test_single_point(self):
+        """Zero-length line should yield just the single point."""
+        pts = list(self.gen._bresenham_line(7, 3, 7, 3))
+        assert pts == [(7, 3)]
+
+    def test_both_endpoints_included(self):
+        """Start and end points must both appear in the result."""
+        x0, y0, x1, y1 = 2, 3, 8, 7
+        pts = list(self.gen._bresenham_line(x0, y0, x1, y1))
+        assert (x0, y0) in pts
+        assert (x1, y1) in pts
+
+    def test_diagonal_has_correct_length(self):
+        """45-degree diagonal: number of pixels ≈ max(|dx|, |dy|) + 1."""
+        pts = list(self.gen._bresenham_line(0, 0, 5, 5))
+        assert len(pts) == 6  # 0..5 inclusive
+
+    def test_no_duplicate_pixels(self):
+        """Each pixel coordinate should appear at most once."""
+        pts = list(self.gen._bresenham_line(0, 0, 10, 7))
+        assert len(pts) == len(set(pts))
+
+    def test_reversed_line_same_pixels(self):
+        """Reversing start/end should trace the same pixel set."""
+        pts_fwd = set(self.gen._bresenham_line(1, 2, 8, 6))
+        pts_rev = set(self.gen._bresenham_line(8, 6, 1, 2))
+        assert pts_fwd == pts_rev
+
+
+# ---------------------------------------------------------------------------
+# _find_darkest_line
+# ---------------------------------------------------------------------------
+
+
+class TestFindDarkestLine:
+    def setup_method(self):
+        self.gen = SketchGenerator()
+
+    def test_returns_none_when_all_candidates_out_of_bounds(self):
+        """If current position is at the center of a tiny image, most circle
+        points are outside — with radius > image_size/2 all are out of bounds."""
+        img = np.full((5, 5), 128, dtype=np.uint8)
+        result = self.gen._find_darkest_line(img, 2, 2, 8, 50)
+        assert result is None
+
+    def test_finds_darker_direction(self):
+        """Returned endpoint should be in the darker half of the image."""
+        # Left half black, right half white; seed near left edge
         h, w = 64, 64
-        img = np.full((h, w), 200, dtype=np.uint8)  # 200 < 240 ceiling
-        img[:, w // 2 :] = 0  # right half is black — clearly darker
-        # Seed just left of the midpoint; 8-direction search will find rightward dark
-        seed_y, seed_x = h // 2, w // 2 - 2
-        path = self.gen._trace_darkest_path(img, seed_y, seed_x, 8, 30, 2)
-        assert len(path) > 1
-        # The x-coordinate should generally increase (moving right toward dark)
-        xs = [p[0] for p in path]
-        assert xs[-1] > xs[0]
-
-    def test_path_stops_at_image_boundary(self):
-        """Path coordinates must stay within image bounds even when tracing near an edge."""
-        # All-black image: brightness never exceeds the ceiling, so the boundary
-        # (not the brightness check) must be what stops the path.
-        img = np.zeros((32, 32), dtype=np.uint8)
-        path = self.gen._trace_darkest_path(img, 1, 1, 8, 200, 3)
-        assert len(path) > 1, "Path should trace before hitting boundary"
-        for px_x, px_y in path:
-            assert 0 <= round(px_x) < 32, f"px_x={px_x} out of bounds"
-            assert 0 <= round(px_y) < 32, f"px_y={px_y} out of bounds"
-
-    def test_path_length_bounded_by_max_length(self):
-        """Returned path must have at most max_length positions."""
-        # All-black image: brightness never exceeds the ceiling, so max_length
-        # (not the brightness check) must be what caps the path.
-        img = np.zeros((128, 128), dtype=np.uint8)
-        max_length = 20
-        path = self.gen._trace_darkest_path(img, 64, 64, 8, max_length, 2)
-        assert len(path) == max_length  # should reach the cap, not stop early
-
-    def test_angle_tests_4_axis_aligned(self):
-        """With 4 directions (0°, 90°, 180°, 270°), each step must be axis-aligned."""
-        # Horizontal dark stripe to give the path a clear dark direction
-        h, w = 64, 128
         img = np.full((h, w), 255, dtype=np.uint8)
-        img[32, :] = 0  # horizontal dark line at row 32
-        path = self.gen._trace_darkest_path(img, 32, 0, 4, 30, 1)
-        assert len(path) > 1
-        # Each step must move purely horizontally or purely vertically (step_size_px=1)
-        for (x0, y0), (x1, y1) in zip(path, path[1:]):
-            dx = abs(x1 - x0)
-            dy = abs(y1 - y0)
-            # One of dx, dy must be ~0 and the other ~step_size (1)
-            assert (dx < 0.01 or dy < 0.01), f"Non-axis-aligned step: dx={dx}, dy={dy}"
+        img[:, : w // 2] = 0  # left half black
+        # Seed in the right-half, near the boundary; dark half is to the left
+        result = self.gen._find_darkest_line(img, w // 2 + 1, h // 2, 8, 10)
+        assert result is not None
+        end_x, end_y, avg_brightness = result
+        # The winning direction should lead into the darker left half
+        assert avg_brightness < 255.0
 
-    def test_out_of_bounds_seed_returns_empty(self):
-        """Seed outside image bounds should return an empty path."""
-        img = make_white_image(32, 32)
-        path = self.gen._trace_darkest_path(img, 100, 100, 8, 50, 2)
-        assert path == []
+    def test_avg_brightness_is_in_range(self):
+        """avg_brightness must be in [0, 255]."""
+        img = np.random.default_rng(0).integers(0, 256, (64, 64), dtype=np.uint8)
+        result = self.gen._find_darkest_line(img, 32, 32, 8, 10)
+        if result is not None:
+            _, _, avg_brightness = result
+            assert 0.0 <= avg_brightness <= 255.0
 
-    def test_bright_seed_stops_immediately(self):
-        """If the seed pixel is above the brightness ceiling, stop after the seed."""
-        # All pixels set to 252 (above ceiling of 250)
-        img = np.full((32, 32), 252, dtype=np.uint8)
-        path = self.gen._trace_darkest_path(img, 16, 16, 8, 50, 2)
-        # Should return only the seed (stopped immediately due to brightness)
-        assert len(path) == 1
-        assert path[0] == (16.0, 16.0)
+    def test_endpoint_within_image_bounds(self):
+        """The returned endpoint must be inside the image."""
+        img = np.zeros((64, 64), dtype=np.uint8)
+        result = self.gen._find_darkest_line(img, 32, 32, 16, 10)
+        assert result is not None
+        end_x, end_y, _ = result
+        assert 0 <= end_x < 64
+        assert 0 <= end_y < 64
+
+    def test_best_direction_lower_brightness_than_worst(self):
+        """The chosen direction should have lower (or equal) avg brightness
+        than any other valid direction."""
+        rng = np.random.default_rng(99)
+        img = rng.integers(0, 256, (64, 64), dtype=np.uint8)
+        angle_tests = 8
+        line_length_px = 8
+        result = self.gen._find_darkest_line(img, 32, 32, angle_tests, line_length_px)
+        assert result is not None
+        best_end_x, best_end_y, best_avg = result
+
+        # Manually compute avg brightness for each candidate; best must win
+        h, w = img.shape[:2]
+        for i in range(angle_tests):
+            angle = i * 2.0 * np.pi / angle_tests
+            ex = 32 + int(round(np.cos(angle) * line_length_px))
+            ey = 32 + int(round(np.sin(angle) * line_length_px))
+            if not (0 <= ey < h and 0 <= ex < w):
+                continue
+            pixels = list(self.gen._bresenham_line(32, 32, ex, ey))
+            if not all(0 <= py < h and 0 <= px < w for px, py in pixels):
+                continue
+            avg = sum(int(img[py, px]) for px, py in pixels) / len(pixels)
+            assert best_avg <= avg + 1e-9, (
+                f"Best avg {best_avg:.1f} > candidate avg {avg:.1f} for angle {i}"
+            )
+
+    def test_bresenham_circle_mode_angle_tests_36(self):
+        """angle_tests=36 triggers Bresenham circle mode; result must be valid."""
+        img = np.zeros((128, 128), dtype=np.uint8)
+        result = self.gen._find_darkest_line(img, 64, 64, 36, 20)
+        assert result is not None
+        end_x, end_y, avg_brightness = result
+        assert 0 <= end_x < 128
+        assert 0 <= end_y < 128
+        assert avg_brightness == 0.0  # all-black image
 
 
 # ---------------------------------------------------------------------------
@@ -563,7 +615,7 @@ class TestGenerateLoop:
             "line_max_limit": 10_000,
             "line_max_length": 10,
             "line_min_length": 2,
-            "step_size_px": 2,
+            "line_length_px": 5,
         }
         result_dark = self.gen.generate({"_source_image": dark_img, **common}, self.canvas)
         result_bright = self.gen.generate({"_source_image": bright_img, **common}, self.canvas)

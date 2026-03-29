@@ -119,19 +119,19 @@ class SketchGenerator(Generator):
                 name="angle_tests",
                 label="Angle Tests",
                 min=4,
-                max=36,
+                max=360,
                 step=1,
                 default=16,
-                description="Number of directions to test at each step — 4 = square grid, 8 = octagonal, higher = smoother",
+                description="Candidate directions tested per step — values <36 use evenly-spaced angles; ≥36 tests all integer points on a Bresenham circle (full pixel-resolution coverage)",
             ),
             IntParam(
-                name="step_size_px",
-                label="Step Size (px)",
-                min=1,
-                max=10,
+                name="line_length_px",
+                label="Line Length (px)",
+                min=5,
+                max=100,
                 step=1,
-                default=1,
-                description="Pixel distance to advance per tracing step",
+                default=20,
+                description="Length of each line segment in pixels",
             ),
             # --- erase params ---
             IntParam(
@@ -246,7 +246,7 @@ class SketchGenerator(Generator):
             "line_min_length": 5,
             "line_max_length": 150,
             "angle_tests": 16,
-            "step_size_px": 1,
+            "line_length_px": 20,
             "erase_min": 1,
             "erase_max": 100,
             "erase_radius_min": 1,
@@ -407,71 +407,93 @@ class SketchGenerator(Generator):
         return r0 + local_y, c0 + local_x
 
     # ------------------------------------------------------------------
-    # Darkest-path tracing
+    # Bresenham helpers
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _trace_darkest_path(
+    def _bresenham_line(
+        x0: int, y0: int, x1: int, y1: int
+    ):
+        """Yield ``(x, y)`` integer pixel coordinates along the line from
+        ``(x0, y0)`` to ``(x1, y1)`` using Bresenham's algorithm.
+
+        Both endpoints are included.
+        """
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+        while True:
+            yield (x0, y0)
+            if x0 == x1 and y0 == y1:
+                break
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x0 += sx
+            if e2 < dx:
+                err += dx
+                y0 += sy
+
+    # ------------------------------------------------------------------
+    # Darkest-line finding
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _find_darkest_line(
         lightened: np.ndarray,
-        seed_y: int,
-        seed_x: int,
+        cur_x: int,
+        cur_y: int,
         angle_tests: int,
-        max_length: int,
-        step_size_px: int,
+        line_length_px: int,
         sobel_x: np.ndarray | None = None,
         sobel_y: np.ndarray | None = None,
         edge_map: np.ndarray | None = None,
         directionality: float = 0.0,
         edge_power: float = 0.0,
-        brightness_ceiling: int = 250,
-    ) -> list[tuple[float, float]]:
-        """Trace a path from (seed_y, seed_x) by greedily choosing the best
-        neighbouring direction at each step.
+    ) -> tuple[int, int, float] | None:
+        """Find the single best line segment from ``(cur_x, cur_y)``.
 
-        Direction scoring blends three components:
-        - **luminance**: prefers darker pixels (brightness-seeking)
-        - **directionality**: prefers directions aligned with the local
-          iso-brightness contour tangent (i.e. perpendicular to the image
-          gradient), so lines tend to follow edges instead of crossing them.
-        - **edge_power**: prefers directions whose target pixel lies on a
-          detected Canny edge.
+        Tests candidate endpoints at distance ``line_length_px`` from the
+        current position and returns the one whose full Bresenham line has
+        the lowest average brightness.
+
+        Candidate generation:
+        - If ``angle_tests < 36``: test ``angle_tests`` evenly-spaced angles.
+        - If ``angle_tests >= 36``: test all integer points on the Bresenham
+          circle of radius ``line_length_px`` (full pixel-resolution coverage).
+
+        Scoring blends three components (same weights as the legacy tracer):
+        - **luminance**: average brightness along the Bresenham line (lower = darker).
+        - **directionality**: alignment with local iso-brightness contour tangent.
+        - **edge_power**: average edge density along the line.
 
         Parameters
         ----------
         lightened:
             2-D uint8 grayscale image (0=black, 255=white).
-        seed_y, seed_x:
-            Starting pixel coordinates (row, col).
+        cur_x, cur_y:
+            Current pixel position (column, row).
         angle_tests:
-            Number of evenly-spaced directions to evaluate at each step.
-        max_length:
-            Maximum total number of positions in the returned path (including
-            the seed). The tracing loop runs at most ``max_length - 1`` times.
-        step_size_px:
-            Distance in pixels to advance per step.
+            Number of candidate angles (< 36) or Bresenham-circle mode (>= 36).
+        line_length_px:
+            Radius / length of each candidate line segment in pixels.
         sobel_x, sobel_y:
-            Float32 Sobel gradient arrays (same shape as *lightened*).  Required
-            when *directionality* > 0; ignored otherwise.
+            Float32 Sobel gradient arrays. Required when *directionality* > 0.
         edge_map:
-            uint8 binary edge map (0 or 255, same shape as *lightened*).
-            Required when *edge_power* > 0; ignored otherwise.
-        directionality:
-            Weight (0–100) for contour-following.
-        edge_power:
-            Weight (0–100) for edge-attraction.
+            uint8 binary edge map (0 or 255). Required when *edge_power* > 0.
+        directionality, edge_power:
+            Blend weights (0–100) for contour-following / edge-attraction.
 
         Returns
         -------
-        List of ``(px_x, px_y)`` pixel coordinates.
+        ``(end_x, end_y, avg_brightness)`` for the winning endpoint, or
+        ``None`` if no valid candidate exists.
         """
         h, w = lightened.shape[:2]
-        CEIL = brightness_ceiling
 
-        # Seed must be inside the image
-        if not (0 <= seed_y < h and 0 <= seed_x < w):
-            return []
-
-        # Compute normalised blending weights so they sum to 1.
+        # Normalised blending weights
         lum_power = max(0.0, 100.0 - directionality - edge_power)
         total_power = lum_power + directionality + edge_power
         if total_power < 1e-9:
@@ -484,79 +506,94 @@ class SketchGenerator(Generator):
         use_dir = dir_w > 1e-6 and sobel_x is not None and sobel_y is not None
         use_edge = edge_w > 1e-6 and edge_map is not None
 
-        # Pre-compute direction unit vectors (cos, sin) for all test angles
-        angles = [i * 2.0 * np.pi / angle_tests for i in range(angle_tests)]
-        dirs = [(np.cos(a), np.sin(a)) for a in angles]
+        # Gradient at current position for directionality scoring
+        gx_cur = gy_cur = grad_mag = 0.0
+        if use_dir:
+            iy_cur = max(0, min(h - 1, cur_y))
+            ix_cur = max(0, min(w - 1, cur_x))
+            gx_cur = float(sobel_x[iy_cur, ix_cur])
+            gy_cur = float(sobel_y[iy_cur, ix_cur])
+            grad_mag = (gx_cur ** 2 + gy_cur ** 2) ** 0.5
 
-        cur_x = float(seed_x)
-        cur_y = float(seed_y)
-        path: list[tuple[float, float]] = [(cur_x, cur_y)]
+        # Generate candidate endpoints
+        r = max(1, line_length_px)
+        candidates: list[tuple[int, int]] = []
 
-        for _ in range(max_length - 1):
-            # Stop if current position is too bright
-            iy = int(round(cur_y))
-            ix = int(round(cur_x))
-            if lightened[iy, ix] > CEIL:
-                break
+        if angle_tests >= 36:
+            # Midpoint circle algorithm: all integer points on a circle of radius r
+            xc, yc = r, 0
+            err = 0
+            pts: set[tuple[int, int]] = set()
+            while xc >= yc:
+                for dpx, dpy in [
+                    (xc, yc), (-xc, yc), (xc, -yc), (-xc, -yc),
+                    (yc, xc), (-yc, xc), (yc, -xc), (-yc, -xc),
+                ]:
+                    pts.add((cur_x + dpx, cur_y + dpy))
+                if err <= 0:
+                    yc += 1
+                    err += 2 * yc + 1
+                if err > 0:
+                    xc -= 1
+                    err -= 2 * xc + 1
+            candidates = list(pts)
+        else:
+            for i in range(angle_tests):
+                angle = i * 2.0 * np.pi / angle_tests
+                ex = cur_x + int(round(np.cos(angle) * r))
+                ey = cur_y + int(round(np.sin(angle) * r))
+                candidates.append((ex, ey))
 
-            # Sample gradient at current position for directionality scoring.
-            # The contour tangent is perpendicular to the gradient: (-gy, gx).
-            if use_dir:
-                gx_cur = float(sobel_x[iy, ix])
-                gy_cur = float(sobel_y[iy, ix])
-                grad_mag = (gx_cur * gx_cur + gy_cur * gy_cur) ** 0.5
-            else:
-                gx_cur = gy_cur = grad_mag = 0.0
+        best_score = float("inf")
+        best_end: tuple[int, int] | None = None
+        best_avg_brightness = float("inf")
 
-            # Test all directions; pick the lowest-score look-ahead.
-            # Score = lum_w*(brightness/255) - dir_w*alignment - edge_w*(edge/255)
-            best_dx: float = 0.0
-            best_dy: float = 0.0
-            best_score: float = float("inf")
-            found = False
+        for ex, ey in candidates:
+            # Skip endpoints outside image bounds
+            if not (0 <= ey < h and 0 <= ex < w):
+                continue
 
-            for dx, dy in dirs:
-                nx = cur_x + dx * step_size_px
-                ny = cur_y + dy * step_size_px
-                iny = int(round(ny))
-                inx = int(round(nx))
-                if not (0 <= iny < h and 0 <= inx < w):
-                    continue
+            # Trace Bresenham line; accumulate brightness (and optional edge) sum
+            pixel_sum = 0
+            pixel_count = 0
+            edge_sum = 0
+            valid = True
 
-                brightness = float(lightened[iny, inx])
-                score = lum_w * (brightness / 255.0)
+            for px, py in SketchGenerator._bresenham_line(cur_x, cur_y, ex, ey):
+                if not (0 <= py < h and 0 <= px < w):
+                    valid = False
+                    break
+                pixel_sum += int(lightened[py, px])
+                pixel_count += 1
+                if use_edge:
+                    edge_sum += int(edge_map[py, px])
 
-                if use_dir and grad_mag > 1e-6:
-                    # Alignment with contour tangent (-gy, gx):
-                    # alignment = |dx*(-gy) + dy*gx| / grad_mag
-                    alignment = abs(-gy_cur * dx + gx_cur * dy) / grad_mag
+            if not valid or pixel_count == 0:
+                continue
+
+            avg_brightness = pixel_sum / pixel_count
+            score = lum_w * (avg_brightness / 255.0)
+
+            if use_dir and grad_mag > 1e-6:
+                ddx = ex - cur_x
+                ddy = ey - cur_y
+                seg_mag = (ddx ** 2 + ddy ** 2) ** 0.5
+                if seg_mag > 1e-6:
+                    # Alignment with contour tangent (-gy, gx)
+                    alignment = abs(-gy_cur * (ddx / seg_mag) + gx_cur * (ddy / seg_mag)) / grad_mag
                     score -= dir_w * alignment
 
-                if use_edge:
-                    edge_val = float(edge_map[iny, inx]) / 255.0
-                    score -= edge_w * edge_val
+            if use_edge:
+                score -= edge_w * (edge_sum / pixel_count / 255.0)
 
-                if score < best_score:
-                    best_score = score
-                    best_dx, best_dy = dx, dy
-                    found = True
+            if score < best_score:
+                best_score = score
+                best_end = (ex, ey)
+                best_avg_brightness = avg_brightness
 
-            if not found:
-                break  # All look-ahead positions are out of bounds
-
-            # Advance one step
-            cur_x += best_dx * step_size_px
-            cur_y += best_dy * step_size_px
-
-            # Stop if the new position is outside the image
-            iy = int(round(cur_y))
-            ix = int(round(cur_x))
-            if not (0 <= iy < h and 0 <= ix < w):
-                break
-
-            path.append((cur_x, cur_y))
-
-        return path
+        if best_end is None:
+            return None
+        return (best_end[0], best_end[1], best_avg_brightness)
 
     # ------------------------------------------------------------------
     # Erase helpers
@@ -708,7 +745,7 @@ class SketchGenerator(Generator):
         line_min_length = int(params.get("line_min_length", 5))
         line_max_length = int(params.get("line_max_length", 150))
         angle_tests = int(params.get("angle_tests", 16))
-        step_size_px = int(params.get("step_size_px", 1))
+        line_length_px = int(params.get("line_length_px", 20))
         erase_min = int(params.get("erase_min", 1))
         erase_max = int(params.get("erase_max", 100))
         erase_radius_min = int(params.get("erase_radius_min", 1))
@@ -778,21 +815,55 @@ class SketchGenerator(Generator):
                 br, bc = self._find_darkest_region(lightened, block_size)
                 seed_y, seed_x = self._find_darkest_pixel(lightened, br, bc, block_size)
 
-                # Trace path from seed
-                path = self._trace_darkest_path(
-                    lightened, seed_y, seed_x, angle_tests, line_max_length, step_size_px,
-                    sobel_x=sobel_x_map,
-                    sobel_y=sobel_y_map,
-                    edge_map=edge_map,
-                    directionality=directionality,
-                    edge_power=edge_power,
-                    brightness_ceiling=brightness_ceiling,
-                )
+                # Build path by repeatedly finding the best next line segment
+                path: list[tuple[float, float]] = [(float(seed_x), float(seed_y))]
+                cur_x, cur_y = seed_x, seed_y
+
+                for _ in range(line_max_length - 1):
+                    # Stop if current position is too bright
+                    iy = max(0, min(img_h - 1, cur_y))
+                    ix = max(0, min(img_w - 1, cur_x))
+                    if lightened[iy, ix] > brightness_ceiling:
+                        break
+
+                    line_result = self._find_darkest_line(
+                        lightened, cur_x, cur_y,
+                        angle_tests, line_length_px,
+                        sobel_x=sobel_x_map,
+                        sobel_y=sobel_y_map,
+                        edge_map=edge_map,
+                        directionality=directionality,
+                        edge_power=edge_power,
+                    )
+                    if line_result is None:
+                        break
+                    end_x, end_y, avg_brightness = line_result
+                    if avg_brightness > brightness_ceiling:
+                        break
+                    path.append((float(end_x), float(end_y)))
+                    cur_x, cur_y = end_x, end_y
+
+                # Expand path to individual Bresenham pixels for proper erasing
+                erase_pixels: list[tuple[float, float]] = []
+                for i in range(len(path)):
+                    px_x, px_y = path[i]
+                    erase_pixels.append((px_x, px_y))
+                    if i + 1 < len(path):
+                        nx, ny = path[i + 1]
+                        for bx, by in self._bresenham_line(
+                            int(round(px_x)), int(round(px_y)),
+                            int(round(nx)), int(round(ny)),
+                        ):
+                            erase_pixels.append((float(bx), float(by)))
 
                 # Erase regardless of path length to prevent infinite loops;
                 # accumulate the actual brightness delta into the running sum
-                if path:
-                    delta = self._erase_along_path(lightened, path, erase_min, erase_max, erase_radius_min, erase_radius_max, tone)
+                if erase_pixels:
+                    delta = self._erase_along_path(
+                        lightened, erase_pixels,
+                        erase_min, erase_max,
+                        erase_radius_min, erase_radius_max, tone,
+                    )
                     running_sum += delta
 
                 # Only keep paths that meet minimum length
