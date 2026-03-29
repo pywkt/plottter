@@ -709,7 +709,7 @@ class SketchGenerator(Generator):
                 import cv2
                 img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
             except ImportError:
-                img = img.mean(axis=2).astype(np.uint8)
+                img = (0.2126 * img[:, :, 0] + 0.7152 * img[:, :, 1] + 0.0722 * img[:, :, 2]).astype(np.uint8)
 
         img_h, img_w = img.shape[:2]
         draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()

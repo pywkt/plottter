@@ -499,7 +499,7 @@ class SpiralGenerator(Generator):
         gray: np.ndarray | None = None
         if source is not None:
             if source.ndim == 3:
-                gray = np.mean(source[:, :, :3], axis=2).astype(np.float32)
+                gray = (0.2126 * source[:, :, 0] + 0.7152 * source[:, :, 1] + 0.0722 * source[:, :, 2]).astype(np.float32)
             else:
                 gray = source.astype(np.float32)
 
