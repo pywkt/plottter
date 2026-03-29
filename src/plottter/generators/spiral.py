@@ -519,6 +519,7 @@ class SpiralGenerator(Generator):
         current: Polyline = []
         step_idx = 0
         arc_length = 0.0  # cumulative arc length for smooth sine/square phase
+        last_brightness: float | None = None  # luminance smoothing: previous sample
 
         while True:
             r = ring_spacing_mm * theta / two_pi
@@ -528,15 +529,20 @@ class SpiralGenerator(Generator):
             x = center_x_mm + r * math.cos(theta)
             y = center_y_mm + r * math.sin(theta)
 
-            # Sample brightness
+            # Sample brightness with luminance smoothing (DrawingBotV3 PFMSpiralBasic ~line 85)
             brightness = 128.0
             if can_sample:
                 px = (x - img_x1) / img_rect_w * (img_w - 1)
                 py = (y - img_y1) / img_rect_h * (img_h - 1)
                 brightness = _sample_image_at(gray, px, py)
+            if last_brightness is None:
+                smoothed = brightness
+            else:
+                smoothed = (brightness + last_brightness) / 2.0
+            last_brightness = brightness
 
             # White-area skipping
-            in_white = skip_white and brightness > white_threshold
+            in_white = skip_white and smoothed > white_threshold
 
             if in_white and not connected_lines:
                 # Break the polyline at white areas
@@ -548,7 +554,7 @@ class SpiralGenerator(Generator):
                 if can_sample and amplitude > 0.0 and not in_white:
                     perp_x = math.cos(theta)
                     perp_y = math.sin(theta)
-                    offset = amplitude * ring_spacing_mm / 2.0 * (1.0 - brightness / 255.0)
+                    offset = amplitude * ring_spacing_mm / 2.0 * (1.0 - smoothed / 255.0)
                     if oscillation_mode == "Sine":
                         # Smooth sine wave with wavelength = ring_spacing.
                         # Uses cumulative arc length for phase so the wave
@@ -565,10 +571,10 @@ class SpiralGenerator(Generator):
                     # Flat point (white area in connected mode, or no image/amplitude)
                     current.append((x + x_off, y + y_off))
 
-            # Variable velocity: adjust angular step by brightness
+            # Variable velocity: adjust angular step by brightness (easeInSine from DrawingBotV3)
             if variable_velocity and can_sample:
-                t = brightness / 255.0
-                ease = t * t  # quadratic ease-in
+                t = smoothed / 255.0
+                ease = 1.0 - math.cos(t * math.pi / 2.0)  # easeInSine
                 effective_step = step_size_mm * (min_velocity + ease * (max_velocity - min_velocity))
             else:
                 effective_step = step_size_mm
