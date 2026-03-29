@@ -230,13 +230,17 @@ class TestGenerateScaffold:
         names = {p.name for p in params}
         assert "line_density" in names
         assert "line_max_limit" in names
-        assert "block_size" in names
         assert "invert" in names
         assert "brightness" in names
         assert "contrast" in names
         assert "blur_radius" in names
         assert "x_offset_mm" in names
         assert "y_offset_mm" in names
+        # Deprecated params must not be present
+        assert "block_size" not in names
+        assert "brightness_ceiling" not in names
+        assert "step_size_px" not in names
+        assert "max_steps" not in names
 
     def test_presets_defined(self):
         presets = self.gen.get_presets()

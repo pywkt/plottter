@@ -54,47 +54,22 @@ class SketchGenerator(Generator):
                 description="Maximum number of line segments",
             ),
             IntParam(
-                name="block_size",
-                label="Block Size (px)",
-                min=4,
-                max=64,
+                name="line_length_px",
+                label="Line Length (px)",
+                min=5,
+                max=100,
                 step=1,
-                default=8,
-                description="Search region size in pixels — smaller = more precise seed placement",
+                default=20,
+                description="Length of each line segment in pixels",
             ),
-            # --- standard image preprocessing params ---
-            BoolParam(
-                name="invert",
-                label="Invert Image",
-                default=False,
-                description="Invert the image (dark and bright areas swap roles)",
-            ),
-            FloatParam(
-                name="brightness",
-                label="Brightness",
-                min=-100.0,
-                max=100.0,
-                step=1.0,
-                default=0.0,
-                description="Adjust image brightness before processing (-100 to +100)",
-            ),
-            FloatParam(
-                name="contrast",
-                label="Contrast",
-                min=-100.0,
-                max=100.0,
-                step=1.0,
-                default=0.0,
-                description="Adjust image contrast before processing (-100 to +100)",
-            ),
-            FloatParam(
-                name="blur_radius",
-                label="Blur Radius",
-                min=0.0,
-                max=20.0,
-                step=0.5,
-                default=1.0,
-                description="Gaussian blur applied before processing — smooths brightness transitions",
+            IntParam(
+                name="angle_tests",
+                label="Angle Tests",
+                min=4,
+                max=72,
+                step=1,
+                default=36,
+                description="Candidate directions tested per step — values <36 use evenly-spaced angles; ≥36 tests all integer points on a Bresenham circle (full pixel-resolution coverage)",
             ),
             # --- squiggle params ---
             IntParam(
@@ -123,24 +98,6 @@ class SketchGenerator(Generator):
                 step=1.0,
                 default=25.0,
                 description="How far into bright areas a squiggle can go before stopping — higher = longer squiggles",
-            ),
-            IntParam(
-                name="angle_tests",
-                label="Angle Tests",
-                min=4,
-                max=360,
-                step=1,
-                default=16,
-                description="Candidate directions tested per step — values <36 use evenly-spaced angles; ≥36 tests all integer points on a Bresenham circle (full pixel-resolution coverage)",
-            ),
-            IntParam(
-                name="line_length_px",
-                label="Line Length (px)",
-                min=5,
-                max=100,
-                step=1,
-                default=20,
-                description="Length of each line segment in pixels",
             ),
             # --- erase params ---
             IntParam(
@@ -188,15 +145,6 @@ class SketchGenerator(Generator):
                 default=0.5,
                 description="Blends linear (0) and cubic (1) easing — higher = more contrast between dark/bright erase amounts",
             ),
-            IntParam(
-                name="brightness_ceiling",
-                label="Brightness Ceiling",
-                min=200,
-                max=255,
-                step=1,
-                default=250,
-                description="Tracing stops when a pixel exceeds this brightness — lower = trace more into bright areas",
-            ),
             # --- directionality / edge params ---
             FloatParam(
                 name="directionality",
@@ -215,6 +163,40 @@ class SketchGenerator(Generator):
                 step=1.0,
                 default=0.0,
                 description="Attract lines toward detected edges",
+            ),
+            # --- standard image preprocessing params ---
+            BoolParam(
+                name="invert",
+                label="Invert Image",
+                default=False,
+                description="Invert the image (dark and bright areas swap roles)",
+            ),
+            FloatParam(
+                name="brightness",
+                label="Brightness",
+                min=-100.0,
+                max=100.0,
+                step=1.0,
+                default=0.0,
+                description="Adjust image brightness before processing (-100 to +100)",
+            ),
+            FloatParam(
+                name="contrast",
+                label="Contrast",
+                min=-100.0,
+                max=100.0,
+                step=1.0,
+                default=0.0,
+                description="Adjust image contrast before processing (-100 to +100)",
+            ),
+            FloatParam(
+                name="blur_radius",
+                label="Blur Radius",
+                min=0.0,
+                max=20.0,
+                step=0.5,
+                default=1.0,
+                description="Gaussian blur applied before processing — smooths brightness transitions",
             ),
             # --- offset params ---
             FloatParam(
@@ -247,7 +229,6 @@ class SketchGenerator(Generator):
         _base = {
             "line_density": 1.0,
             "line_max_limit": 10_000,
-            "block_size": 8,
             "invert": False,
             "brightness": 0.0,
             "contrast": 0.0,
@@ -255,7 +236,7 @@ class SketchGenerator(Generator):
             "squiggle_min_length": 3,
             "squiggle_max_length": 50,
             "squiggle_max_deviation": 25.0,
-            "angle_tests": 16,
+            "angle_tests": 36,
             "line_length_px": 20,
             "erase_min": 1,
             "erase_max": 100,
@@ -264,7 +245,6 @@ class SketchGenerator(Generator):
             "tone": 0.5,
             "directionality": 0.0,
             "edge_power": 0.0,
-            "brightness_ceiling": 250,
             "x_offset_mm": 0.0,
             "y_offset_mm": 0.0,
         }
@@ -274,6 +254,8 @@ class SketchGenerator(Generator):
                 name="Sketch Lines",
                 params={
                     **_base,
+                    "line_density": 0.8,
+                    "angle_tests": 16,
                     "squiggle_max_length": 30,
                 },
             ),
@@ -281,31 +263,28 @@ class SketchGenerator(Generator):
                 name="Contour Sketch",
                 params={
                     **_base,
-                    "squiggle_max_length": 40,
-                    "erase_max": 120,
                     "directionality": 60.0,
                     "edge_power": 20.0,
+                    "squiggle_max_length": 80,
                 },
             ),
             Preset(
                 name="Dense Crosshatch",
                 params={
                     **_base,
-                    "angle_tests": 4,
-                    "squiggle_max_length": 20,
-                    "erase_radius_max": 2,
                     "line_density": 2.0,
+                    "angle_tests": 4,
+                    "line_length_px": 15,
+                    "squiggle_max_length": 20,
                 },
             ),
             Preset(
                 name="Loose Sketch",
                 params={
                     **_base,
-                    "angle_tests": 12,
-                    "squiggle_max_length": 80,
-                    "erase_radius_max": 6,
-                    "erase_max": 80,
-                    "line_density": 0.6,
+                    "line_density": 0.5,
+                    "squiggle_max_length": 100,
+                    "squiggle_max_deviation": 50.0,
                 },
             ),
             Preset(
@@ -746,7 +725,9 @@ class SketchGenerator(Generator):
         # Working copy for darkness search
         lightened = img.copy()
 
-        block_size = max(1, int(params.get("block_size", 8)))
+        # Internal constants (not exposed as parameters)
+        block_size = 8
+        brightness_ceiling = 250
 
         # --- generation parameters ---
         line_density = float(params.get("line_density", 1.0))
@@ -754,7 +735,7 @@ class SketchGenerator(Generator):
         squiggle_min_length = int(params.get("squiggle_min_length", 3))
         squiggle_max_length = int(params.get("squiggle_max_length", 50))
         squiggle_max_deviation = float(params.get("squiggle_max_deviation", 25.0))
-        angle_tests = int(params.get("angle_tests", 16))
+        angle_tests = int(params.get("angle_tests", 36))
         line_length_px = int(params.get("line_length_px", 20))
         erase_min = int(params.get("erase_min", 1))
         erase_max = int(params.get("erase_max", 100))
@@ -763,7 +744,6 @@ class SketchGenerator(Generator):
         tone = float(params.get("tone", 0.5))
         directionality = float(params.get("directionality", 0.0))
         edge_power = float(params.get("edge_power", 0.0))
-        brightness_ceiling = int(params.get("brightness_ceiling", 250))
 
         # --- running brightness sum (avoids full-image mean() each iteration) ---
         total_pixels = img_h * img_w
