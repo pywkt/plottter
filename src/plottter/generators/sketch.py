@@ -39,9 +39,9 @@ class SketchGenerator(Generator):
                 name="line_density",
                 label="Line Density",
                 min=0.1,
-                max=100.0,
+                max=5.0,
                 step=0.1,
-                default=50.0,
+                default=1.0,
                 description="Target density — higher = more lines, darker result",
             ),
             IntParam(
@@ -96,24 +96,33 @@ class SketchGenerator(Generator):
                 default=1.0,
                 description="Gaussian blur applied before processing — smooths brightness transitions",
             ),
-            # --- tracing params ---
+            # --- squiggle params ---
             IntParam(
-                name="line_min_length",
-                label="Min Line Length (steps)",
-                min=2,
+                name="squiggle_min_length",
+                label="Squiggle Min Length",
+                min=1,
                 max=100,
                 step=1,
-                default=5,
-                description="Minimum number of steps a traced path must have to be kept",
+                default=3,
+                description="Minimum number of segments a squiggle must have to be kept",
             ),
             IntParam(
-                name="line_max_length",
-                label="Max Line Length (steps)",
-                min=10,
+                name="squiggle_max_length",
+                label="Squiggle Max Length",
+                min=5,
                 max=500,
                 step=1,
-                default=150,
-                description="Maximum number of steps to trace per path",
+                default=50,
+                description="Maximum number of segments per squiggle",
+            ),
+            FloatParam(
+                name="squiggle_max_deviation",
+                label="Squiggle Max Deviation",
+                min=0.0,
+                max=100.0,
+                step=1.0,
+                default=25.0,
+                description="How far into bright areas a squiggle can go before stopping — higher = longer squiggles",
             ),
             IntParam(
                 name="angle_tests",
@@ -236,15 +245,16 @@ class SketchGenerator(Generator):
 
     def get_presets(self) -> list[Preset]:
         _base = {
-            "line_density": 50.0,
+            "line_density": 1.0,
             "line_max_limit": 10_000,
             "block_size": 8,
             "invert": False,
             "brightness": 0.0,
             "contrast": 0.0,
             "blur_radius": 1.0,
-            "line_min_length": 5,
-            "line_max_length": 150,
+            "squiggle_min_length": 3,
+            "squiggle_max_length": 50,
+            "squiggle_max_deviation": 25.0,
             "angle_tests": 16,
             "line_length_px": 20,
             "erase_min": 1,
@@ -264,14 +274,14 @@ class SketchGenerator(Generator):
                 name="Sketch Lines",
                 params={
                     **_base,
-                    "line_max_length": 80,
+                    "squiggle_max_length": 30,
                 },
             ),
             Preset(
                 name="Contour Sketch",
                 params={
                     **_base,
-                    "line_max_length": 120,
+                    "squiggle_max_length": 40,
                     "erase_max": 120,
                     "directionality": 60.0,
                     "edge_power": 20.0,
@@ -282,9 +292,9 @@ class SketchGenerator(Generator):
                 params={
                     **_base,
                     "angle_tests": 4,
-                    "line_max_length": 60,
+                    "squiggle_max_length": 20,
                     "erase_radius_max": 2,
-                    "line_density": 80.0,
+                    "line_density": 2.0,
                 },
             ),
             Preset(
@@ -292,10 +302,10 @@ class SketchGenerator(Generator):
                 params={
                     **_base,
                     "angle_tests": 12,
-                    "line_max_length": 200,
+                    "squiggle_max_length": 80,
                     "erase_radius_max": 6,
                     "erase_max": 80,
-                    "line_density": 30.0,
+                    "line_density": 0.6,
                 },
             ),
             Preset(
@@ -736,14 +746,14 @@ class SketchGenerator(Generator):
         # Working copy for darkness search
         lightened = img.copy()
 
-        block_size = int(params.get("block_size", 8))
-        block_size = max(1, block_size)
+        block_size = max(1, int(params.get("block_size", 8)))
 
         # --- generation parameters ---
-        line_density = float(params.get("line_density", 50.0))
+        line_density = float(params.get("line_density", 1.0))
         line_max_limit = int(params.get("line_max_limit", 10_000))
-        line_min_length = int(params.get("line_min_length", 5))
-        line_max_length = int(params.get("line_max_length", 150))
+        squiggle_min_length = int(params.get("squiggle_min_length", 3))
+        squiggle_max_length = int(params.get("squiggle_max_length", 50))
+        squiggle_max_deviation = float(params.get("squiggle_max_deviation", 25.0))
         angle_tests = int(params.get("angle_tests", 16))
         line_length_px = int(params.get("line_length_px", 20))
         erase_min = int(params.get("erase_min", 1))
@@ -758,6 +768,7 @@ class SketchGenerator(Generator):
         # --- running brightness sum (avoids full-image mean() each iteration) ---
         total_pixels = img_h * img_w
         running_sum = float(lightened.sum())
+        initial_avg = running_sum / total_pixels
 
         # --- precompute gradient and edge maps ---
         sobel_x_map: np.ndarray | None = None
@@ -786,106 +797,112 @@ class SketchGenerator(Generator):
         rect_w = rect_x2 - rect_x1
         rect_h = rect_y2 - rect_y1
 
-        # --- brightness targets ---
-        initial_avg_brightness = running_sum / total_pixels
-        # target_brightness: how bright the lightened image must become before
-        # we stop.  Higher line_density → brighter target → more lines drawn.
-        target_brightness = initial_avg_brightness + (255.0 - initial_avg_brightness) * (line_density / 100.0) ** 0.5
+        # DrawingBotV3 stopping denominator: (253.5 - initial_avg) * line_density
+        # progress = (current_avg - initial_avg) / denom; stop at >= 1.0
+        stop_denom = (253.5 - initial_avg) * max(1e-9, line_density)
 
         result: list[Polyline] = []
         total_segments = 0
-        _iter_count = 0
-        current_avg = initial_avg_brightness
+        consecutive_failures = 0
+        MAX_CONSECUTIVE_FAILURES = 1000
 
-        if target_brightness > initial_avg_brightness:
-            while total_segments < line_max_limit:
-                if cancelled_callback and cancelled_callback():
+        while True:
+            if cancelled_callback and cancelled_callback():
+                break
+
+            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                break
+
+            current_avg = running_sum / total_pixels
+            lum_progress = (current_avg - initial_avg) / stop_denom
+            if lum_progress >= 1.0 or total_segments >= line_max_limit:
+                break
+
+            # (1) Find darkest tile → darkest seed pixel
+            br, bc = self._find_darkest_region(lightened, block_size)
+            seed_y, seed_x = self._find_darkest_pixel(lightened, br, bc, block_size)
+
+            # Check if seed is too bright to start a squiggle from
+            seed_val = int(lightened[seed_y, seed_x])
+            if seed_val > brightness_ceiling:
+                running_sum += 255 - seed_val
+                lightened[seed_y, seed_x] = 255
+                consecutive_failures += 1
+                continue
+
+            # (2) Start a new squiggle from seed
+            squiggle: list[tuple[float, float]] = [(float(seed_x), float(seed_y))]
+            cur_x, cur_y = seed_x, seed_y
+            squiggle_segments = 0
+
+            # (3) Inner squiggle loop: chain segments
+            for _ in range(squiggle_max_length):
+                line_result = self._find_darkest_line(
+                    lightened, cur_x, cur_y,
+                    angle_tests, line_length_px,
+                    sobel_x=sobel_x_map,
+                    sobel_y=sobel_y_map,
+                    edge_map=edge_map,
+                    directionality=directionality,
+                    edge_power=edge_power,
+                )
+                if line_result is None:
                     break
 
-                # Check brightness target every 50 iterations to avoid per-iteration
-                # mean computation overhead on large images.
-                if _iter_count % 50 == 0:
-                    current_avg = running_sum / total_pixels
-                _iter_count += 1
+                end_x, end_y, avg_brightness = line_result
 
-                if current_avg >= target_brightness:
+                # Stop squiggle if segment ventures too far into bright areas
+                if avg_brightness * 100.0 / 255.0 > squiggle_max_deviation:
                     break
 
-                # Find darkest region → darkest seed pixel
-                br, bc = self._find_darkest_region(lightened, block_size)
-                seed_y, seed_x = self._find_darkest_pixel(lightened, br, bc, block_size)
+                squiggle.append((float(end_x), float(end_y)))
+                squiggle_segments += 1
 
-                # Build path by repeatedly finding the best next line segment
-                path: list[tuple[float, float]] = [(float(seed_x), float(seed_y))]
-                cur_x, cur_y = seed_x, seed_y
-
-                for _ in range(line_max_length - 1):
-                    # Stop if current position is too bright
-                    iy = max(0, min(img_h - 1, cur_y))
-                    ix = max(0, min(img_w - 1, cur_x))
-                    if lightened[iy, ix] > brightness_ceiling:
-                        break
-
-                    line_result = self._find_darkest_line(
-                        lightened, cur_x, cur_y,
-                        angle_tests, line_length_px,
-                        sobel_x=sobel_x_map,
-                        sobel_y=sobel_y_map,
-                        edge_map=edge_map,
-                        directionality=directionality,
-                        edge_power=edge_power,
+                # Erase along this segment immediately
+                seg_pixels = [
+                    (float(bx), float(by))
+                    for bx, by in self._bresenham_line(
+                        int(round(cur_x)), int(round(cur_y)),
+                        end_x, end_y,
                     )
-                    if line_result is None:
-                        break
-                    end_x, end_y, avg_brightness = line_result
-                    if avg_brightness > brightness_ceiling:
-                        break
-                    path.append((float(end_x), float(end_y)))
-                    cur_x, cur_y = end_x, end_y
+                ]
+                delta = self._erase_along_path(
+                    lightened, seg_pixels,
+                    erase_min, erase_max,
+                    erase_radius_min, erase_radius_max, tone,
+                )
+                running_sum += delta
+                cur_x, cur_y = end_x, end_y
 
-                # Expand path to individual Bresenham pixels for proper erasing
-                erase_pixels: list[tuple[float, float]] = []
-                for i in range(len(path)):
-                    px_x, px_y = path[i]
-                    erase_pixels.append((px_x, px_y))
-                    if i + 1 < len(path):
-                        nx, ny = path[i + 1]
-                        for bx, by in self._bresenham_line(
-                            int(round(px_x)), int(round(px_y)),
-                            int(round(nx)), int(round(ny)),
-                        ):
-                            erase_pixels.append((float(bx), float(by)))
-
-                # Erase regardless of path length to prevent infinite loops;
-                # accumulate the actual brightness delta into the running sum
-                if erase_pixels:
-                    delta = self._erase_along_path(
-                        lightened, erase_pixels,
-                        erase_min, erase_max,
-                        erase_radius_min, erase_radius_max, tone,
-                    )
-                    running_sum += delta
-
-                # Only keep paths that meet minimum length
-                if len(path) >= line_min_length:
+            if squiggle_segments == 0:
+                # No segments traced — erase at seed to avoid re-selection
+                delta = self._erase_along_path(
+                    lightened, [(float(seed_x), float(seed_y))],
+                    erase_min, erase_max,
+                    erase_radius_min, erase_radius_max, tone,
+                )
+                running_sum += delta
+                consecutive_failures += 1
+            else:
+                consecutive_failures = 0
+                # (4) Add squiggle polyline to output if it meets minimum length
+                if squiggle_segments >= squiggle_min_length:
                     mm_path: Polyline = [
                         (
                             rect_x1 + px_x * rect_w / img_w,
                             rect_y1 + px_y * rect_h / img_h,
                         )
-                        for px_x, px_y in path
+                        for px_x, px_y in squiggle
                     ]
                     result.append(mm_path)
-                    total_segments += len(path) - 1
+                    total_segments += squiggle_segments
 
-                # Update progress
-                if progress_callback:
-                    denom = target_brightness - initial_avg_brightness
-                    if denom > 0:
-                        pct = int(100.0 * (current_avg - initial_avg_brightness) / denom)
-                    else:
-                        pct = 100
-                    progress_callback(min(99, max(0, pct)))
+            # (E) Report progress as min(line_progress, lum_progress)
+            if progress_callback:
+                line_progress = total_segments / max(1, line_max_limit)
+                lum_prog = (current_avg - initial_avg) / stop_denom
+                pct = int(min(line_progress, lum_prog) * 100)
+                progress_callback(min(99, max(0, pct)))
 
         x_off = float(params.get("x_offset_mm", 0.0))
         y_off = float(params.get("y_offset_mm", 0.0))

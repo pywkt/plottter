@@ -244,11 +244,12 @@ class TestGenerateScaffold:
         assert presets[0].name == "Default"
 
     def test_new_parameters_defined(self):
-        """line_min_length, line_max_length, angle_tests, line_length_px must exist."""
+        """squiggle params, angle_tests, line_length_px must exist."""
         params = self.gen.get_parameters()
         names = {p.name for p in params}
-        assert "line_min_length" in names
-        assert "line_max_length" in names
+        assert "squiggle_min_length" in names
+        assert "squiggle_max_length" in names
+        assert "squiggle_max_deviation" in names
         assert "angle_tests" in names
         assert "line_length_px" in names
         assert "step_size_px" not in names
@@ -635,9 +636,11 @@ class TestGenerateLoop:
         # producing a much shorter y extent than in 'fill' mode.
         img = make_single_dark_block(h=32, w=128)
         common = {
-            "line_density": 20.0,
+            "line_density": 1.0,
             "line_max_limit": 200,
-            "line_min_length": 2,
+            "squiggle_min_length": 1,
+            "squiggle_max_deviation": 50.0,
+            "line_length_px": 8,
         }
         result_fill = self.gen.generate(
             {"_source_image": img.copy(), "image_fit_mode": "fill", **common},
@@ -684,13 +687,15 @@ class TestPresets:
 
     def test_all_presets_generate_valid_output(self):
         """Every preset must produce a non-empty list of polylines on a dark image."""
-        img = make_single_dark_block(h=64, w=64)
+        # Use a fully dark image so squiggles can always trace without hitting
+        # the brightness deviation limit.
+        img = np.zeros((64, 64), dtype=np.uint8)
         for preset in self.gen.get_presets():
             params = dict(preset.params)
             params["_source_image"] = img.copy()
-            # Keep limits small for speed
+            # Keep limits small for speed; override squiggle_min_length for permissiveness
             params["line_max_limit"] = 200
-            params["line_min_length"] = 2
+            params["squiggle_min_length"] = 1
             result = self.gen.generate(params, self.canvas)
             assert isinstance(result, list), f"Preset '{preset.name}' did not return a list"
             assert len(result) > 0, f"Preset '{preset.name}' produced no output"
