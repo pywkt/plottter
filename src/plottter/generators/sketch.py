@@ -135,22 +135,49 @@ class SketchGenerator(Generator):
             ),
             # --- erase params ---
             IntParam(
-                name="erase_radius",
-                label="Erase Radius (px)",
+                name="erase_min",
+                label="Erase Min",
+                min=1,
+                max=100,
+                step=1,
+                default=1,
+                description="Minimum erase amount applied at dark pixels — small = many fine strokes in shadows",
+            ),
+            IntParam(
+                name="erase_max",
+                label="Erase Max",
+                min=10,
+                max=255,
+                step=1,
+                default=100,
+                description="Maximum erase amount applied at bright pixels — large = bright areas quickly used up",
+            ),
+            IntParam(
+                name="erase_radius_min",
+                label="Erase Radius Min (px)",
+                min=1,
+                max=10,
+                step=1,
+                default=1,
+                description="Erase radius at dark pixels — smaller = finer strokes in shadows",
+            ),
+            IntParam(
+                name="erase_radius_max",
+                label="Erase Radius Max (px)",
                 min=1,
                 max=20,
                 step=1,
                 default=4,
-                description="Radius of erased area around each drawn line — larger = sparser result",
+                description="Erase radius at bright pixels — larger = wider brightening in highlights",
             ),
-            IntParam(
-                name="erase_amount",
-                label="Erase Amount",
-                min=10,
-                max=200,
-                step=1,
-                default=30,
-                description="How much to brighten drawn areas — higher = lines spread out faster",
+            FloatParam(
+                name="tone",
+                label="Tone Curve",
+                min=0.0,
+                max=1.0,
+                step=0.05,
+                default=0.5,
+                description="Blends linear (0) and cubic (1) easing — higher = more contrast between dark/bright erase amounts",
             ),
             IntParam(
                 name="brightness_ceiling",
@@ -220,8 +247,11 @@ class SketchGenerator(Generator):
             "line_max_length": 150,
             "angle_tests": 16,
             "step_size_px": 1,
-            "erase_radius": 4,
-            "erase_amount": 30,
+            "erase_min": 1,
+            "erase_max": 100,
+            "erase_radius_min": 1,
+            "erase_radius_max": 4,
+            "tone": 0.5,
             "directionality": 0.0,
             "edge_power": 0.0,
             "brightness_ceiling": 250,
@@ -242,7 +272,7 @@ class SketchGenerator(Generator):
                 params={
                     **_base,
                     "line_max_length": 120,
-                    "erase_amount": 40,
+                    "erase_max": 120,
                     "directionality": 60.0,
                     "edge_power": 20.0,
                 },
@@ -253,7 +283,7 @@ class SketchGenerator(Generator):
                     **_base,
                     "angle_tests": 4,
                     "line_max_length": 60,
-                    "erase_radius": 2,
+                    "erase_radius_max": 2,
                     "line_density": 80.0,
                 },
             ),
@@ -263,8 +293,8 @@ class SketchGenerator(Generator):
                     **_base,
                     "angle_tests": 12,
                     "line_max_length": 200,
-                    "erase_radius": 6,
-                    "erase_amount": 80,
+                    "erase_radius_max": 6,
+                    "erase_max": 80,
                     "line_density": 30.0,
                 },
             ),
@@ -536,13 +566,20 @@ class SketchGenerator(Generator):
     def _erase_along_path(
         lightened: np.ndarray,
         path: list[tuple[float, float]],
-        erase_radius: int,
-        erase_amount: int,
+        erase_min: int,
+        erase_max: int,
+        radius_min: int,
+        radius_max: int,
+        tone: float,
     ) -> float:
-        """Brighten a square region around each point in *path*.
+        """Brighten a square region around each point in *path*, with the
+        erase amount and radius scaled by the local pixel luminance.
 
-        Modifies *lightened* in-place using numpy slice assignment — faster than
-        allocating a scratch buffer and drawing circles for small radii.
+        Dark pixels (lum≈0) receive a tiny erase_min amount over a radius_min
+        region — barely lightened.  Already-bright pixels (lum≈255) receive a
+        large erase_max amount over a radius_max region — aggressively lightened.
+        This causes dark areas to accumulate many fine strokes while bright
+        areas are quickly "used up".
 
         Parameters
         ----------
@@ -550,10 +587,16 @@ class SketchGenerator(Generator):
             2-D uint8 grayscale image that is modified in-place.
         path:
             List of ``(px_x, px_y)`` float pixel coordinates.
-        erase_radius:
-            Half-side of the square brightening region in pixels.
-        erase_amount:
-            How much to add to pixel values within the region (0–255).
+        erase_min:
+            Minimum erase amount applied at fully dark pixels.
+        erase_max:
+            Maximum erase amount applied at fully bright pixels.
+        radius_min:
+            Erase radius (in pixels) at fully dark pixels.
+        radius_max:
+            Erase radius (in pixels) at fully bright pixels.
+        tone:
+            Blending weight (0–1) between linear easing (0) and cubic (1).
 
         Returns
         -------
@@ -564,21 +607,32 @@ class SketchGenerator(Generator):
             return 0.0
 
         h, w = lightened.shape[:2]
-        r = erase_radius
         total_delta = 0.0
 
         for px_x, px_y in path:
             cx = int(round(px_x))
             cy = int(round(px_y))
+            if not (0 <= cy < h and 0 <= cx < w):
+                continue
+
+            # Luminance-dependent easing
+            lum = float(lightened[cy, cx])
+            t = lum / 255.0
+            eased = (t ** 3 * tone) + (t * (1.0 - tone))
+
+            amount = int(round(erase_min + eased * (erase_max - erase_min)))
+            r = int(round(radius_min + eased * (radius_max - radius_min)))
+
             y0 = max(0, cy - r)
             y1 = min(h, cy + r + 1)
             x0 = max(0, cx - r)
             x1 = min(w, cx + r + 1)
             if y0 >= y1 or x0 >= x1:
                 continue
+
             region = lightened[y0:y1, x0:x1]
             new_region = np.minimum(
-                region.astype(np.uint16) + erase_amount, 255
+                region.astype(np.uint16) + amount, 255
             ).astype(np.uint8)
             total_delta += float(new_region.sum()) - float(region.sum())
             lightened[y0:y1, x0:x1] = new_region
@@ -655,8 +709,11 @@ class SketchGenerator(Generator):
         line_max_length = int(params.get("line_max_length", 150))
         angle_tests = int(params.get("angle_tests", 16))
         step_size_px = int(params.get("step_size_px", 1))
-        erase_radius = int(params.get("erase_radius", 4))
-        erase_amount = int(params.get("erase_amount", 30))
+        erase_min = int(params.get("erase_min", 1))
+        erase_max = int(params.get("erase_max", 100))
+        erase_radius_min = int(params.get("erase_radius_min", 1))
+        erase_radius_max = int(params.get("erase_radius_max", 4))
+        tone = float(params.get("tone", 0.5))
         directionality = float(params.get("directionality", 0.0))
         edge_power = float(params.get("edge_power", 0.0))
         brightness_ceiling = int(params.get("brightness_ceiling", 250))
@@ -735,7 +792,7 @@ class SketchGenerator(Generator):
                 # Erase regardless of path length to prevent infinite loops;
                 # accumulate the actual brightness delta into the running sum
                 if path:
-                    delta = self._erase_along_path(lightened, path, erase_radius, erase_amount)
+                    delta = self._erase_along_path(lightened, path, erase_min, erase_max, erase_radius_min, erase_radius_max, tone)
                     running_sum += delta
 
                 # Only keep paths that meet minimum length

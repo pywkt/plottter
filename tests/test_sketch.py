@@ -214,11 +214,16 @@ class TestGenerateScaffold:
         # White image has nothing to draw (all pixels above brightness ceiling)
         assert result == []
 
-    def test_erase_radius_and_erase_amount_params(self):
+    def test_erase_params_defined(self):
         params = self.gen.get_parameters()
         names = {p.name for p in params}
-        assert "erase_radius" in names
-        assert "erase_amount" in names
+        assert "erase_min" in names
+        assert "erase_max" in names
+        assert "erase_radius_min" in names
+        assert "erase_radius_max" in names
+        assert "tone" in names
+        assert "erase_radius" not in names
+        assert "erase_amount" not in names
 
     def test_parameters_defined(self):
         params = self.gen.get_parameters()
@@ -342,38 +347,38 @@ class TestEraseAlongPath:
         """After erasing, pixels along the path should be brighter."""
         img = np.zeros((32, 32), dtype=np.uint8)  # all black
         path = [(16.0, 16.0), (17.0, 16.0), (18.0, 16.0)]
-        erase_radius = 2
-        erase_amount = 50
-        self.gen._erase_along_path(img, path, erase_radius, erase_amount)
-        # Pixels at the path centers should have been brightened
-        assert img[16, 16] >= erase_amount
+        # Dark pixels: eased=0, so amount=erase_min
+        self.gen._erase_along_path(img, path, erase_min=50, erase_max=100, radius_min=1, radius_max=4, tone=0.5)
+        # Center should be brightened by at least erase_min
+        assert img[16, 16] >= 50
 
     def test_erase_does_not_exceed_255(self):
         """Erasing on a bright image must clamp to 255."""
         img = np.full((32, 32), 230, dtype=np.uint8)
         path = [(16.0, 16.0)]
-        self.gen._erase_along_path(img, path, erase_radius=5, erase_amount=100)
+        # Bright pixel (230): high eased value → amount approaches erase_max=200
+        self.gen._erase_along_path(img, path, erase_min=1, erase_max=200, radius_min=1, radius_max=5, tone=0.5)
         assert img[16, 16] == 255
 
     def test_empty_path_no_change(self):
         """Empty path must not modify the image."""
         img = np.zeros((16, 16), dtype=np.uint8)
         original = img.copy()
-        self.gen._erase_along_path(img, [], erase_radius=3, erase_amount=50)
+        self.gen._erase_along_path(img, [], erase_min=1, erase_max=50, radius_min=1, radius_max=3, tone=0.5)
         np.testing.assert_array_equal(img, original)
 
-    def test_erase_affects_circular_region(self):
-        """Pixels within erase_radius of a path point should be brightened."""
-        img = np.zeros((32, 32), dtype=np.uint8)
+    def test_erase_affects_region_based_on_brightness(self):
+        """Bright center pixel → larger erase region; pixels beyond radius_max untouched."""
+        # All grey (200) image: eased > 0 so radius > radius_min
+        img = np.full((32, 32), 200, dtype=np.uint8)
         path = [(16.0, 16.0)]
-        erase_radius = 4
-        erase_amount = 80
-        self.gen._erase_along_path(img, path, erase_radius, erase_amount)
-        # Centre and nearby pixels should be brightened
-        assert img[16, 16] >= erase_amount
-        assert img[16, 16 + erase_radius] >= erase_amount  # edge of square region
-        # Pixel beyond the radius should be unchanged
-        assert img[16, 16 + erase_radius + 2] == 0
+        radius_min, radius_max = 1, 4
+        self.gen._erase_along_path(img, path, erase_min=1, erase_max=80,
+                                   radius_min=radius_min, radius_max=radius_max, tone=0.5)
+        # Center should be brighter
+        assert img[16, 16] > 200
+        # Pixel well beyond radius_max should be unchanged
+        assert img[16, 16 + radius_max + 2] == 200
 
     def test_erase_delta_matches_actual_sum_change(self):
         """Returned delta equals the actual change in array sum (within ±1 fp tolerance).
@@ -386,7 +391,8 @@ class TestEraseAlongPath:
         img = rng.integers(50, 250, (32, 32), dtype=np.uint8)
         path = [(10.0, 10.0), (12.0, 10.0), (14.0, 10.0), (14.0, 12.0)]
         before_sum = float(img.sum())
-        delta = self.gen._erase_along_path(img, path, erase_radius=3, erase_amount=60)
+        delta = self.gen._erase_along_path(img, path, erase_min=1, erase_max=60,
+                                           radius_min=1, radius_max=3, tone=0.5)
         after_sum = float(img.sum())
         assert abs(delta - (after_sum - before_sum)) < 1.0
 
@@ -395,9 +401,48 @@ class TestEraseAlongPath:
         img = np.full((32, 32), 230, dtype=np.uint8)
         path = [(16.0, 16.0)]
         before_sum = float(img.sum())
-        delta = self.gen._erase_along_path(img, path, erase_radius=5, erase_amount=100)
+        delta = self.gen._erase_along_path(img, path, erase_min=1, erase_max=200,
+                                           radius_min=1, radius_max=5, tone=0.5)
         after_sum = float(img.sum())
         assert abs(delta - (after_sum - before_sum)) < 1.0
+
+    def test_dark_pixels_barely_brightened(self):
+        """Dark pixels get eased≈0 → amount=erase_min (barely brightened)."""
+        img = np.zeros((32, 32), dtype=np.uint8)
+        path = [(16.0, 16.0)]
+        erase_min = 3
+        self.gen._erase_along_path(img, path, erase_min=erase_min, erase_max=100,
+                                   radius_min=1, radius_max=4, tone=0.5)
+        # lum=0 → t=0 → eased=0 → amount=erase_min exactly
+        assert img[16, 16] == erase_min
+
+    def test_bright_pixels_significantly_more_brightened_than_dark(self):
+        """Bright pixels receive much more brightening per erase call than dark pixels."""
+        # Compare delta for a single bright path point vs a single dark path point
+        img_bright = np.zeros((32, 32), dtype=np.uint8)
+        img_bright[16, 16] = 200
+        img_dark = np.zeros((32, 32), dtype=np.uint8)
+        img_dark[16, 16] = 5
+
+        delta_bright = self.gen._erase_along_path(
+            img_bright, [(16.0, 16.0)], erase_min=1, erase_max=100,
+            radius_min=1, radius_max=4, tone=0.5)
+        delta_dark = self.gen._erase_along_path(
+            img_dark, [(16.0, 16.0)], erase_min=1, erase_max=100,
+            radius_min=1, radius_max=4, tone=0.5)
+
+        assert delta_bright > delta_dark
+
+    def test_dark_spot_requires_many_iterations_to_reach_200(self):
+        """Repeated erasing at a dark spot takes many iterations to reach brightness 200+."""
+        img = np.zeros((10, 10), dtype=np.uint8)
+        path = [(5.0, 5.0)]
+        iterations = 0
+        while img[5, 5] < 200 and iterations < 10_000:
+            self.gen._erase_along_path(img, path, erase_min=1, erase_max=100,
+                                       radius_min=1, radius_max=4, tone=0.5)
+            iterations += 1
+        assert iterations > 15  # dark areas accumulate many fine strokes
 
 
 # ---------------------------------------------------------------------------
