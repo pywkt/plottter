@@ -2609,6 +2609,17 @@ class SettingsPanel(QScrollArea):
         # Apply initial visibility for params with visible_when conditions
         self._update_param_visibility()
 
+        # For Math Art generators: show image source + preprocessing panels when the
+        # generator has any ImageParam (any future math generator with image input gets
+        # the full panel automatically).
+        if self._current_mode == "Math Art":
+            from plottter.generators.base import ImageParam as _ImageParam
+            has_image_param = any(
+                isinstance(p, _ImageParam) for p in generator.get_parameters()
+            )
+            self._image_source_group.setVisible(has_image_param)
+            self._preprocessing_group.setVisible(has_image_param)
+
     def _update_param_visibility(self, *_args: Any) -> None:
         """Show/hide parameter rows based on their visible_when conditions."""
         if self._generator is None:
