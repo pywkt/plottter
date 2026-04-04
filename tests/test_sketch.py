@@ -1351,3 +1351,199 @@ class TestUnsharpMask:
         result = self.gen.generate(params, self.canvas)
         assert isinstance(result, list)
         assert len(result) > 0
+
+
+# ---------------------------------------------------------------------------
+# Hybrid mark mode
+# ---------------------------------------------------------------------------
+
+
+class TestHybridMarkMode:
+    def setup_method(self):
+        self.gen = SketchGenerator()
+        self.canvas = make_canvas()
+
+    def test_mark_mode_param_defined(self):
+        """mark_mode ChoiceParam must be registered."""
+        params = self.gen.get_parameters()
+        names = {p.name for p in params}
+        assert "mark_mode" in names
+        # Verify it's a ChoiceParam with expected choices
+        from plottter.generators.base import ChoiceParam
+        mp = next(p for p in params if p.name == "mark_mode")
+        assert isinstance(mp, ChoiceParam)
+        assert "Squiggle Only" in mp.choices
+        assert "Hybrid" in mp.choices
+        assert mp.default == "Squiggle Only"
+
+    def test_presets_include_mark_mode(self):
+        """All presets must include mark_mode."""
+        for preset in self.gen.get_presets():
+            assert "mark_mode" in preset.params, (
+                f"Preset '{preset.name}' missing mark_mode"
+            )
+
+    def test_squiggle_only_mode_produces_output(self):
+        """mark_mode='Squiggle Only' must produce paths on a dark image."""
+        img = np.zeros((64, 64), dtype=np.uint8)
+        params = {
+            "_source_image": img,
+            "mark_mode": "Squiggle Only",
+            "multi_pass": False,
+            "line_max_limit": 100,
+            "squiggle_min_length": 1,
+            "angle_tests": 8,
+        }
+        result = self.gen.generate(params, self.canvas)
+        assert len(result) > 0
+
+    def test_hybrid_mode_produces_output(self):
+        """mark_mode='Hybrid' must produce paths on a dark image."""
+        img = np.zeros((64, 64), dtype=np.uint8)
+        params = {
+            "_source_image": img,
+            "mark_mode": "Hybrid",
+            "multi_pass": False,
+            "line_max_limit": 100,
+            "squiggle_min_length": 1,
+            "angle_tests": 8,
+        }
+        result = self.gen.generate(params, self.canvas)
+        assert len(result) > 0
+
+    def test_hybrid_produces_mix_of_mark_types(self):
+        """Hybrid mode must emit a variety of path lengths (lines, circles, squiggles)."""
+        # Image with dark area — ensure all mark types can compete
+        img = np.zeros((80, 80), dtype=np.uint8)
+        params = {
+            "_source_image": img,
+            "mark_mode": "Hybrid",
+            "multi_pass": False,
+            "line_max_limit": 300,
+            "squiggle_min_length": 1,
+            "angle_tests": 8,
+            "blur_radius": 0.0,
+            "unsharp_amount": 0,
+        }
+        result = self.gen.generate(params, self.canvas)
+        assert len(result) > 0
+
+        path_lengths = {len(p) for p in result}
+        # Hybrid mode should produce paths of different lengths:
+        # 2-point (straight/hatch lines), 11-point (circle dots), or multi-point (squiggles).
+        # A uniform dark image has no edges → local_edge ≈ 0 → circles dominate,
+        # but straight lines and squiggles are still viable.
+        assert len(path_lengths) > 1, (
+            f"Hybrid mode produced only one path length {path_lengths} — expected variety"
+        )
+
+    def test_flat_dark_image_gets_circle_dots(self):
+        """A uniform dark image (no edges) should produce some 11-point circle marks."""
+        # Uniform black image: no edges → local_edge ≈ 0 everywhere,
+        # so circle dot candidates are eligible and should win in flat areas.
+        img = np.zeros((80, 80), dtype=np.uint8)
+        params = {
+            "_source_image": img,
+            "mark_mode": "Hybrid",
+            "multi_pass": False,
+            "line_max_limit": 300,
+            "squiggle_min_length": 1,
+            "angle_tests": 8,
+            "blur_radius": 0.0,
+            "unsharp_amount": 0,
+            "edge_power": 0.0,
+        }
+        result = self.gen.generate(params, self.canvas)
+        assert len(result) > 0
+
+        # Circle marks have exactly 11 points (10 segments, closed circle)
+        circle_count = sum(1 for p in result if len(p) == 11)
+        total = len(result)
+        # On a uniform dark image with no edges, circles should appear regularly
+        assert circle_count > 0, (
+            f"No circle marks (11-pt paths) found in {total} paths on uniform dark image"
+        )
+
+    def test_edge_image_gets_non_circle_marks(self):
+        """An image dominated by edges should mostly produce straight/squiggle marks."""
+        # Sharp step edge across the whole image — high local_edge everywhere
+        h, w = 80, 80
+        img = np.zeros((h, w), dtype=np.uint8)
+        img[:, w // 2:] = 255  # left half black, right half white — sharp edge at center
+
+        params = {
+            "_source_image": img,
+            "mark_mode": "Hybrid",
+            "multi_pass": False,
+            "line_max_limit": 200,
+            "squiggle_min_length": 1,
+            "angle_tests": 8,
+            "blur_radius": 0.0,
+            "unsharp_amount": 0,
+        }
+        result = self.gen.generate(params, self.canvas)
+        assert len(result) > 0
+
+        # Near the edge, local_edge is high (> 0.38), so circle dots are excluded.
+        # Most marks should be 2-point (straight/hatch lines) or multi-point squiggles.
+        non_circle = sum(1 for p in result if len(p) != 11)
+        total = len(result)
+        assert non_circle > total * 0.5, (
+            f"Expected mostly non-circle marks near edges, got {non_circle}/{total} non-circle"
+        )
+
+    def test_hybrid_output_in_mm_coordinates(self):
+        """Hybrid mode paths must be within the canvas drawing area (mm)."""
+        img = np.zeros((64, 64), dtype=np.uint8)
+        params = {
+            "_source_image": img,
+            "mark_mode": "Hybrid",
+            "multi_pass": False,
+            "line_max_limit": 150,
+            "squiggle_min_length": 1,
+            "angle_tests": 8,
+        }
+        result = self.gen.generate(params, self.canvas)
+        assert len(result) > 0
+        draw_x1, draw_y1, draw_x2, draw_y2 = self.canvas.drawing_area()
+        margin = 0.5
+        for path in result:
+            for x, y in path:
+                assert draw_x1 - margin <= x <= draw_x2 + margin, f"x={x} out of range"
+                assert draw_y1 - margin <= y <= draw_y2 + margin, f"y={y} out of range"
+
+    def test_score_path_returns_float(self):
+        """_score_path must return a float score for a valid path."""
+        h, w = 32, 32
+        residual_dark = np.ones((h, w), dtype=np.float32) * 0.8
+        edge_norm = np.zeros((h, w), dtype=np.float32)
+        coverage = np.zeros((h, w), dtype=np.uint8)
+        pts = [(10.0, 10.0), (20.0, 20.0)]
+        score = SketchGenerator._score_path(pts, residual_dark, edge_norm, coverage, 2, w, h)
+        assert isinstance(score, float)
+        assert score > 0.0  # dark pixels, no coverage → positive score
+
+    def test_score_path_empty_returns_low(self):
+        """_score_path for a degenerate single-point path returns -1e9."""
+        h, w = 10, 10
+        residual_dark = np.ones((h, w), dtype=np.float32)
+        edge_norm = np.zeros((h, w), dtype=np.float32)
+        coverage = np.zeros((h, w), dtype=np.uint8)
+        pts = [(5.0, 5.0)]  # single point → no segments → empty pixel array
+        score = SketchGenerator._score_path(pts, residual_dark, edge_norm, coverage, 2, w, h)
+        assert score == -1e9
+
+    def test_circle_mark_pixels_returns_closed_loop(self):
+        """_circle_mark_pixels must return steps+1 points forming a closed loop."""
+        pts = SketchGenerator._circle_mark_pixels(16.0, 16.0, 5.0, 10, 32, 32)
+        assert len(pts) == 11  # steps + 1
+        # First and last points complete the circle (i=0 and i=steps → both at angle 0/2π)
+        assert abs(pts[0][0] - pts[-1][0]) < 1e-9, "x coords of first/last must match"
+        assert abs(pts[0][1] - pts[-1][1]) < 1e-9, "y coords of first/last must match"
+
+    def test_circle_mark_pixels_clamped_to_bounds(self):
+        """Circle at image edge must clamp all points within image bounds."""
+        pts = SketchGenerator._circle_mark_pixels(0.0, 0.0, 10.0, 10, 32, 32)
+        for x, y in pts:
+            assert 0.0 <= x <= 31.0, f"x={x} out of bounds"
+            assert 0.0 <= y <= 31.0, f"y={y} out of bounds"

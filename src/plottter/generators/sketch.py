@@ -21,6 +21,7 @@ from plottter.generators import register_generator
 from plottter.generators._helpers import compute_image_rect
 from plottter.generators.base import (
     BoolParam,
+    ChoiceParam,
     FloatParam,
     Generator,
     IntParam,
@@ -300,6 +301,13 @@ class SketchGenerator(Generator):
                 randomizable=False,
                 description="Vertical offset applied to the generated output on the canvas page (mm)",
             ),
+            ChoiceParam(
+                name="mark_mode",
+                label="Mark Mode",
+                choices=["Squiggle Only", "Hybrid"],
+                default="Squiggle Only",
+                description="Squiggle Only: existing tracing only. Hybrid: pick best of squiggle, straight lines, hatch marks, and circles per seed.",
+            ),
         ]
 
     # ------------------------------------------------------------------
@@ -337,6 +345,7 @@ class SketchGenerator(Generator):
             "multi_pass": True,
             "x_offset_mm": 0.0,
             "y_offset_mm": 0.0,
+            "mark_mode": "Squiggle Only",
         }
         return [
             Preset(name="Default", params=dict(_base)),
@@ -793,6 +802,73 @@ class SketchGenerator(Generator):
         return (unique_flat % width).astype(np.int32), (unique_flat // width).astype(np.int32)
 
     # ------------------------------------------------------------------
+    # Hybrid mark scoring helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _score_path(
+        points: list[tuple[float, float]],
+        residual_dark: np.ndarray,
+        edge_normalized: np.ndarray,
+        coverage: np.ndarray,
+        max_pixel_coverage: int,
+        img_w: int,
+        img_h: int,
+    ) -> float:
+        """Score a candidate path using dark/peak/edge/coverage weighted formula.
+
+        Higher score = better candidate (more dark coverage, less already-inked).
+
+        Returns
+        -------
+        Weighted score: ``dark*1.42 + dark_peak*0.40 + edge*0.22 - cov*1.05``.
+        Returns ``-1e9`` when the path has no valid pixel coordinates.
+        """
+        px, py = SketchGenerator._path_pixel_coords(points, img_w, img_h)
+        if px.size == 0:
+            return -1e9
+        dark_vals = residual_dark[py, px]
+        dark = float(np.mean(dark_vals))
+        dark_peak = float(np.max(dark_vals))
+        edge_strength = float(np.mean(edge_normalized[py, px]))
+        cov = float(np.mean(coverage[py, px].astype(np.float32) / max(1, max_pixel_coverage)))
+        return dark * 1.42 + dark_peak * 0.40 + edge_strength * 0.22 - cov * 1.05
+
+    @staticmethod
+    def _circle_mark_pixels(
+        cx: float,
+        cy: float,
+        radius: float,
+        steps: int,
+        img_w: int,
+        img_h: int,
+    ) -> list[tuple[float, float]]:
+        """Generate a closed circle polyline in pixel space.
+
+        Parameters
+        ----------
+        cx, cy:
+            Circle centre in pixel coordinates.
+        radius:
+            Circle radius in pixels.
+        steps:
+            Number of arc segments (result has ``steps + 1`` points).
+        img_w, img_h:
+            Image dimensions used for clamping.
+
+        Returns
+        -------
+        List of ``(x, y)`` pixel-space points (closed: first == last).
+        """
+        pts: list[tuple[float, float]] = []
+        for i in range(steps + 1):
+            a = (2.0 * _math.pi * i) / steps
+            x = max(0.0, min(float(img_w - 1), cx + _math.cos(a) * radius))
+            y = max(0.0, min(float(img_h - 1), cy + _math.sin(a) * radius))
+            pts.append((x, y))
+        return pts
+
+    # ------------------------------------------------------------------
     # Generate
     # ------------------------------------------------------------------
 
@@ -894,6 +970,7 @@ class SketchGenerator(Generator):
         chain_max = int(params.get("chain_max", 18))
         long_line_bias = float(params.get("long_line_bias", 0.5))
         straight_bias = float(params.get("straight_bias", 0.7))
+        mark_mode = str(params.get("mark_mode", "Squiggle Only"))
         _min_dark_threshold = 0.02
 
         # --- precompute normalized Sobel edge map ---
@@ -936,6 +1013,8 @@ class SketchGenerator(Generator):
         _seed_batch_ys: np.ndarray | None = None
         _seed_batch_xs: np.ndarray | None = None
         _seed_batch_idx: int = 0
+        # Scratch lightened buffer for hybrid squiggle candidate tracing (lazy alloc)
+        _lightened_scratch: np.ndarray | None = None
 
         for pass_idx, profile in enumerate(profiles_to_run):
             if cancelled_callback and cancelled_callback():
@@ -974,6 +1053,163 @@ class SketchGenerator(Generator):
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     break
 
+                # ----------------------------------------------------------------
+                # Hybrid mark selection (when mark_mode == "Hybrid")
+                # ----------------------------------------------------------------
+                if mark_mode == "Hybrid":
+                    # Sample seed from weighted distribution
+                    if _seed_batch_ys is None or _seed_batch_idx >= len(_seed_batch_ys):
+                        _hrem = max(1, pass_target - pass_segments)
+                        _hbatch = min(5000, max(2000, _hrem * 2))
+                        _seed_batch_ys, _seed_batch_xs = self._sample_seed_batch(
+                            residual_dark, edge_normalized, coverage,
+                            img_h, img_w, _hbatch,
+                            dark_power=profile["dark_power"],
+                            edge_bias=edge_power / 100.0,
+                            max_pixel_coverage=max_pixel_coverage,
+                            min_darkness=_min_dark_threshold,
+                            rng=rng,
+                        )
+                        _seed_batch_idx = 0
+                    _hseed_y = int(_seed_batch_ys[_seed_batch_idx])
+                    _hseed_x = int(_seed_batch_xs[_seed_batch_idx])
+                    _seed_batch_idx += 1
+
+                    if int(lightened[_hseed_y, _hseed_x]) > pass_ceiling:
+                        consecutive_failures += 1
+                        continue
+
+                    # Local image properties at seed
+                    _hld = float(residual_dark[_hseed_y, _hseed_x])
+                    _hle = float(edge_normalized[_hseed_y, _hseed_x])
+                    _hgx = float(_gx[_hseed_y, _hseed_x])
+                    _hgy = float(_gy[_hseed_y, _hseed_x])
+                    _hgrad = _math.atan2(-_hgx, _hgy)          # gradient direction
+                    _hnorm = _hgrad - _math.pi / 2.0            # gradient normal
+                    _hbase = pass_line_length * (1.4 + _hld * 2.2)  # base mark length
+
+                    hybrid_candidates: list[tuple[float, list[tuple[float, float]]]] = []
+
+                    # --- Candidate: squiggle (traced on scratch lightened copy) ---
+                    if _lightened_scratch is None:
+                        _lightened_scratch = np.empty_like(lightened)
+                    np.copyto(_lightened_scratch, lightened)
+                    _sq_path: list[tuple[float, float]] = [(float(_hseed_x), float(_hseed_y))]
+                    _sq_cx, _sq_cy = _hseed_x, _hseed_y
+                    for _sq_i in range(pass_max_squiggle):
+                        _sq_ld = float(orig_dark[int(_sq_cy), int(_sq_cx)])
+                        _sq_ell = int(round(pass_line_length * (0.85 + _sq_ld * 1.15)))
+                        if long_line_bias > 0.0:
+                            _sq_lp = long_line_bias * (0.30 + 0.70 * _sq_ld)
+                            if np.random.random() < _sq_lp:
+                                _sq_ell = int(round(_sq_ell * np.random.uniform(1.8, 3.8)))
+                        _sq_ell = max(1, min(_sq_ell, max(1, min(img_w, img_h) // 3 - 1)))
+                        _sq_res = self._find_darkest_line(
+                            _lightened_scratch, int(_sq_cx), int(_sq_cy),
+                            angle_tests, _sq_ell,
+                            residual_dark=residual_dark, edge_normalized=edge_normalized,
+                            coverage=coverage, max_pixel_coverage=max_pixel_coverage,
+                        )
+                        if _sq_res is None:
+                            break
+                        _sq_ex, _sq_ey, _sq_br, _sq_sc = _sq_res
+                        if _sq_br * 100.0 / 255.0 > squiggle_max_deviation or _sq_sc < 0.01:
+                            break
+                        _sq_path.append((float(_sq_ex), float(_sq_ey)))
+                        _sq_seg = [(float(_bx), float(_by)) for _bx, _by in self._bresenham_line(
+                            int(round(_sq_cx)), int(round(_sq_cy)), _sq_ex, _sq_ey)]
+                        self._erase_along_path(_lightened_scratch, _sq_seg, erase_min, erase_max,
+                                               erase_radius_min, erase_radius_max, tone)
+                        _sq_cx, _sq_cy = _sq_ex, _sq_ey
+                    if len(_sq_path) >= 2:
+                        _sq_sc2 = self._score_path(_sq_path, residual_dark, edge_normalized,
+                                                   coverage, max_pixel_coverage, img_w, img_h)
+                        hybrid_candidates.append((_sq_sc2 + 0.03, _sq_path))
+
+                    # --- Candidates: straight lines (4 angles × 2 length scales) ---
+                    for _ha in (_hgrad, _hnorm, 0.0, _math.pi / 2.0):
+                        for _hs in (2.3, 3.6):
+                            _hl = _hbase * _hs
+                            _hlex = int(round(max(0.0, min(float(img_w - 1), _hseed_x + _math.cos(_ha) * _hl))))
+                            _hley = int(round(max(0.0, min(float(img_h - 1), _hseed_y + _math.sin(_ha) * _hl))))
+                            _hlpts: list[tuple[float, float]] = [
+                                (float(_hseed_x), float(_hseed_y)), (float(_hlex), float(_hley))
+                            ]
+                            _hls = self._score_path(_hlpts, residual_dark, edge_normalized,
+                                                    coverage, max_pixel_coverage, img_w, img_h)
+                            hybrid_candidates.append((_hls + 0.12 * _hle, _hlpts))
+
+                    # --- Candidates: hatch marks (±45° from gradient normal) ---
+                    for _ha in (_hnorm + _math.pi / 4.0, _hnorm - _math.pi / 4.0):
+                        _hl = _hbase * 1.8
+                        _hhx0 = max(0.0, min(float(img_w - 1), _hseed_x - _math.cos(_ha) * _hl * 0.5))
+                        _hhy0 = max(0.0, min(float(img_h - 1), _hseed_y - _math.sin(_ha) * _hl * 0.5))
+                        _hhx1 = max(0.0, min(float(img_w - 1), _hseed_x + _math.cos(_ha) * _hl * 0.5))
+                        _hhy1 = max(0.0, min(float(img_h - 1), _hseed_y + _math.sin(_ha) * _hl * 0.5))
+                        _hhpts: list[tuple[float, float]] = [(_hhx0, _hhy0), (_hhx1, _hhy1)]
+                        _hhs = self._score_path(_hhpts, residual_dark, edge_normalized,
+                                                coverage, max_pixel_coverage, img_w, img_h)
+                        hybrid_candidates.append((_hhs + 0.08 * _hle, _hhpts))
+
+                    # --- Candidate: circle dot (only when local_edge < 0.38) ---
+                    if _hle < 0.38:
+                        _hcr = pass_line_length * (0.7 + _hld * 1.3)
+                        _hcpts = self._circle_mark_pixels(
+                            float(_hseed_x), float(_hseed_y), _hcr, 10, img_w, img_h)
+                        _hcs = self._score_path(_hcpts, residual_dark, edge_normalized,
+                                                coverage, max_pixel_coverage, img_w, img_h)
+                        hybrid_candidates.append((_hcs + 0.10 * (1.0 - _hle), _hcpts))
+
+                    if not hybrid_candidates:
+                        self._erase_along_path(
+                            lightened, [(float(_hseed_x), float(_hseed_y))],
+                            erase_min, erase_max, erase_radius_min, erase_radius_max, tone)
+                        consecutive_failures += 1
+                        continue
+
+                    _, _hbest_pts = max(hybrid_candidates, key=lambda _c: _c[0])
+                    _hbest_n = len(_hbest_pts) - 1
+
+                    # Coverage overlap check
+                    _hpx_arr, _hpy_arr = self._path_pixel_coords(_hbest_pts, img_w, img_h)
+                    if (_hpx_arr.size > 0
+                            and np.mean(coverage[_hpy_arr, _hpx_arr] >= max_pixel_coverage) > max_overlap_ratio):
+                        self._erase_along_path(
+                            lightened, [(float(_hseed_x), float(_hseed_y))],
+                            erase_min, erase_max, erase_radius_min, erase_radius_max, tone)
+                        consecutive_failures += 1
+                        continue
+
+                    # Accept: apply erasure and update coverage/residual maps
+                    consecutive_failures = 0
+                    self._erase_along_path(lightened, list(_hbest_pts), erase_min, erase_max,
+                                           erase_radius_min, erase_radius_max, tone)
+                    _hex_arr, _hey_arr = self._expand_pixel_coords(
+                        _hpx_arr, _hpy_arr, img_w, img_h, coverage_radius)
+                    if _hex_arr.size > 0:
+                        coverage[_hey_arr, _hex_arr] = np.minimum(
+                            coverage[_hey_arr, _hex_arr].astype(np.int32) + 1, 255
+                        ).astype(np.uint8)
+                        residual_dark[_hey_arr, _hex_arr] = np.maximum(
+                            residual_dark[_hey_arr, _hex_arr] - pass_lighten, 0.0)
+
+                    if _hbest_n >= 1:
+                        _hmm_path: Polyline = [
+                            (rect_x1 + _hpx * rect_w / img_w, rect_y1 + _hpy * rect_h / img_h)
+                            for _hpx, _hpy in _hbest_pts
+                        ]
+                        result.append(_hmm_path)
+                        total_segments += _hbest_n
+                        pass_segments += _hbest_n
+
+                    if progress_callback:
+                        pct = int(total_segments / max(1, line_max_limit) * 100)
+                        progress_callback(min(99, max(0, pct)))
+                    continue  # skip squiggle-only logic below
+
+                # ----------------------------------------------------------------
+                # Squiggle-only mode (mark_mode != "Hybrid")
+                # ----------------------------------------------------------------
                 was_chaining = chaining
 
                 if not chaining:
