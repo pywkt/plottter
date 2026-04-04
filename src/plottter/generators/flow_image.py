@@ -177,6 +177,8 @@ def _generate_flow_streamlines(
     etf_kernel_radius: float = 5.0,
     etf_iterations: int = 3,
     separation_distance_mm: float = 0.0,
+    seed_mode: str = "Grid",
+    dark_bias: float = 1.8,
 ) -> list[Polyline]:
     """Generate streamlines guided by the chosen vector field.
 
@@ -248,30 +250,67 @@ def _generate_flow_streamlines(
     half_length = max_length_mm / 2.0
 
     # -----------------------------------------------------------------------
-    # Build jittered grid of seed candidates
+    # Build seed candidates: jittered grid (Grid) or weighted random sampling
     # -----------------------------------------------------------------------
-    # When density_modulation is enabled we generate a finer grid (at the
-    # minimum effective spacing = seed_spacing_mm * 0.3) and then thin it via
-    # rejection sampling.  When disabled we use seed_spacing_mm directly.
-    if density_modulation:
-        base_spacing = max(0.1, seed_spacing_mm * 0.3)
-    else:
-        base_spacing = max(0.1, seed_spacing_mm)
-
-    jitter_radius = seed_spacing_mm * 0.3
-    nx = max(1, int(math.ceil(draw_w / base_spacing)))
-    ny = max(1, int(math.ceil(draw_h / base_spacing)))
-
     seed_candidates: list[tuple[float, float]] = []
-    for iy in range(ny):
-        for ix in range(nx):
-            cx = draw_x1 + (ix + 0.5) * draw_w / nx
-            cy = draw_y1 + (iy + 0.5) * draw_h / ny
-            dx = float(rng.uniform(-jitter_radius, jitter_radius))
-            dy = float(rng.uniform(-jitter_radius, jitter_radius))
-            x = max(draw_x1, min(draw_x2, cx + dx))
-            y = max(draw_y1, min(draw_y2, cy + dy))
-            seed_candidates.append((x, y))
+
+    if seed_mode == "Weighted Random":
+        # Compute number of seeds from area; 1.5x compensates for random
+        # placement being less uniform than a grid
+        img_rect_area = draw_w * draw_h
+        num_seeds = max(1, int(img_rect_area / (seed_spacing_mm ** 2) * 1.5))
+
+        # Build weight map — downsample to max 512px to keep it fast
+        wmap = img.copy()
+        wmap_h, wmap_w_px = wmap.shape[:2]
+        max_wmap_dim = 512
+        if max(wmap_h, wmap_w_px) > max_wmap_dim:
+            scale = max_wmap_dim / max(wmap_h, wmap_w_px)
+            new_w = max(1, int(wmap_w_px * scale))
+            new_h = max(1, int(wmap_h * scale))
+            wmap = cv2.resize(wmap, (new_w, new_h), interpolation=cv2.INTER_AREA)
+            wmap_h, wmap_w_px = new_h, new_w
+
+        gray_f = wmap.astype(np.float32) / 255.0
+        weights = (1.0 - gray_f) ** dark_bias
+        flat_weights = weights.flatten().astype(np.float64)
+        total_weight = flat_weights.sum()
+        if total_weight <= 0.0:
+            flat_weights[:] = 1.0 / flat_weights.size
+        else:
+            flat_weights /= total_weight
+
+        actual_num = min(num_seeds, flat_weights.size)
+        sampled_indices = rng.choice(flat_weights.size, size=actual_num, replace=False, p=flat_weights)
+
+        py_idx = (sampled_indices // wmap_w_px).astype(np.float64)
+        px_idx = (sampled_indices % wmap_w_px).astype(np.float64)
+        x_coords = draw_x1 + (px_idx + 0.5) / wmap_w_px * draw_w
+        y_coords = draw_y1 + (py_idx + 0.5) / wmap_h * draw_h
+        seed_candidates = list(zip(x_coords.tolist(), y_coords.tolist()))
+    else:
+        # Grid mode: jittered grid of seed candidates
+        # When density_modulation is enabled we generate a finer grid (at the
+        # minimum effective spacing = seed_spacing_mm * 0.3) and then thin it
+        # via rejection sampling.  When disabled we use seed_spacing_mm directly.
+        if density_modulation:
+            base_spacing = max(0.1, seed_spacing_mm * 0.3)
+        else:
+            base_spacing = max(0.1, seed_spacing_mm)
+
+        jitter_radius = seed_spacing_mm * 0.3
+        nx = max(1, int(math.ceil(draw_w / base_spacing)))
+        ny = max(1, int(math.ceil(draw_h / base_spacing)))
+
+        for iy in range(ny):
+            for ix in range(nx):
+                cx = draw_x1 + (ix + 0.5) * draw_w / nx
+                cy = draw_y1 + (iy + 0.5) * draw_h / ny
+                dx = float(rng.uniform(-jitter_radius, jitter_radius))
+                dy = float(rng.uniform(-jitter_radius, jitter_radius))
+                x = max(draw_x1, min(draw_x2, cx + dx))
+                y = max(draw_y1, min(draw_y2, cy + dy))
+                seed_candidates.append((x, y))
 
     # -----------------------------------------------------------------------
     # Filter seeds: brightness threshold + density modulation
@@ -788,6 +827,28 @@ class FlowImageGenerator(Generator):
                 visible_when={"mode": ["flow"]},
                 description="When enabled, vary seed density based on local brightness — darker areas receive more streamlines, brighter areas fewer",
             ),
+            ChoiceParam(
+                name="seed_mode",
+                label="Seed Mode",
+                choices=["Grid", "Weighted Random"],
+                default="Grid",
+                visible_when={"mode": ["flow"]},
+                description="How seed points are distributed — Grid: jittered regular grid for uniform coverage; Weighted Random: samples more seeds from dark image areas",
+                choice_descriptions={
+                    "Grid": "Jittered regular grid — uniform spatial coverage; pair with Density Modulation to vary density by brightness",
+                    "Weighted Random": "Seeds are drawn proportionally from dark image areas so shadow regions receive more streamlines without needing a finer base grid",
+                },
+            ),
+            FloatParam(
+                name="dark_bias",
+                label="Dark Bias",
+                min=0.5,
+                max=3.0,
+                step=0.1,
+                default=1.8,
+                visible_when={"mode": ["flow"], "seed_mode": ["Weighted Random"]},
+                description="How strongly dark areas attract streamline seeds — higher values concentrate seeds more tightly in shadows (0.5 = gentle, 3.0 = very aggressive)",
+            ),
             FloatParam(
                 name="separation_distance_mm",
                 label="Separation Distance (mm)",
@@ -868,6 +929,8 @@ class FlowImageGenerator(Generator):
             "vector_field": "Edge Flow (ETF)",
             "etf_kernel_radius": 5.0,
             "etf_iterations": 3,
+            "seed_mode": "Grid",
+            "dark_bias": 1.8,
             "skip_background": True,
             "bg_threshold": 240.0,
             "seed": 42,
@@ -1245,6 +1308,8 @@ class FlowImageGenerator(Generator):
             etf_kernel_radius = float(params.get("etf_kernel_radius", 5.0))
             etf_iterations = int(params.get("etf_iterations", 3))
             separation_distance_mm = float(params.get("separation_distance_mm", 0.8))
+            seed_mode = str(params.get("seed_mode", "Grid"))
+            dark_bias = float(params.get("dark_bias", 1.8))
             result = _generate_flow_streamlines(
                 source, seed_spacing_mm, step_size_mm, max_length_mm, seed,
                 skip_background, bg_threshold,
@@ -1255,6 +1320,8 @@ class FlowImageGenerator(Generator):
                 etf_kernel_radius=etf_kernel_radius,
                 etf_iterations=etf_iterations,
                 separation_distance_mm=separation_distance_mm,
+                seed_mode=seed_mode,
+                dark_bias=dark_bias,
             )
 
         x_off = float(params.get("x_offset_mm", 0.0))
