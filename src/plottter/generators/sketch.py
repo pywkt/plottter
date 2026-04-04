@@ -270,6 +270,15 @@ class SketchGenerator(Generator):
                 default=1.0,
                 description="Gaussian blur applied before processing — smooths brightness transitions",
             ),
+            IntParam(
+                name="unsharp_amount",
+                label="Unsharp Mask",
+                min=0,
+                max=5,
+                step=1,
+                default=2,
+                description="Unsharp mask strength applied after blur — 0 = disabled, higher = sharper edges",
+            ),
             # --- offset params ---
             FloatParam(
                 name="x_offset_mm",
@@ -305,6 +314,7 @@ class SketchGenerator(Generator):
             "brightness": 0.0,
             "contrast": 0.0,
             "blur_radius": 1.0,
+            "unsharp_amount": 2,
             "squiggle_min_length": 3,
             "squiggle_max_length": 50,
             "squiggle_max_deviation": 25.0,
@@ -851,6 +861,12 @@ class SketchGenerator(Generator):
             img = adjust_contrast(img, contrast)
         if blur_radius > 0.0:
             img = apply_blur(img, blur_radius)
+        unsharp_amount = int(params.get("unsharp_amount", 2))
+        if unsharp_amount > 0:
+            gray_f = img.astype(np.float32) / 255.0
+            blurred_f = apply_blur(img, 2.0).astype(np.float32) / 255.0
+            gray_f = np.clip(gray_f + (gray_f - blurred_f) * unsharp_amount, 0.0, 1.0)
+            img = (gray_f * 255.0).astype(np.uint8)
         if do_invert:
             img = invert_image(img)
 

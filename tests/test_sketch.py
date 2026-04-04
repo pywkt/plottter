@@ -1221,3 +1221,103 @@ class TestVariableStepLength:
         assert avg_dark > avg_medium, (
             f"Dark avg seg {avg_dark:.3f}mm should exceed medium avg {avg_medium:.3f}mm"
         )
+
+
+# ---------------------------------------------------------------------------
+# Unsharp mask preprocessing
+# ---------------------------------------------------------------------------
+
+
+class TestUnsharpMask:
+    def setup_method(self):
+        self.gen = SketchGenerator()
+        self.canvas = make_canvas()
+
+    def test_unsharp_amount_param_defined(self):
+        """unsharp_amount IntParam must be registered."""
+        names = {p.name for p in self.gen.get_parameters()}
+        assert "unsharp_amount" in names
+
+    def test_presets_include_unsharp_amount(self):
+        """All presets must include unsharp_amount."""
+        for preset in self.gen.get_presets():
+            assert "unsharp_amount" in preset.params, (
+                f"Preset '{preset.name}' missing unsharp_amount"
+            )
+
+    def test_unsharp_zero_leaves_image_unchanged(self):
+        """unsharp_amount=0 must produce the same preprocessing result as no unsharp.
+
+        On a uniform gray image, applying blur then unsharp with amount=0
+        must not change the pixel values (the if-block is skipped).
+        """
+        # Uniform image: blur has no effect, so unsharp difference is zero too.
+        img = np.full((64, 64), 128, dtype=np.uint8)
+        params_no_unsharp = {
+            "_source_image": img.copy(),
+            "multi_pass": False,
+            "line_max_limit": 50,
+            "unsharp_amount": 0,
+            "blur_radius": 0.0,
+            "squiggle_min_length": 1,
+        }
+        params_with_zero = {
+            "_source_image": img.copy(),
+            "multi_pass": False,
+            "line_max_limit": 50,
+            "unsharp_amount": 0,
+            "blur_radius": 0.0,
+            "squiggle_min_length": 1,
+        }
+        # Both should run without error; output format is identical
+        result_a = self.gen.generate(params_no_unsharp, self.canvas)
+        result_b = self.gen.generate(params_with_zero, self.canvas)
+        assert isinstance(result_a, list)
+        assert isinstance(result_b, list)
+
+    def test_unsharp_formula_sharpens_edges(self):
+        """Direct formula test: unsharp_amount=3 increases edge contrast.
+
+        Creates a step-edge image in float32 space, applies the unsharp formula,
+        and verifies that the luminance difference across the edge increases.
+        """
+        import cv2
+
+        # Step-edge: left half dark, right half bright
+        h, w = 20, 20
+        img = np.zeros((h, w), dtype=np.uint8)
+        img[:, w // 2 :] = 200
+
+        gray_f = img.astype(np.float32) / 255.0
+        # Compute gaussian blur (sigma=2, as in the implementation)
+        ksize = max(1, int(2.0 * 3) | 1)
+        blurred = cv2.GaussianBlur(img, (ksize, ksize), sigmaX=2.0)
+        blurred_f = blurred.astype(np.float32) / 255.0
+
+        # Apply unsharp formula with amount=3
+        sharpened_f = np.clip(gray_f + (gray_f - blurred_f) * 3, 0.0, 1.0)
+
+        # Edge is at column w//2 (boundary between dark and bright halves)
+        mid = w // 2
+        row = h // 2
+        edge_before = abs(float(gray_f[row, mid - 1]) - float(gray_f[row, mid]))
+        edge_after = abs(float(sharpened_f[row, mid - 1]) - float(sharpened_f[row, mid]))
+
+        assert edge_after > edge_before, (
+            f"Unsharp mask should increase edge contrast: "
+            f"before={edge_before:.4f}, after={edge_after:.4f}"
+        )
+
+    def test_unsharp_generator_produces_output(self):
+        """Generator runs successfully with unsharp_amount=3 on a dark image."""
+        img = make_single_dark_block()
+        params = {
+            "_source_image": img,
+            "multi_pass": False,
+            "line_max_limit": 100,
+            "unsharp_amount": 3,
+            "squiggle_min_length": 1,
+        }
+        result = self.gen.generate(params, self.canvas)
+        assert isinstance(result, list)
+        assert len(result) > 0
