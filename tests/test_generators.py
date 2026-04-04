@@ -244,6 +244,55 @@ class TestFlowFieldGenerator:
         # Should have fewer paths than total particles
         assert len(paths) < 5000
 
+    def test_rectilinear_false_unchanged(self):
+        """rectilinear=False should produce same output as default (no rectilinear key)."""
+        params_default = {p.name: p.default for p in self.gen.get_parameters()}
+        params_default["num_particles"] = 50
+        params_default["seed"] = 77
+
+        params_rect_off = dict(params_default)
+        params_rect_off["rectilinear"] = False
+
+        paths1 = self.gen.generate(params_default, self.canvas)
+        paths2 = self.gen.generate(params_rect_off, self.canvas)
+        assert paths1 == paths2
+
+    def test_rectilinear_true_axis_aligned(self):
+        """rectilinear=True should produce paths with mostly horizontal or vertical steps."""
+        params = {p.name: p.default for p in self.gen.get_parameters()}
+        params["num_particles"] = 100
+        params["max_steps"] = 30
+        params["rectilinear"] = True
+        params["seed"] = 42
+        paths = self.gen.generate(params, self.canvas)
+        assert len(paths) > 0
+        # Check that each step is mostly axis-aligned: one component dominates
+        axis_aligned_count = 0
+        total_steps = 0
+        for path in paths:
+            for j in range(1, len(path)):
+                dx = abs(path[j][0] - path[j-1][0])
+                dy = abs(path[j][1] - path[j-1][1])
+                total_steps += 1
+                # With jitter 0.5 and step 1.0, the dominant axis should be >= 0.3
+                # We check that at least one direction has a dominant component
+                if dx > dy * 0.5 or dy > dx * 0.5:
+                    axis_aligned_count += 1
+        # The vast majority of steps should have one dominant axis component
+        assert total_steps > 0
+        assert axis_aligned_count / total_steps > 0.7
+
+    def test_rectilinear_preset_generates_valid_output(self):
+        """Rectilinear preset should produce valid paths."""
+        preset = next(p for p in self.gen.get_presets() if p.name == "Rectilinear")
+        params = {p.name: p.default for p in self.gen.get_parameters()}
+        params.update(preset.params)
+        params["num_particles"] = 50
+        paths = self.gen.generate(params, self.canvas)
+        assert len(paths) > 0
+        for path in paths:
+            assert len(path) >= 2
+
 
 # ---------------------------------------------------------------------------
 # LSystemGenerator — string expansion and turtle

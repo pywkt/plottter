@@ -7,6 +7,7 @@ import random as _random
 from typing import Any
 
 from plottter.generators.base import (
+    BoolParam,
     FloatParam,
     Generator,
     IntParam,
@@ -129,6 +130,12 @@ class FlowFieldGenerator(Generator):
                 default=0.0,
                 description="Rotate the set of discrete directions by this angle. E.g. offset=45° turns cardinal into diagonal.",
             ),
+            BoolParam(
+                name="rectilinear",
+                label="Rectilinear mode",
+                default=False,
+                description="Constrain paths to mostly horizontal/vertical with alternating axes — creates a digital circuit-board aesthetic",
+            ),
         ]
 
     def get_presets(self) -> list[Preset]:
@@ -237,6 +244,19 @@ class FlowFieldGenerator(Generator):
                     "quantize_offset_deg": 15,
                 },
             ),
+            Preset(
+                name="Rectilinear",
+                params={
+                    "num_particles": 2000,
+                    "step_size_mm": 1.0,
+                    "max_steps": 100,
+                    "noise_scale": 0.01,
+                    "noise_octaves": 4,
+                    "seed": 42,
+                    "angle_range": _TWO_PI,
+                    "rectilinear": True,
+                },
+            ),
         ]
 
     def generate(
@@ -263,11 +283,28 @@ class FlowFieldGenerator(Generator):
         angle_range = float(params.get("angle_range", _TWO_PI))
         quantize_directions = int(params.get("quantize_directions", 0))
         quantize_offset_rad = math.radians(float(params.get("quantize_offset_deg", 0.0)))
+        rectilinear = bool(params.get("rectilinear", False))
 
         rng = _random.Random(seed)
         noise_base = seed % 256
 
         draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        draw_w = draw_x2 - draw_x1
+        draw_h = draw_y2 - draw_y1
+
+        # Optional image for brightness-based jitter
+        source_image = params.get("_source_image")
+        img_gray = None
+        if rectilinear and source_image is not None:
+            import numpy as np
+            img = source_image
+            if img.ndim == 3:
+                try:
+                    import cv2
+                    img = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+                except ImportError:
+                    img = img.mean(axis=2).astype(np.uint8)
+            img_gray = img
 
         trails: list[Polyline] = []
         for i in range(num_particles):
@@ -278,6 +315,7 @@ class FlowFieldGenerator(Generator):
             y = rng.uniform(draw_y1, draw_y2)
 
             trail: Polyline = [(x, y)]
+            prev_axis: int | None = None
             for _ in range(max_steps):
                 n = pnoise.pnoise2(
                     x * noise_scale,
@@ -290,8 +328,50 @@ class FlowFieldGenerator(Generator):
                     step_angle = _TWO_PI / quantize_directions
                     angle_shifted = angle - quantize_offset_rad
                     angle = round(angle_shifted / step_angle) * step_angle + quantize_offset_rad
-                x += step_size * math.cos(angle)
-                y += step_size * math.sin(angle)
+
+                if rectilinear:
+                    # Determine preferred axis from noise angle
+                    preferred_axis = 0 if abs(math.cos(angle)) >= abs(math.sin(angle)) else 1
+                    # Alternate axes: 72% chance to flip from previous axis
+                    if prev_axis is None:
+                        axis = preferred_axis
+                    else:
+                        axis = (1 - prev_axis) if rng.random() < 0.72 else preferred_axis
+                    prev_axis = axis
+
+                    if axis == 0:
+                        sign = 1.0 if math.cos(angle) >= 0.0 else -1.0
+                        if rng.random() < 0.25:
+                            sign *= -1.0
+                        dx = sign * step_size
+                        dy = rng.uniform(-0.35, 0.35) * step_size
+                    else:
+                        sign = 1.0 if math.sin(angle) >= 0.0 else -1.0
+                        if rng.random() < 0.25:
+                            sign *= -1.0
+                        dx = rng.uniform(-0.35, 0.35) * step_size
+                        dy = sign * step_size
+
+                    # Compute jitter (increases in bright areas)
+                    if img_gray is not None:
+                        img_h, img_w = img_gray.shape[:2]
+                        px = (x - draw_x1) / draw_w * img_w
+                        py = (y - draw_y1) / draw_h * img_h
+                        px = max(0.0, min(px, img_w - 1))
+                        py = max(0.0, min(py, img_h - 1))
+                        brightness = float(img_gray[int(py), int(px)]) / 255.0
+                        darkness = 1.0 - brightness
+                        jitter = (1.0 - darkness) * 1.3 + 0.15
+                    else:
+                        jitter = 0.5
+
+                    dx += rng.uniform(-jitter, jitter)
+                    dy += rng.uniform(-jitter, jitter)
+                    x += dx
+                    y += dy
+                else:
+                    x += step_size * math.cos(angle)
+                    y += step_size * math.sin(angle)
 
                 if not (draw_x1 <= x <= draw_x2 and draw_y1 <= y <= draw_y2):
                     break
