@@ -465,10 +465,28 @@ class SketchGenerator(Generator):
         ``(ys, xs)`` arrays of shape ``(batch_size,)`` containing pixel row/col
         indices sampled proportionally to the computed weight map.
         """
-        darkness = np.clip(residual_dark - min_darkness, 0.0, 1.0)
-        edge_term = edge_normalized ** 1.2
+        # Downsample the maps for faster probability computation.
+        # Working at 1/4 resolution (16x fewer pixels) is sufficient for
+        # seed placement accuracy and dramatically speeds up rng.choice().
+        DOWNSAMPLE = 4
+        ds_h = max(1, img_h // DOWNSAMPLE)
+        ds_w = max(1, img_w // DOWNSAMPLE)
+
+        try:
+            import cv2
+            ds_dark = cv2.resize(residual_dark, (ds_w, ds_h), interpolation=cv2.INTER_AREA)
+            ds_edge = cv2.resize(edge_normalized, (ds_w, ds_h), interpolation=cv2.INTER_AREA)
+            ds_cov = cv2.resize(coverage.astype(np.float32), (ds_w, ds_h), interpolation=cv2.INTER_AREA)
+        except ImportError:
+            # Fallback: simple stride-based downsampling
+            ds_dark = residual_dark[::DOWNSAMPLE, ::DOWNSAMPLE]
+            ds_edge = edge_normalized[::DOWNSAMPLE, ::DOWNSAMPLE]
+            ds_cov = coverage[::DOWNSAMPLE, ::DOWNSAMPLE].astype(np.float32)
+
+        darkness = np.clip(ds_dark - min_darkness, 0.0, 1.0)
+        edge_term = ds_edge ** 1.2
         ink_penalty = np.clip(
-            1.0 - coverage.astype(np.float32) / max(1, max_pixel_coverage),
+            1.0 - ds_cov / max(1, max_pixel_coverage),
             0.05, 1.0,
         )
         weights = (darkness ** dark_power) * (0.85 + edge_bias * edge_term) * ink_penalty + 1e-9
@@ -476,7 +494,11 @@ class SketchGenerator(Generator):
 
         flat_weights = weights.ravel()
         indices = rng.choice(flat_weights.size, size=batch_size, replace=True, p=flat_weights)
-        ys, xs = np.divmod(indices, img_w)
+        ds_ys, ds_xs = np.divmod(indices, ds_w)
+
+        # Scale back to full resolution with small random jitter within each cell
+        ys = np.clip(ds_ys * DOWNSAMPLE + rng.integers(0, DOWNSAMPLE, size=batch_size), 0, img_h - 1)
+        xs = np.clip(ds_xs * DOWNSAMPLE + rng.integers(0, DOWNSAMPLE, size=batch_size), 0, img_w - 1)
         return ys, xs
 
     # ------------------------------------------------------------------
@@ -614,58 +636,49 @@ class SketchGenerator(Generator):
                 ey = cur_y + int(round(np.sin(angle) * r))
                 candidates.append((ex, ey))
 
-        best_score = float("-inf")
-        best_end: tuple[int, int] | None = None
-        best_avg_brightness = float("inf")
+        # Filter candidates to those within image bounds
+        valid = [(ex, ey) for ex, ey in candidates if 0 <= ey < h and 0 <= ex < w]
+        if not valid:
+            return None
+
+        # Vectorized scoring: sample a fixed number of points along each
+        # candidate line and score all candidates in one batch of numpy ops.
+        N_SAMPLES = 8  # fixed sample count for uniform array shapes
+        n_cands = len(valid)
+        ends_x = np.array([ex for ex, _ in valid], dtype=np.int32)
+        ends_y = np.array([ey for _, ey in valid], dtype=np.int32)
+
+        # Build sample coordinates for all candidates at once: (n_cands, N_SAMPLES)
+        t = np.linspace(0.0, 1.0, N_SAMPLES).reshape(1, N_SAMPLES)  # (1, N)
+        sx = np.clip(np.round(cur_x + (ends_x[:, None] - cur_x) * t).astype(np.int32), 0, w - 1)  # (n_cands, N)
+        sy = np.clip(np.round(cur_y + (ends_y[:, None] - cur_y) * t).astype(np.int32), 0, h - 1)  # (n_cands, N)
+
+        # Gather values for all candidates × all samples in one indexing op
+        if residual_dark is not None:
+            dark_vals = residual_dark[sy, sx]  # (n_cands, N)
+        else:
+            dark_vals = 1.0 - lightened[sy, sx].astype(np.float32) / 255.0
+
+        dark_means = dark_vals.mean(axis=1)       # (n_cands,)
+        dark_peaks = dark_vals.max(axis=1)         # (n_cands,)
+
+        if edge_normalized is not None:
+            edge_means = edge_normalized[sy, sx].mean(axis=1)
+        else:
+            edge_means = np.zeros(n_cands, dtype=np.float32)
 
         denom_cov = 1.0 / max(1, max_pixel_coverage)
+        if coverage is not None:
+            cov_means = (coverage[sy, sx].astype(np.float32) * denom_cov).mean(axis=1)
+        else:
+            cov_means = np.zeros(n_cands, dtype=np.float32)
 
-        for ex, ey in candidates:
-            # Skip endpoints outside image bounds
-            if not (0 <= ey < h and 0 <= ex < w):
-                continue
+        scores = dark_means * 1.45 + dark_peaks * 0.45 + edge_means * 0.24 - cov_means * 1.08
 
-            dx = ex - cur_x
-            dy = ey - cur_y
-            span = max(abs(dx), abs(dy))
-            num_samples = max(5, min(15, int(span / 2) + 2))
-
-            sxs_f = np.linspace(cur_x, ex, num_samples)
-            sys_f = np.linspace(cur_y, ey, num_samples)
-            sxs = np.clip(np.round(sxs_f).astype(np.int32), 0, w - 1)
-            sys_arr = np.clip(np.round(sys_f).astype(np.int32), 0, h - 1)
-
-            # Darkness component
-            if residual_dark is not None:
-                dark_vals = residual_dark[sys_arr, sxs]
-            else:
-                dark_vals = 1.0 - lightened[sys_arr, sxs].astype(np.float32) / 255.0
-            dark = float(np.mean(dark_vals))
-            dark_peak = float(np.max(dark_vals))
-
-            # Edge component
-            edge_strength = (
-                float(np.mean(edge_normalized[sys_arr, sxs]))
-                if edge_normalized is not None
-                else 0.0
-            )
-
-            # Coverage penalty
-            cov = (
-                float(np.mean(coverage[sys_arr, sxs].astype(np.float32) * denom_cov))
-                if coverage is not None
-                else 0.0
-            )
-
-            score = dark * 1.45 + dark_peak * 0.45 + edge_strength * 0.24 - cov * 1.08
-
-            # avg_brightness from lightened for squiggle stopping check
-            avg_brightness = float(np.mean(lightened[sys_arr, sxs].astype(np.float32)))
-
-            if score > best_score:
-                best_score = score
-                best_end = (ex, ey)
-                best_avg_brightness = avg_brightness
+        best_idx = int(np.argmax(scores))
+        best_score = float(scores[best_idx])
+        best_end = (int(ends_x[best_idx]), int(ends_y[best_idx]))
+        best_avg_brightness = float(lightened[sy[best_idx], sx[best_idx]].astype(np.float32).mean())
 
         if best_end is None:
             return None

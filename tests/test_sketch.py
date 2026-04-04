@@ -378,9 +378,8 @@ class TestFindDarkestLine:
             ey = 32 + int(round(np.sin(angle) * line_length_px))
             if not (0 <= ey < h and 0 <= ex < w):
                 continue
-            dx, dy = ex - 32, ey - 32
-            span = max(abs(dx), abs(dy))
-            num_samples = max(5, min(15, int(span / 2) + 2))
+            # Use fixed 8 samples to match the vectorized scoring in _find_darkest_line
+            num_samples = 8
             sxs = np.clip(np.round(np.linspace(32, ex, num_samples)).astype(np.int32), 0, w - 1)
             sys_arr = np.clip(np.round(np.linspace(32, ey, num_samples)).astype(np.int32), 0, h - 1)
             dark_vals = 1.0 - img[sys_arr, sxs].astype(np.float32) / 255.0
