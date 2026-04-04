@@ -223,6 +223,7 @@ def preprocess(image: np.ndarray, params: dict[str, Any]) -> np.ndarray:
     ============  ====================  ========================
     Key           Type                  Description
     ============  ====================  ========================
+    auto_contrast   bool                  Default True (stretch histogram)
     brightness      float −100 … 100      Default 0 (no change)
     contrast        float −100 … 100      Default 0 (no change)
     gamma           float 0.1 … 5.0       Default 1.0 (no change)
@@ -237,6 +238,12 @@ def preprocess(image: np.ndarray, params: dict[str, Any]) -> np.ndarray:
     ============  ====================  ========================
     """
     result = image.copy()
+
+    if params.get("auto_contrast", True):
+        lo = np.percentile(result, 0.5)
+        hi = np.percentile(result, 99.5)
+        if hi > lo:
+            result = np.clip((result.astype(np.float32) - lo) * 255.0 / (hi - lo), 0, 255).astype(np.uint8)
 
     brightness = float(params.get("brightness", 0))
     if brightness != 0:

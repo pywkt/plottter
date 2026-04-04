@@ -591,6 +591,11 @@ class SettingsPanel(QScrollArea):
         self._preprocessing_group = QGroupBox("Preprocessing")
         prep_form = QFormLayout(self._preprocessing_group)
 
+        self._auto_contrast_check = QCheckBox("Auto Contrast")
+        self._auto_contrast_check.setChecked(True)
+        self._auto_contrast_check.toggled.connect(self._on_preprocessing_changed)
+        prep_form.addRow(self._auto_contrast_check)
+
         self._bright_slider = QSlider(Qt.Orientation.Horizontal)
         self._bright_slider.setRange(-100, 100)
         self._bright_slider.setValue(0)
@@ -4377,6 +4382,7 @@ class SettingsPanel(QScrollArea):
 
     def _get_preprocessing_params(self) -> dict:
         params: dict[str, Any] = {}
+        params["auto_contrast"] = self._auto_contrast_check.isChecked()
         brightness = self._bright_slider.value()
         if brightness != 0:
             params["brightness"] = brightness
