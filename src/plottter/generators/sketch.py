@@ -191,6 +191,12 @@ class SketchGenerator(Generator):
                 default=1,
                 description="Pixel radius to reserve around accepted paths",
             ),
+            BoolParam(
+                name="multi_pass",
+                label="Multi-Pass",
+                default=True,
+                description="Use 3-pass generation with varying stroke profiles — long strokes first, fine detail last",
+            ),
             # --- standard image preprocessing params ---
             BoolParam(
                 name="invert",
@@ -275,6 +281,7 @@ class SketchGenerator(Generator):
             "max_pixel_coverage": 2,
             "max_overlap_ratio": 0.55,
             "coverage_radius": 1,
+            "multi_pass": True,
             "x_offset_mm": 0.0,
             "y_offset_mm": 0.0,
         }
@@ -854,12 +861,6 @@ class SketchGenerator(Generator):
         # After max_pixel_coverage hits, residual reaches 0 for that pixel.
         lighten_amount = 1.0 / max(1, max_pixel_coverage)
 
-        # --- residual darkness tracking for stopping condition ---
-        total_pixels = img_h * img_w
-        initial_residual_mean = float(residual_dark.mean())
-        # stop_denom_r: higher line_density → larger denominator → harder to stop → more lines
-        stop_denom_r = initial_residual_mean * max(1e-9, line_density)
-
         # --- precompute gradient and edge maps ---
         sobel_x_map: np.ndarray | None = None
         sobel_y_map: np.ndarray | None = None
@@ -887,119 +888,147 @@ class SketchGenerator(Generator):
         rect_w = rect_x2 - rect_x1
         rect_h = rect_y2 - rect_y1
 
+        # --- multi-pass profiles ---
+        _pass_profiles = [
+            {"fraction": 0.52, "len_scale": 1.90, "dark_power": 1.22, "lighten": 0.068, "straight_bias": 0.78},
+            {"fraction": 0.33, "len_scale": 1.15, "dark_power": 1.42, "lighten": 0.048, "straight_bias": 0.62},
+            {"fraction": 0.15, "len_scale": 0.62, "dark_power": 1.70, "lighten": 0.034, "straight_bias": 0.36},
+        ]
+        multi_pass = bool(params.get("multi_pass", True))
+        if multi_pass:
+            profiles_to_run = _pass_profiles
+        else:
+            profiles_to_run = [{"fraction": 1.0, "len_scale": 1.0, "dark_power": 1.0, "lighten": None, "straight_bias": 1.0}]
+
+        # Segment budget per pass
+        pass_targets = [int(line_max_limit * p["fraction"]) for p in profiles_to_run]
+        pass_targets[-1] = line_max_limit - sum(pass_targets[:-1])
+
         result: list[Polyline] = []
         total_segments = 0
-        consecutive_failures = 0
-        MAX_CONSECUTIVE_FAILURES = 1000
+        num_passes = len(profiles_to_run)
 
-        while True:
+        for pass_idx, profile in enumerate(profiles_to_run):
             if cancelled_callback and cancelled_callback():
                 break
 
-            if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
-                break
-
-            current_residual_mean = float(residual_dark.mean())
-            lum_progress = (initial_residual_mean - current_residual_mean) / max(1e-9, stop_denom_r)
-            if lum_progress >= 1.0 or total_segments >= line_max_limit:
-                break
-
-            # (1) Find darkest tile → darkest seed pixel
-            br, bc = self._find_darkest_region(lightened, block_size)
-            seed_y, seed_x = self._find_darkest_pixel(lightened, br, bc, block_size)
-
-            # Check if seed is too bright to start a squiggle from
-            seed_val = int(lightened[seed_y, seed_x])
-            if seed_val > brightness_ceiling:
-                lightened[seed_y, seed_x] = 255
-                consecutive_failures += 1
+            pass_target = pass_targets[pass_idx]
+            if pass_target <= 0:
                 continue
 
-            # (2) Start a new squiggle from seed
-            squiggle: list[tuple[float, float]] = [(float(seed_x), float(seed_y))]
-            cur_x, cur_y = seed_x, seed_y
-            squiggle_segments = 0
+            # Per-pass derived parameters
+            pass_line_length = max(1, int(line_length_px * profile["len_scale"]))
+            pass_lighten = profile["lighten"] if profile["lighten"] is not None else lighten_amount
+            pass_ceiling = max(10, int(brightness_ceiling / profile["dark_power"]))
+            pass_max_squiggle = max(squiggle_min_length + 1, int(squiggle_max_length * profile["straight_bias"]))
 
-            # (3) Inner squiggle loop: chain segments
-            for _ in range(squiggle_max_length):
-                line_result = self._find_darkest_line(
-                    lightened, cur_x, cur_y,
-                    angle_tests, line_length_px,
-                    sobel_x=sobel_x_map,
-                    sobel_y=sobel_y_map,
-                    edge_map=edge_map,
-                    directionality=directionality,
-                    edge_power=edge_power,
-                )
-                if line_result is None:
+            pass_segments = 0
+            consecutive_failures = 0
+            MAX_CONSECUTIVE_FAILURES = 1000
+
+            while pass_segments < pass_target:
+                if cancelled_callback and cancelled_callback():
                     break
 
-                end_x, end_y, avg_brightness = line_result
-
-                # Stop squiggle if segment ventures too far into bright areas
-                if avg_brightness * 100.0 / 255.0 > squiggle_max_deviation:
+                if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     break
 
-                squiggle.append((float(end_x), float(end_y)))
-                squiggle_segments += 1
+                # (1) Find darkest tile → darkest seed pixel
+                br, bc = self._find_darkest_region(lightened, block_size)
+                seed_y, seed_x = self._find_darkest_pixel(lightened, br, bc, block_size)
 
-                # Erase along this segment immediately
-                seg_pixels = [
-                    (float(bx), float(by))
-                    for bx, by in self._bresenham_line(
-                        int(round(cur_x)), int(round(cur_y)),
-                        end_x, end_y,
+                # Check if seed is too bright to start a squiggle from
+                seed_val = int(lightened[seed_y, seed_x])
+                if seed_val > pass_ceiling:
+                    lightened[seed_y, seed_x] = 255
+                    consecutive_failures += 1
+                    continue
+
+                # (2) Start a new squiggle from seed
+                squiggle: list[tuple[float, float]] = [(float(seed_x), float(seed_y))]
+                cur_x, cur_y = seed_x, seed_y
+                squiggle_segments = 0
+
+                # (3) Inner squiggle loop: chain segments
+                for _ in range(pass_max_squiggle):
+                    line_result = self._find_darkest_line(
+                        lightened, cur_x, cur_y,
+                        angle_tests, pass_line_length,
+                        sobel_x=sobel_x_map,
+                        sobel_y=sobel_y_map,
+                        edge_map=edge_map,
+                        directionality=directionality,
+                        edge_power=edge_power,
                     )
-                ]
-                self._erase_along_path(
-                    lightened, seg_pixels,
-                    erase_min, erase_max,
-                    erase_radius_min, erase_radius_max, tone,
-                )
-                cur_x, cur_y = end_x, end_y
+                    if line_result is None:
+                        break
 
-            if squiggle_segments == 0:
-                # No segments traced — erase at seed to avoid re-selection
-                self._erase_along_path(
-                    lightened, [(float(seed_x), float(seed_y))],
-                    erase_min, erase_max,
-                    erase_radius_min, erase_radius_max, tone,
-                )
-                consecutive_failures += 1
-            else:
-                consecutive_failures = 0
-                # (4) Add squiggle polyline to output if it meets minimum length
-                if squiggle_segments >= squiggle_min_length:
-                    # Coverage overlap check — reject paths where too many pixels are already inked
-                    px_arr, py_arr = self._path_pixel_coords(squiggle, img_w, img_h)
-                    if px_arr.size > 0 and np.mean(coverage[py_arr, px_arr] >= max_pixel_coverage) > max_overlap_ratio:
-                        # Reject: over-inked region — count as failure to avoid infinite loops
-                        consecutive_failures += 1
-                    else:
-                        # Accept: update coverage map and residual_dark
-                        ex_arr, ey_arr = self._expand_pixel_coords(px_arr, py_arr, img_w, img_h, coverage_radius)
-                        if ex_arr.size > 0:
-                            coverage[ey_arr, ex_arr] = np.minimum(
-                                coverage[ey_arr, ex_arr].astype(np.int32) + 1, 255
-                            ).astype(np.uint8)
-                            residual_dark[ey_arr, ex_arr] = np.maximum(
-                                residual_dark[ey_arr, ex_arr] - lighten_amount, 0.0
-                            )
-                        mm_path: Polyline = [
-                            (
-                                rect_x1 + px_x * rect_w / img_w,
-                                rect_y1 + px_y * rect_h / img_h,
-                            )
-                            for px_x, px_y in squiggle
-                        ]
-                        result.append(mm_path)
-                        total_segments += squiggle_segments
+                    end_x, end_y, avg_brightness = line_result
 
-            # (E) Report progress as min(line_progress, lum_progress)
-            if progress_callback:
-                line_progress = total_segments / max(1, line_max_limit)
-                pct = int(min(line_progress, lum_progress) * 100)
-                progress_callback(min(99, max(0, pct)))
+                    # Stop squiggle if segment ventures too far into bright areas
+                    if avg_brightness * 100.0 / 255.0 > squiggle_max_deviation:
+                        break
+
+                    squiggle.append((float(end_x), float(end_y)))
+                    squiggle_segments += 1
+
+                    # Erase along this segment immediately
+                    seg_pixels = [
+                        (float(bx), float(by))
+                        for bx, by in self._bresenham_line(
+                            int(round(cur_x)), int(round(cur_y)),
+                            end_x, end_y,
+                        )
+                    ]
+                    self._erase_along_path(
+                        lightened, seg_pixels,
+                        erase_min, erase_max,
+                        erase_radius_min, erase_radius_max, tone,
+                    )
+                    cur_x, cur_y = end_x, end_y
+
+                if squiggle_segments == 0:
+                    # No segments traced — erase at seed to avoid re-selection
+                    self._erase_along_path(
+                        lightened, [(float(seed_x), float(seed_y))],
+                        erase_min, erase_max,
+                        erase_radius_min, erase_radius_max, tone,
+                    )
+                    consecutive_failures += 1
+                else:
+                    consecutive_failures = 0
+                    # (4) Add squiggle polyline to output if it meets minimum length
+                    if squiggle_segments >= squiggle_min_length:
+                        # Coverage overlap check — reject paths where too many pixels are already inked
+                        px_arr, py_arr = self._path_pixel_coords(squiggle, img_w, img_h)
+                        if px_arr.size > 0 and np.mean(coverage[py_arr, px_arr] >= max_pixel_coverage) > max_overlap_ratio:
+                            # Reject: over-inked region — count as failure to avoid infinite loops
+                            consecutive_failures += 1
+                        else:
+                            # Accept: update coverage map and residual_dark
+                            ex_arr, ey_arr = self._expand_pixel_coords(px_arr, py_arr, img_w, img_h, coverage_radius)
+                            if ex_arr.size > 0:
+                                coverage[ey_arr, ex_arr] = np.minimum(
+                                    coverage[ey_arr, ex_arr].astype(np.int32) + 1, 255
+                                ).astype(np.uint8)
+                                residual_dark[ey_arr, ex_arr] = np.maximum(
+                                    residual_dark[ey_arr, ex_arr] - pass_lighten, 0.0
+                                )
+                            mm_path: Polyline = [
+                                (
+                                    rect_x1 + px_x * rect_w / img_w,
+                                    rect_y1 + px_y * rect_h / img_h,
+                                )
+                                for px_x, px_y in squiggle
+                            ]
+                            result.append(mm_path)
+                            total_segments += squiggle_segments
+                            pass_segments += squiggle_segments
+
+                # (E) Report progress across all passes
+                if progress_callback:
+                    pct = int(total_segments / max(1, line_max_limit) * 100)
+                    progress_callback(min(99, max(0, pct)))
 
         x_off = float(params.get("x_offset_mm", 0.0))
         y_off = float(params.get("y_offset_mm", 0.0))

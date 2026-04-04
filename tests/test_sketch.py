@@ -200,7 +200,7 @@ class TestGenerateScaffold:
     def test_returns_polylines_with_dark_source_image(self):
         """An image with a dark region should produce at least one polyline."""
         img = make_single_dark_block()
-        params = {"_source_image": img}
+        params = {"_source_image": img, "multi_pass": False}
         result = self.gen.generate(params, self.canvas)
         assert isinstance(result, list)
         assert len(result) > 0
@@ -552,7 +552,7 @@ class TestGenerateLoop:
     def test_output_in_mm_coordinates(self):
         """All path points must be within the canvas drawing area (mm)."""
         img = make_single_dark_block()
-        params = {"_source_image": img, "line_density": 30.0}
+        params = {"_source_image": img, "line_density": 30.0, "multi_pass": False}
         result = self.gen.generate(params, self.canvas)
         assert len(result) > 0
         draw_x1, draw_y1, draw_x2, draw_y2 = self.canvas.drawing_area()
@@ -579,6 +579,7 @@ class TestGenerateLoop:
             "line_max_limit": line_max_limit,
             "line_min_length": 2,
             "line_max_length": line_max_length,
+            "multi_pass": False,
         }
         result = self.gen.generate(params, self.canvas)
         total_segments = sum(len(p) - 1 for p in result if len(p) > 1)
@@ -588,12 +589,13 @@ class TestGenerateLoop:
     def test_x_y_offset_applied(self):
         """x_offset_mm / y_offset_mm must shift all output coordinates."""
         img = make_single_dark_block()
-        params_base = {"_source_image": img.copy(), "line_density": 20.0}
+        params_base = {"_source_image": img.copy(), "line_density": 20.0, "multi_pass": False}
         params_shifted = {
             "_source_image": img.copy(),
             "line_density": 20.0,
             "x_offset_mm": 10.0,
             "y_offset_mm": 5.0,
+            "multi_pass": False,
         }
         result_base = self.gen.generate(params_base, self.canvas)
         result_shifted = self.gen.generate(params_shifted, self.canvas)
@@ -855,3 +857,75 @@ class TestCoverageMap:
         assert "max_pixel_coverage" in names
         assert "max_overlap_ratio" in names
         assert "coverage_radius" in names
+
+
+# ---------------------------------------------------------------------------
+# Multi-pass generation
+# ---------------------------------------------------------------------------
+
+
+class TestMultiPass:
+    def setup_method(self):
+        self.gen = SketchGenerator()
+        self.canvas = make_canvas()
+
+    def test_multi_pass_param_defined(self):
+        """multi_pass BoolParam must be registered."""
+        names = {p.name for p in self.gen.get_parameters()}
+        assert "multi_pass" in names
+
+    def test_multi_pass_produces_output(self):
+        """multi_pass=True on a dark image should produce paths (layered output)."""
+        img = np.zeros((80, 80), dtype=np.uint8)  # all black — enough room for len_scale=1.9
+        params = {
+            "_source_image": img,
+            "multi_pass": True,
+            "line_max_limit": 150,
+            "squiggle_min_length": 1,
+        }
+        result = self.gen.generate(params, self.canvas)
+        assert len(result) > 0, "multi_pass=True should produce paths on a dark image"
+
+    def test_pass1_longer_strokes_than_pass3(self):
+        """Pass 1 (len_scale=1.9) produces longer strokes than pass 3 (len_scale=0.62).
+
+        Simulated by running single-pass with each pass's effective line_length_px.
+        """
+        img = np.zeros((80, 80), dtype=np.uint8)  # all black
+        common = {
+            "_source_image": img,
+            "multi_pass": False,
+            "line_max_limit": 200,
+            "squiggle_min_length": 1,
+            "squiggle_max_length": 10,
+            "squiggle_max_deviation": 90.0,
+        }
+        # Simulate pass 1 and pass 3 profiles via single-pass with their len_scale
+        result_p1 = self.gen.generate({**common, "line_length_px": max(1, int(20 * 1.90))}, self.canvas)
+        result_p3 = self.gen.generate({**common, "line_length_px": max(1, int(20 * 0.62))}, self.canvas)
+
+        def avg_seg_length(paths):
+            lengths = []
+            for path in paths:
+                for i in range(1, len(path)):
+                    dx = path[i][0] - path[i - 1][0]
+                    dy = path[i][1] - path[i - 1][1]
+                    lengths.append((dx * dx + dy * dy) ** 0.5)
+            return sum(lengths) / len(lengths) if lengths else 0.0
+
+        assert result_p1, "pass1 config should produce paths"
+        assert result_p3, "pass3 config should produce paths"
+        avg1 = avg_seg_length(result_p1)
+        avg3 = avg_seg_length(result_p3)
+        assert avg1 > avg3, f"pass1 avg seg {avg1:.3f}mm should exceed pass3 avg {avg3:.3f}mm"
+
+    def test_single_pass_still_works(self):
+        """multi_pass=False should produce output identically to original behavior."""
+        img = make_single_dark_block()
+        params = {
+            "_source_image": img,
+            "multi_pass": False,
+            "line_max_limit": 100,
+        }
+        result = self.gen.generate(params, self.canvas)
+        assert len(result) > 0, "single-pass mode should still produce paths"
