@@ -7,9 +7,15 @@ image and validates the helpers, but returns empty polylines for now.
 
 from __future__ import annotations
 
+import math as _math
 from typing import Any
 
 import numpy as np
+
+# Direction mode angle offsets (in radians)
+_STRAIGHT_OFFSETS: list[float] = [_math.radians(a) for a in (-14, -7, 0, 7, 14)]
+_CURVE_OFFSETS: list[float] = [_math.radians(a) for a in (-80, -45, -20, 0, 20, 45, 80)]
+_AXIAL_OFFSETS: list[float] = [_math.radians(a) for a in (0, 90, 180, 270)]
 
 from plottter.generators import register_generator
 from plottter.generators._helpers import compute_image_rect
@@ -215,6 +221,15 @@ class SketchGenerator(Generator):
                 default=0.5,
                 description="Probability of random long-line bonus in dark areas — 0 = uniform length, 1 = frequent long strokes",
             ),
+            FloatParam(
+                name="straight_bias",
+                label="Straight Bias",
+                min=0.0,
+                max=1.0,
+                step=0.05,
+                default=0.7,
+                description="Tendency to maintain stroke direction — higher = more flowing parallel strokes",
+            ),
             BoolParam(
                 name="multi_pass",
                 label="Multi-Pass",
@@ -308,6 +323,7 @@ class SketchGenerator(Generator):
             "continuous": True,
             "chain_max": 18,
             "long_line_bias": 0.5,
+            "straight_bias": 0.7,
             "multi_pass": True,
             "x_offset_mm": 0.0,
             "y_offset_mm": 0.0,
@@ -504,6 +520,8 @@ class SketchGenerator(Generator):
         edge_normalized: np.ndarray | None = None,
         coverage: np.ndarray | None = None,
         max_pixel_coverage: int = 1,
+        base_angle: float | None = None,
+        angle_offsets: list[float] | None = None,
     ) -> tuple[int, int, float, float] | None:
         """Find the single best line segment from ``(cur_x, cur_y)``.
 
@@ -556,7 +574,18 @@ class SketchGenerator(Generator):
         r = max(1, line_length_px)
         candidates: list[tuple[int, int]] = []
 
-        if angle_tests >= 36:
+        if base_angle is not None and angle_offsets is not None:
+            # Direction-constrained: test specific angular offsets from the base angle
+            seen: set[tuple[int, int]] = set()
+            for offset in angle_offsets:
+                angle = base_angle + offset
+                ex = cur_x + int(round(np.cos(angle) * r))
+                ey = cur_y + int(round(np.sin(angle) * r))
+                pt = (ex, ey)
+                if pt not in seen:
+                    seen.add(pt)
+                    candidates.append(pt)
+        elif angle_tests >= 36:
             # Midpoint circle algorithm: all integer points on a circle of radius r
             xc, yc = r, 0
             err = 0
@@ -883,6 +912,7 @@ class SketchGenerator(Generator):
         continuous = bool(params.get("continuous", True))
         chain_max = int(params.get("chain_max", 18))
         long_line_bias = float(params.get("long_line_bias", 0.5))
+        straight_bias = float(params.get("straight_bias", 0.7))
         _min_dark_threshold = 0.02
 
         # --- precompute normalized Sobel edge map ---
@@ -943,6 +973,7 @@ class SketchGenerator(Generator):
             chain_seg_count = 0
             chaining = False
             seed_x = seed_y = 0  # satisfy type-checker; always set before use
+            prev_angle: float | None = None  # direction momentum; reset per new stroke
 
             while pass_segments < pass_target:
                 if cancelled_callback and cancelled_callback():
@@ -968,6 +999,7 @@ class SketchGenerator(Generator):
                     cur_x, cur_y = seed_x, seed_y
                     current_chain = [(float(seed_x), float(seed_y))]
                     chain_seg_count = 0
+                    prev_angle = None  # no direction memory for a new stroke
 
                 # (2) Inner squiggle / chain-extension loop
                 squiggle_segs = 0
@@ -993,6 +1025,30 @@ class SketchGenerator(Generator):
                     max_effective = max(1, min(img_w, img_h) // 3 - 1)
                     effective_length = max(1, min(effective_length, max_effective))
 
+                    # Direction mode selection based on local edge strength
+                    local_edge = float(edge_normalized[int(cur_y), int(cur_x)])
+                    # Contour direction: perpendicular to brightness gradient
+                    _gx_val = float(_gx[int(cur_y), int(cur_x)])
+                    _gy_val = float(_gy[int(cur_y), int(cur_x)])
+                    gradient_angle = float(np.arctan2(-_gx_val, _gy_val))
+
+                    _base_angle: float | None = None
+                    _offsets: list[float] | None = None
+
+                    if prev_angle is not None:
+                        if np.random.random() < straight_bias * (0.35 + 0.65 * local_edge):
+                            _base_angle = 0.88 * prev_angle + 0.12 * gradient_angle
+                            _offsets = _STRAIGHT_OFFSETS
+                        elif local_edge > 0.08 and np.random.random() < (0.30 + 0.50 * local_edge):
+                            _base_angle = 0.70 * prev_angle + 0.30 * gradient_angle
+                            _offsets = _CURVE_OFFSETS
+                        elif local_edge < 0.22 and np.random.random() < (0.20 + 0.35 * (1.0 - local_edge)):
+                            _base_angle = 0.64 * prev_angle + 0.36 * gradient_angle
+                            _offsets = _AXIAL_OFFSETS
+                        else:
+                            _base_angle = 0.64 * prev_angle + 0.36 * gradient_angle
+                            # _offsets stays None → fall back to full angle_tests
+
                     line_result = self._find_darkest_line(
                         lightened, cur_x, cur_y,
                         angle_tests, effective_length,
@@ -1000,7 +1056,25 @@ class SketchGenerator(Generator):
                         edge_normalized=edge_normalized,
                         coverage=coverage,
                         max_pixel_coverage=max_pixel_coverage,
+                        base_angle=_base_angle,
+                        angle_offsets=_offsets,
                     )
+                    # Fallback: if direction-constrained candidates all scored poorly
+                    # OR the best one leads into a bright area (would terminate squiggle),
+                    # retry with full angle_tests to avoid premature squiggle termination
+                    if _offsets is not None and (
+                        line_result is None
+                        or line_result[3] < 0.01
+                        or line_result[2] * 100.0 / 255.0 > squiggle_max_deviation
+                    ):
+                        line_result = self._find_darkest_line(
+                            lightened, cur_x, cur_y,
+                            angle_tests, effective_length,
+                            residual_dark=residual_dark,
+                            edge_normalized=edge_normalized,
+                            coverage=coverage,
+                            max_pixel_coverage=max_pixel_coverage,
+                        )
                     if line_result is None:
                         break
 
@@ -1015,6 +1089,7 @@ class SketchGenerator(Generator):
 
                     current_chain.append((float(end_x), float(end_y)))
                     squiggle_segs += 1
+                    prev_angle = float(np.arctan2(end_y - cur_y, end_x - cur_x))
 
                     # Erase along this segment immediately
                     seg_pixels = [
