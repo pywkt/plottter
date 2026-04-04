@@ -341,21 +341,12 @@ class SketchGenerator(Generator):
         return [
             Preset(name="Default", params=dict(_base)),
             Preset(
-                name="Sketch Lines",
-                params={
-                    **_base,
-                    "line_density": 0.8,
-                    "angle_tests": 16,
-                    "squiggle_max_length": 30,
-                },
-            ),
-            Preset(
                 name="Contour Sketch",
                 params={
                     **_base,
-                    "directionality": 60.0,
-                    "edge_power": 20.0,
-                    "squiggle_max_length": 80,
+                    "directionality": 50.0,
+                    "edge_power": 25.0,
+                    "chain_max": 25,
                 },
             ),
             Preset(
@@ -363,9 +354,8 @@ class SketchGenerator(Generator):
                 params={
                     **_base,
                     "line_density": 2.0,
+                    "max_pixel_coverage": 3,
                     "angle_tests": 4,
-                    "line_length_px": 15,
-                    "squiggle_max_length": 20,
                 },
             ),
             Preset(
@@ -373,16 +363,25 @@ class SketchGenerator(Generator):
                 params={
                     **_base,
                     "line_density": 0.5,
-                    "squiggle_max_length": 100,
-                    "squiggle_max_deviation": 50.0,
+                    "chain_max": 30,
+                    "long_line_bias": 0.7,
                 },
             ),
             Preset(
                 name="Edge Trace",
                 params={
                     **_base,
-                    "directionality": 30.0,
-                    "edge_power": 60.0,
+                    "edge_power": 50.0,
+                    "unsharp_amount": 3,
+                },
+            ),
+            Preset(
+                name="Portrait",
+                params={
+                    **_base,
+                    "line_density": 1.5,
+                    "multi_pass": True,
+                    "unsharp_amount": 2,
                 },
             ),
         ]

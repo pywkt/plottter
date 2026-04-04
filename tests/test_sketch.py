@@ -704,7 +704,7 @@ class TestPresets:
     def test_preset_names(self):
         names = [p.name for p in self.gen.get_presets()]
         assert "Default" in names
-        assert "Sketch Lines" in names
+        assert "Portrait" in names
         assert "Contour Sketch" in names
         assert "Dense Crosshatch" in names
         assert "Loose Sketch" in names
