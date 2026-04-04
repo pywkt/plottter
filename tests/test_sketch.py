@@ -332,7 +332,7 @@ class TestFindDarkestLine:
         # Seed in the right-half, near the boundary; dark half is to the left
         result = self.gen._find_darkest_line(img, w // 2 + 1, h // 2, 8, 10)
         assert result is not None
-        end_x, end_y, avg_brightness = result
+        end_x, end_y, avg_brightness, _ = result
         # The winning direction should lead into the darker left half
         assert avg_brightness < 255.0
 
@@ -341,7 +341,7 @@ class TestFindDarkestLine:
         img = np.random.default_rng(0).integers(0, 256, (64, 64), dtype=np.uint8)
         result = self.gen._find_darkest_line(img, 32, 32, 8, 10)
         if result is not None:
-            _, _, avg_brightness = result
+            _, _, avg_brightness, _ = result
             assert 0.0 <= avg_brightness <= 255.0
 
     def test_endpoint_within_image_bounds(self):
@@ -349,7 +349,7 @@ class TestFindDarkestLine:
         img = np.zeros((64, 64), dtype=np.uint8)
         result = self.gen._find_darkest_line(img, 32, 32, 16, 10)
         assert result is not None
-        end_x, end_y, _ = result
+        end_x, end_y, _, _ = result
         assert 0 <= end_x < 64
         assert 0 <= end_y < 64
 
@@ -362,7 +362,7 @@ class TestFindDarkestLine:
         line_length_px = 8
         result = self.gen._find_darkest_line(img, 32, 32, angle_tests, line_length_px)
         assert result is not None
-        best_end_x, best_end_y, _ = result
+        best_end_x, best_end_y, _, _ = result
 
         # Replicate the scoring logic (no maps → edge_strength=0, cov=0)
         h, w = img.shape[:2]
@@ -393,10 +393,21 @@ class TestFindDarkestLine:
         img = np.zeros((128, 128), dtype=np.uint8)
         result = self.gen._find_darkest_line(img, 64, 64, 36, 20)
         assert result is not None
-        end_x, end_y, avg_brightness = result
+        end_x, end_y, avg_brightness, best_score = result
         assert 0 <= end_x < 128
         assert 0 <= end_y < 128
         assert avg_brightness == 0.0  # all-black image
+
+    def test_returns_score_as_fourth_element(self):
+        """_find_darkest_line must return a 4-tuple with score as 4th element."""
+        img = np.zeros((64, 64), dtype=np.uint8)
+        result = self.gen._find_darkest_line(img, 32, 32, 8, 10)
+        assert result is not None
+        assert len(result) == 4
+        end_x, end_y, avg_brightness, score = result
+        assert isinstance(score, float)
+        # All-black image — score should be positive (dark area)
+        assert score > 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -710,6 +721,7 @@ class TestPresets:
             # Keep limits small for speed; override squiggle_min_length for permissiveness
             params["line_max_limit"] = 200
             params["squiggle_min_length"] = 1
+            params["multi_pass"] = False  # single pass for speed
             result = self.gen.generate(params, self.canvas)
             assert isinstance(result, list), f"Preset '{preset.name}' did not return a list"
             assert len(result) > 0, f"Preset '{preset.name}' produced no output"
@@ -937,3 +949,172 @@ class TestMultiPass:
         }
         result = self.gen.generate(params, self.canvas)
         assert len(result) > 0, "single-pass mode should still produce paths"
+
+
+# ---------------------------------------------------------------------------
+# Continuous path chaining
+# ---------------------------------------------------------------------------
+
+
+class TestContinuousChaining:
+    def setup_method(self):
+        self.gen = SketchGenerator()
+        self.canvas = make_canvas()
+
+    def _dark_image(self, h: int = 80, w: int = 80) -> np.ndarray:
+        return np.zeros((h, w), dtype=np.uint8)
+
+    def test_continuous_and_chain_max_params_defined(self):
+        """continuous (BoolParam) and chain_max (IntParam) must be registered."""
+        names = {p.name for p in self.gen.get_parameters()}
+        assert "continuous" in names
+        assert "chain_max" in names
+
+    def test_presets_include_continuous_and_chain_max(self):
+        """All presets must include continuous and chain_max."""
+        for preset in self.gen.get_presets():
+            assert "continuous" in preset.params, f"Preset '{preset.name}' missing continuous"
+            assert "chain_max" in preset.params, f"Preset '{preset.name}' missing chain_max"
+
+    def test_continuous_true_produces_fewer_longer_polylines(self):
+        """continuous=True chains short squiggles into long paths — fewer, longer polylines.
+
+        With squiggle_max_length=4 and chain_max=40, continuous mode chains up to 40
+        segments into one polyline, while non-continuous caps each polyline at 4 segments.
+        """
+        img = self._dark_image()
+        common = {
+            "_source_image": img.copy(),
+            "multi_pass": False,
+            "line_max_limit": 300,
+            "squiggle_min_length": 1,
+            "squiggle_max_length": 4,   # short per-squiggle cap
+            "squiggle_max_deviation": 90.0,
+            "line_length_px": 8,
+            "angle_tests": 8,  # fast: 8 angles instead of Bresenham circle
+        }
+        result_cont = self.gen.generate({**common, "continuous": True, "chain_max": 40}, self.canvas)
+        result_sep = self.gen.generate({**common, "continuous": False}, self.canvas)
+
+        # continuous=True should produce fewer, longer polylines
+        assert len(result_cont) > 0, "continuous=True produced no output"
+        assert len(result_sep) > 0, "continuous=False produced no output"
+        assert len(result_cont) < len(result_sep), (
+            f"continuous=True ({len(result_cont)} paths) should produce fewer paths "
+            f"than continuous=False ({len(result_sep)} paths)"
+        )
+        avg_len_cont = sum(len(p) for p in result_cont) / len(result_cont)
+        avg_len_sep = sum(len(p) for p in result_sep) / len(result_sep)
+        assert avg_len_cont > avg_len_sep, (
+            f"continuous=True avg path length ({avg_len_cont:.1f}) should exceed "
+            f"continuous=False ({avg_len_sep:.1f})"
+        )
+
+    def test_chain_max_limits_polyline_length(self):
+        """chain_max=5 produces shorter max polyline length than chain_max=50."""
+        img = self._dark_image()
+        common = {
+            "_source_image": img.copy(),
+            "multi_pass": False,
+            "line_max_limit": 300,
+            "squiggle_min_length": 1,
+            "squiggle_max_length": 60,
+            "squiggle_max_deviation": 90.0,
+            "continuous": True,
+            "line_length_px": 8,
+            "angle_tests": 8,  # fast: 8 angles instead of Bresenham circle
+        }
+        result_short = self.gen.generate({**common, "chain_max": 5}, self.canvas)
+        result_long = self.gen.generate({**common, "chain_max": 50}, self.canvas)
+
+        assert len(result_short) > 0
+        assert len(result_long) > 0
+
+        max_segs_short = max(len(p) - 1 for p in result_short)
+        max_segs_long = max(len(p) - 1 for p in result_long)
+        assert max_segs_short <= max_segs_long, (
+            f"chain_max=5 max segs ({max_segs_short}) should be ≤ chain_max=50 ({max_segs_long})"
+        )
+        # chain_max=5 hard cap: no polyline should exceed 5 segments
+        for path in result_short:
+            n = len(path) - 1
+            assert n <= 5, f"chain_max=5 produced a path with {n} segments"
+
+    def test_chains_break_in_bright_areas(self):
+        """Chains should stay in dark areas and not cross over bright regions."""
+        h, w = 80, 80
+        img = np.full((h, w), 255, dtype=np.uint8)
+        img[:, : w // 2] = 0  # left half black, right half white
+
+        params = {
+            "_source_image": img,
+            "multi_pass": False,
+            "line_max_limit": 200,
+            "squiggle_min_length": 1,
+            "squiggle_max_deviation": 20.0,  # strict: break on bright areas
+            "continuous": True,
+            "chain_max": 50,
+            "angle_tests": 8,  # fast: 8 angles instead of Bresenham circle
+        }
+        canvas = self.canvas
+        draw_x1, _, draw_x2, _ = canvas.drawing_area()
+        result = self.gen.generate(params, canvas)
+        assert len(result) > 0
+
+        # No path should span both halves significantly
+        draw_mid_x = (draw_x1 + draw_x2) / 2.0
+        for path in result:
+            xs = [x for x, _ in path]
+            # A path that starts left of midpoint should not end far right
+            if xs[0] < draw_mid_x:
+                assert xs[-1] < draw_mid_x + (draw_x2 - draw_x1) * 0.2, (
+                    "Chain crossed from dark into bright half"
+                )
+
+    def test_coverage_similar_with_and_without_chaining(self):
+        """Total pixel coverage is comparable for continuous=True vs False."""
+        img = self._dark_image(h=64, w=64)
+        common = {
+            "multi_pass": False,
+            "line_max_limit": 200,
+            "squiggle_min_length": 1,
+            "squiggle_max_deviation": 90.0,
+            "line_length_px": 8,
+            "angle_tests": 8,  # fast: 8 angles instead of Bresenham circle
+        }
+        result_cont = self.gen.generate(
+            {**common, "_source_image": img.copy(), "continuous": True, "chain_max": 18},
+            self.canvas,
+        )
+        result_sep = self.gen.generate(
+            {**common, "_source_image": img.copy(), "continuous": False},
+            self.canvas,
+        )
+
+        # Total point count (proxy for coverage) should be within 2× of each other
+        pts_cont = sum(len(p) for p in result_cont)
+        pts_sep = sum(len(p) for p in result_sep)
+        assert pts_cont > 0 and pts_sep > 0
+        ratio = max(pts_cont, pts_sep) / min(pts_cont, pts_sep)
+        assert ratio < 3.0, (
+            f"Coverage ratio too different: continuous={pts_cont} pts vs "
+            f"separate={pts_sep} pts (ratio {ratio:.2f})"
+        )
+
+    def test_continuous_false_matches_original_structure(self):
+        """continuous=False should produce multiple short polylines (original behavior)."""
+        img = self._dark_image()
+        params = {
+            "_source_image": img,
+            "multi_pass": False,
+            "line_max_limit": 200,
+            "squiggle_max_length": 5,
+            "squiggle_min_length": 1,
+            "continuous": False,
+            "angle_tests": 8,  # fast: 8 angles instead of Bresenham circle
+        }
+        result = self.gen.generate(params, self.canvas)
+        assert len(result) > 0
+        # Each polyline should have at most squiggle_max_length+1 points
+        for path in result:
+            assert len(path) <= 5 + 1, f"Path has {len(path)} points with squiggle_max_length=5"

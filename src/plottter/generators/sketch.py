@@ -192,6 +192,21 @@ class SketchGenerator(Generator):
                 description="Pixel radius to reserve around accepted paths",
             ),
             BoolParam(
+                name="continuous",
+                label="Continuous",
+                default=True,
+                description="Chain strokes into continuous paths — fewer pen lifts",
+            ),
+            IntParam(
+                name="chain_max",
+                label="Chain Max",
+                min=1,
+                max=50,
+                step=1,
+                default=18,
+                description="Maximum segments chained without pen lift",
+            ),
+            BoolParam(
                 name="multi_pass",
                 label="Multi-Pass",
                 default=True,
@@ -281,6 +296,8 @@ class SketchGenerator(Generator):
             "max_pixel_coverage": 2,
             "max_overlap_ratio": 0.55,
             "coverage_radius": 1,
+            "continuous": True,
+            "chain_max": 18,
             "multi_pass": True,
             "x_offset_mm": 0.0,
             "y_offset_mm": 0.0,
@@ -477,7 +494,7 @@ class SketchGenerator(Generator):
         edge_normalized: np.ndarray | None = None,
         coverage: np.ndarray | None = None,
         max_pixel_coverage: int = 1,
-    ) -> tuple[int, int, float] | None:
+    ) -> tuple[int, int, float, float] | None:
         """Find the single best line segment from ``(cur_x, cur_y)``.
 
         Tests candidate endpoints at distance ``line_length_px`` from the
@@ -518,9 +535,10 @@ class SketchGenerator(Generator):
 
         Returns
         -------
-        ``(end_x, end_y, avg_brightness)`` for the winning endpoint, or
+        ``(end_x, end_y, avg_brightness, best_score)`` for the winning endpoint, or
         ``None`` if no valid candidate exists.  ``avg_brightness`` is the
         mean of ``lightened`` values along the sampled points (0–255 range).
+        ``best_score`` is the raw weighted score used for candidate ranking.
         """
         h, w = lightened.shape[:2]
 
@@ -608,7 +626,7 @@ class SketchGenerator(Generator):
 
         if best_end is None:
             return None
-        return (best_end[0], best_end[1], best_avg_brightness)
+        return (best_end[0], best_end[1], best_avg_brightness, best_score)
 
     # ------------------------------------------------------------------
     # Erase helpers
@@ -849,6 +867,9 @@ class SketchGenerator(Generator):
         # Amount to subtract from residual_dark per accepted coverage hit.
         # After max_pixel_coverage hits, residual reaches 0 for that pixel.
         lighten_amount = 1.0 / max(1, max_pixel_coverage)
+        continuous = bool(params.get("continuous", True))
+        chain_max = int(params.get("chain_max", 18))
+        _min_dark_threshold = 0.02
 
         # --- precompute normalized Sobel edge map ---
         try:
@@ -903,6 +924,12 @@ class SketchGenerator(Generator):
             consecutive_failures = 0
             MAX_CONSECUTIVE_FAILURES = 1000
 
+            # Continuous-chaining state (reset each pass)
+            current_chain: list[tuple[float, float]] = []
+            chain_seg_count = 0
+            chaining = False
+            seed_x = seed_y = 0  # satisfy type-checker; always set before use
+
             while pass_segments < pass_target:
                 if cancelled_callback and cancelled_callback():
                     break
@@ -910,24 +937,34 @@ class SketchGenerator(Generator):
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     break
 
-                # (1) Find darkest tile → darkest seed pixel
-                br, bc = self._find_darkest_region(lightened, block_size)
-                seed_y, seed_x = self._find_darkest_pixel(lightened, br, bc, block_size)
+                was_chaining = chaining
 
-                # Check if seed is too bright to start a squiggle from
-                seed_val = int(lightened[seed_y, seed_x])
-                if seed_val > pass_ceiling:
-                    lightened[seed_y, seed_x] = 255
-                    consecutive_failures += 1
-                    continue
+                if not chaining:
+                    # (1) Find darkest tile → darkest seed pixel
+                    br, bc = self._find_darkest_region(lightened, block_size)
+                    seed_y, seed_x = self._find_darkest_pixel(lightened, br, bc, block_size)
 
-                # (2) Start a new squiggle from seed
-                squiggle: list[tuple[float, float]] = [(float(seed_x), float(seed_y))]
-                cur_x, cur_y = seed_x, seed_y
-                squiggle_segments = 0
+                    # Check if seed is too bright to start from
+                    seed_val = int(lightened[seed_y, seed_x])
+                    if seed_val > pass_ceiling:
+                        lightened[seed_y, seed_x] = 255
+                        consecutive_failures += 1
+                        continue
 
-                # (3) Inner squiggle loop: chain segments
-                for _ in range(pass_max_squiggle):
+                    cur_x, cur_y = seed_x, seed_y
+                    current_chain = [(float(seed_x), float(seed_y))]
+                    chain_seg_count = 0
+
+                # (2) Inner squiggle / chain-extension loop
+                squiggle_segs = 0
+                if continuous:
+                    max_segs_this = min(pass_max_squiggle, max(1, chain_max - chain_seg_count))
+                else:
+                    max_segs_this = pass_max_squiggle
+
+                chain_start_len = len(current_chain)
+
+                for _ in range(max_segs_this):
                     line_result = self._find_darkest_line(
                         lightened, cur_x, cur_y,
                         angle_tests, pass_line_length,
@@ -939,14 +976,17 @@ class SketchGenerator(Generator):
                     if line_result is None:
                         break
 
-                    end_x, end_y, avg_brightness = line_result
+                    end_x, end_y, avg_brightness, best_score = line_result
 
-                    # Stop squiggle if segment ventures too far into bright areas
+                    # Stop if segment ventures too far into bright areas
                     if avg_brightness * 100.0 / 255.0 > squiggle_max_deviation:
                         break
+                    # Stop if best candidate score is too low (continuous mode only)
+                    if continuous and best_score < 0.01:
+                        break
 
-                    squiggle.append((float(end_x), float(end_y)))
-                    squiggle_segments += 1
+                    current_chain.append((float(end_x), float(end_y)))
+                    squiggle_segs += 1
 
                     # Erase along this segment immediately
                     seg_pixels = [
@@ -963,22 +1003,41 @@ class SketchGenerator(Generator):
                     )
                     cur_x, cur_y = end_x, end_y
 
-                if squiggle_segments == 0:
-                    # No segments traced — erase at seed to avoid re-selection
-                    self._erase_along_path(
-                        lightened, [(float(seed_x), float(seed_y))],
-                        erase_min, erase_max,
-                        erase_radius_min, erase_radius_max, tone,
-                    )
+                # (3) After inner loop: accept / reject / chain / finalize
+                if squiggle_segs == 0:
+                    # No segments traced
+                    if not was_chaining:
+                        # Erase at seed to avoid re-selection
+                        self._erase_along_path(
+                            lightened, [(float(seed_x), float(seed_y))],
+                            erase_min, erase_max,
+                            erase_radius_min, erase_radius_max, tone,
+                        )
                     consecutive_failures += 1
-                else:
+                    chaining = False
+                    if continuous:
+                        # Finalize any accumulated chain
+                        n_segs = len(current_chain) - 1
+                        if n_segs >= squiggle_min_length:
+                            mm_path: Polyline = [
+                                (rect_x1 + px_x * rect_w / img_w, rect_y1 + px_y * rect_h / img_h)
+                                for px_x, px_y in current_chain
+                            ]
+                            result.append(mm_path)
+                            total_segments += n_segs
+                            pass_segments += n_segs
+                    current_chain = []
+                    chain_seg_count = 0
+
+                elif not continuous:
+                    # Original behavior: squiggle = current_chain
                     consecutive_failures = 0
-                    # (4) Add squiggle polyline to output if it meets minimum length
-                    if squiggle_segments >= squiggle_min_length:
-                        # Coverage overlap check — reject paths where too many pixels are already inked
+                    squiggle = current_chain
+
+                    if squiggle_segs >= squiggle_min_length:
                         px_arr, py_arr = self._path_pixel_coords(squiggle, img_w, img_h)
                         if px_arr.size > 0 and np.mean(coverage[py_arr, px_arr] >= max_pixel_coverage) > max_overlap_ratio:
-                            # Reject: over-inked region — count as failure to avoid infinite loops
+                            # Reject: over-inked region
                             consecutive_failures += 1
                         else:
                             # Accept: update coverage map and residual_dark
@@ -990,21 +1049,95 @@ class SketchGenerator(Generator):
                                 residual_dark[ey_arr, ex_arr] = np.maximum(
                                     residual_dark[ey_arr, ex_arr] - pass_lighten, 0.0
                                 )
-                            mm_path: Polyline = [
-                                (
-                                    rect_x1 + px_x * rect_w / img_w,
-                                    rect_y1 + px_y * rect_h / img_h,
-                                )
+                            mm_path = [
+                                (rect_x1 + px_x * rect_w / img_w, rect_y1 + px_y * rect_h / img_h)
                                 for px_x, px_y in squiggle
                             ]
                             result.append(mm_path)
-                            total_segments += squiggle_segments
-                            pass_segments += squiggle_segments
+                            total_segments += squiggle_segs
+                            pass_segments += squiggle_segs
+
+                    current_chain = []
+                    chain_seg_count = 0
+                    chaining = False
+
+                else:
+                    # continuous mode, squiggle_segs > 0
+                    consecutive_failures = 0
+
+                    # Coverage overlap check for newly added segment(s)
+                    new_seg_pts = current_chain[chain_start_len - 1:]  # include start of new segs
+                    px_arr, py_arr = self._path_pixel_coords(new_seg_pts, img_w, img_h)
+
+                    if px_arr.size > 0 and np.mean(coverage[py_arr, px_arr] >= max_pixel_coverage) > max_overlap_ratio:
+                        # Over-inked: reject new segments, finalize accumulated chain
+                        current_chain = current_chain[:chain_start_len]
+                        consecutive_failures += 1
+                        chaining = False
+                        n_segs = len(current_chain) - 1
+                        if n_segs >= squiggle_min_length:
+                            mm_path = [
+                                (rect_x1 + px_x * rect_w / img_w, rect_y1 + px_y * rect_h / img_h)
+                                for px_x, px_y in current_chain
+                            ]
+                            result.append(mm_path)
+                            total_segments += n_segs
+                            pass_segments += n_segs
+                        current_chain = []
+                        chain_seg_count = 0
+                    else:
+                        # Accept: update coverage map and residual_dark for new segments
+                        ex_arr, ey_arr = self._expand_pixel_coords(px_arr, py_arr, img_w, img_h, coverage_radius)
+                        if ex_arr.size > 0:
+                            coverage[ey_arr, ex_arr] = np.minimum(
+                                coverage[ey_arr, ex_arr].astype(np.int32) + 1, 255
+                            ).astype(np.uint8)
+                            residual_dark[ey_arr, ex_arr] = np.maximum(
+                                residual_dark[ey_arr, ex_arr] - pass_lighten, 0.0
+                            )
+
+                        chain_seg_count += squiggle_segs
+
+                        # Check if endpoint is still viable for continuing
+                        end_dark = float(residual_dark[int(cur_y), int(cur_x)])
+                        end_cov = int(coverage[int(cur_y), int(cur_x)])
+                        force_new_seed = chain_seg_count >= chain_max
+
+                        if not force_new_seed and end_dark > _min_dark_threshold and end_cov < max_pixel_coverage:
+                            # Continue chaining from endpoint — no pen lift
+                            chaining = True
+                        else:
+                            # Finalize chain (bright area, over-inked endpoint, or chain_max reached)
+                            chaining = False
+                            n_segs = len(current_chain) - 1
+                            if n_segs >= squiggle_min_length:
+                                mm_path = [
+                                    (rect_x1 + px_x * rect_w / img_w, rect_y1 + px_y * rect_h / img_h)
+                                    for px_x, px_y in current_chain
+                                ]
+                                result.append(mm_path)
+                                total_segments += n_segs
+                                pass_segments += n_segs
+                            current_chain = []
+                            chain_seg_count = 0
 
                 # (E) Report progress across all passes
                 if progress_callback:
                     pct = int(total_segments / max(1, line_max_limit) * 100)
                     progress_callback(min(99, max(0, pct)))
+
+            # End of pass: finalize any pending chain (cancelled or budget exhausted)
+            if continuous and chaining and current_chain:
+                n_segs = len(current_chain) - 1
+                if n_segs >= squiggle_min_length:
+                    mm_path = [
+                        (rect_x1 + px_x * rect_w / img_w, rect_y1 + px_y * rect_h / img_h)
+                        for px_x, px_y in current_chain
+                    ]
+                    result.append(mm_path)
+                    total_segments += n_segs
+            current_chain = []
+            chaining = False
 
         x_off = float(params.get("x_offset_mm", 0.0))
         y_off = float(params.get("y_offset_mm", 0.0))
