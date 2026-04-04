@@ -393,6 +393,25 @@ class SketchGenerator(Generator):
                     "unsharp_amount": 2,
                 },
             ),
+            Preset(
+                name="Hybrid Portrait",
+                params={
+                    **_base,
+                    "mark_mode": "Hybrid",
+                    "line_density": 1.5,
+                    "continuous": True,
+                    "unsharp_amount": 2,
+                },
+            ),
+            Preset(
+                name="Hybrid Dense",
+                params={
+                    **_base,
+                    "mark_mode": "Hybrid",
+                    "line_density": 2.0,
+                    "max_pixel_coverage": 3,
+                },
+            ),
         ]
 
     # ------------------------------------------------------------------
