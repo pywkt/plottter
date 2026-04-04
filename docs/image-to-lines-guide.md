@@ -2,7 +2,7 @@
 
 Image-to-Lines mode converts raster images (photos, illustrations, scans) into plotter-ready
 polyline paths. The workflow has two stages: **preprocessing** (adjusting the image) and
-**line generation** (choosing an algorithm to trace paths). There are **13 image algorithms**
+**line generation** (choosing an algorithm to trace paths). There are **16 image algorithms**
 available, ranging from edge detection and hatching to stippling, halftone, and flow-based
 streamline art.
 
@@ -536,6 +536,66 @@ tonality for faithful reproduction of photographs.
 - `Filled Circle` or `Spiral Fill` shapes produce bold, inked-looking dots at larger radii
 - For CMYK-style color separation, generate four layers (one per channel) at slightly different
   `grid_angle_deg` values (e.g. 15°, 45°, 75°, 0°) to minimize moiré patterns
+
+---
+
+## Sketch
+
+**Generator:** Sketch
+
+An iterative "find darkest area → trace path → erase" algorithm that progressively builds up a pen sketch from an image. At each step it finds the darkest remaining area, traces a multi-segment squiggle through it, then lightens the drawn area so subsequent strokes naturally seek out unexplored dark regions. The result looks like a hand-drawn sketch with denser strokes in dark areas and sparse strokes in highlights.
+
+### How It Works
+
+1. **Seed selection** — samples seed points from a probability distribution weighted by remaining darkness, edge strength, and a coverage penalty (areas already drawn get deprioritized)
+2. **Squiggle tracing** — from each seed, greedily traces a multi-segment path by testing candidate directions and picking the one that passes through the darkest area
+3. **Erasing** — brightens the drawn area in a working copy of the image so the algorithm moves on to unexplored regions
+4. **Multi-pass** — runs 3 passes with different profiles: bold strokes first (52%), then medium detail (33%), then fine refinement (15%)
+
+### Key Parameters
+
+| Parameter | Effect | Tuning Tips |
+|-----------|--------|------------|
+| `line_max_limit` | Total segment budget | Lower (2000–5000) for faster results, higher (10000+) for dense output |
+| `angle_tests` | Candidate directions per step | 4 = angular crosshatch, 8–12 = fast and smooth, 16 = good quality, 36 = best but slowest |
+| `line_length_px` | Length of each segment in pixels | 10–15 = fine detail, 20–30 = bolder strokes |
+| `straight_bias` | Direction momentum | 0.3 = chaotic/scribble, 0.7 = flowing, 0.9 = very parallel strokes |
+| `squiggle_max_deviation` | How far squiggles wander into bright areas | 12 = tight (stays in dark areas), 50 = loose (wanders freely) |
+| `long_line_bias` | Random long-stroke bonus probability | 0.1 = uniform length, 0.8 = frequent dramatic long strokes |
+| `directionality` | Follow natural contours | 0 = brightness-seeking only, 30–60 = follows edges/contours |
+| `edge_power` | Attract strokes toward edges | 0 = none, 30–60 = moderate edge attraction |
+| `max_pixel_coverage` | Max times a pixel can be inked | 1 = very sparse, 2 = normal, 4 = dense with overlapping |
+| `chain_max` | Max segments chained without pen lift | 10 = many short paths, 30+ = long continuous chains |
+| `tone` | Erase contrast curve | 0 = linear erasing, 0.5 = balanced, 1.0 = dark areas strongly resist erasing |
+| `unsharp_amount` | Edge sharpening before processing | 0 = off, 2–3 = recommended for most images, 4+ = aggressive |
+| `multi_pass` | 3-pass generation (bold → detail → refine) | On = better tonal range, Off = simpler single pass |
+| `mark_mode` | Squiggle Only vs Hybrid | Hybrid competes squiggles, lines, hatch marks, and dots per seed |
+
+### Presets
+
+| Preset | Best For | Key Settings |
+|--------|----------|-------------|
+| **Quick Sketch** | Fast preview, testing settings | 3000 segs, 12 angles, single pass — fast but lower quality |
+| **Portrait** | Faces and figures | Contour-following, fine detail, unsharp=3, straight_bias=0.8 |
+| **Contour Portrait** | Strong edge following | High directionality=60, edge_power=30, long chains |
+| **Dense Ink** | Dark, heavy coverage | 15000 segs, max_coverage=4, short strokes, low tone=0.3 |
+| **Crosshatch** | Angular grid pattern | 4 directions only, long straight strokes, no chaining |
+| **Loose Sketch** | Sparse, gestural look | Few long flowing strokes, high deviation=50, long_line_bias=0.8 |
+| **Scribble** | Chaotic, energetic style | Low straight_bias=0.3, short steps, long wandering chains |
+| **Edge Trace** | Edge emphasis | edge_power=60, tight deviation=12, unsharp=4 |
+| **Hybrid Portrait** | Mixed mark types for faces | Squiggles + lines + dots, moderate settings |
+| **Hybrid Dense** | Heavy hybrid coverage | Dense output with varied mark types |
+
+### Tips
+
+- **Start with "Quick Sketch"** to test if your image works before trying slower presets
+- **Unsharp mask** is critical for low-contrast images — try `unsharp_amount=3` or higher
+- **High `angle_tests`** (36) gives best quality but is ~3x slower than `angle_tests=12`
+- For **portraits**, use `directionality=30` + `edge_power=15` so strokes follow facial contours
+- For **very dark images**, increase `max_pixel_coverage` to 3–4 so strokes can overlap more
+- **Hybrid mode** produces the most natural-looking output by mixing mark types, but is slower
+- If output is **too sparse**, increase `line_density` and/or `line_max_limit`
+- If output is **too uniform**, increase `tone` (0.6–0.8) so dark areas accumulate more strokes
 
 ---
 
