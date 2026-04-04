@@ -387,102 +387,69 @@ class SketchGenerator(Generator):
         ]
 
     # ------------------------------------------------------------------
-    # Darkest-area helpers
+    # Seed sampling helper
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _find_darkest_region(
-        lightened: np.ndarray,
-        block_size: int,
-    ) -> tuple[int, int]:
-        """Divide image into blocks and return the (row, col) of the darkest block.
+    def _sample_seed_batch(
+        residual_dark: np.ndarray,
+        edge_normalized: np.ndarray,
+        coverage: np.ndarray,
+        img_h: int,
+        img_w: int,
+        batch_size: int,
+        dark_power: float,
+        edge_bias: float,
+        max_pixel_coverage: int,
+        min_darkness: float,
+        rng: np.random.Generator,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Sample a batch of seed pixel coordinates weighted by darkness/edge/coverage.
+
+        Builds a probability distribution from the current residual darkness,
+        edge, and coverage maps, then samples ``batch_size`` seed candidates.
 
         Parameters
         ----------
-        lightened:
-            2-D uint8 grayscale image (0=black, 255=white).  The array is
-            treated as-is — no copy is made.
-        block_size:
-            Side length of each square block in pixels.
+        residual_dark:
+            Float32 array [0, 1] of remaining darkness (1=black, 0=white).
+        edge_normalized:
+            Float32 normalized Sobel magnitude [0, 1].
+        coverage:
+            uint8 array counting accepted path hits per pixel.
+        img_h, img_w:
+            Image dimensions in pixels.
+        batch_size:
+            Number of seed candidates to sample.
+        dark_power:
+            Exponent applied to darkness — higher concentrates seeds in dark areas.
+        edge_bias:
+            Weight for the edge term in [0, 1].
+        max_pixel_coverage:
+            Maximum coverage count used to compute the ink penalty.
+        min_darkness:
+            Minimum darkness below which pixels are excluded from sampling.
+        rng:
+            NumPy random Generator instance.
 
         Returns
         -------
-        (block_row, block_col) — zero-based index of the block with the lowest
-        mean brightness.  Both values are guaranteed to be within the valid
-        range of blocks for the given image size.
+        ``(ys, xs)`` arrays of shape ``(batch_size,)`` containing pixel row/col
+        indices sampled proportionally to the computed weight map.
         """
-        h, w = lightened.shape[:2]
-        block_size = max(1, block_size)
-
-        n_rows = max(1, (h + block_size - 1) // block_size)
-        n_cols = max(1, (w + block_size - 1) // block_size)
-
-        # Pad to exact block multiples so cv2 / numpy block boundaries align with
-        # _find_darkest_pixel which uses region_y * block_size offsets.
-        pad_h = n_rows * block_size - h
-        pad_w = n_cols * block_size - w
-        padded = (
-            np.pad(lightened, ((0, pad_h), (0, pad_w)), mode="edge")
-            if (pad_h or pad_w)
-            else lightened
+        darkness = np.clip(residual_dark - min_darkness, 0.0, 1.0)
+        edge_term = edge_normalized ** 1.2
+        ink_penalty = np.clip(
+            1.0 - coverage.astype(np.float32) / max(1, max_pixel_coverage),
+            0.05, 1.0,
         )
+        weights = (darkness ** dark_power) * (0.85 + edge_bias * edge_term) * ink_penalty + 1e-9
+        weights /= weights.sum()
 
-        try:
-            import cv2
-            # INTER_AREA on a padded image whose size == n_rows*block_size × n_cols*block_size
-            # gives exactly the mean of each block_size×block_size tile.
-            block_means = cv2.resize(
-                padded, (n_cols, n_rows), interpolation=cv2.INTER_AREA
-            )
-        except ImportError:
-            block_means = padded.reshape(
-                n_rows, block_size, n_cols, block_size
-            ).mean(axis=(1, 3))
-
-        flat_idx = int(np.argmin(block_means))
-        best_row = flat_idx // n_cols
-        best_col = flat_idx % n_cols
-        return best_row, best_col
-
-    @staticmethod
-    def _find_darkest_pixel(
-        lightened: np.ndarray,
-        region_y: int,
-        region_x: int,
-        block_size: int,
-    ) -> tuple[int, int]:
-        """Within a specific block, find the single darkest pixel.
-
-        Parameters
-        ----------
-        lightened:
-            2-D uint8 grayscale image.
-        region_y:
-            Block row index (as returned by _find_darkest_region).
-        region_x:
-            Block column index (as returned by _find_darkest_region).
-        block_size:
-            Side length of the block in pixels.
-
-        Returns
-        -------
-        (px_y, px_x) — absolute pixel coordinates of the darkest pixel within
-        the block.
-        """
-        h, w = lightened.shape[:2]
-        block_size = max(1, block_size)
-
-        r0 = region_y * block_size
-        r1 = min(r0 + block_size, h)
-        c0 = region_x * block_size
-        c1 = min(c0 + block_size, w)
-
-        block = lightened[r0:r1, c0:c1]
-        flat_idx = int(np.argmin(block))
-        local_y = flat_idx // block.shape[1]
-        local_x = flat_idx % block.shape[1]
-
-        return r0 + local_y, c0 + local_x
+        flat_weights = weights.ravel()
+        indices = rng.choice(flat_weights.size, size=batch_size, replace=True, p=flat_weights)
+        ys, xs = np.divmod(indices, img_w)
+        return ys, xs
 
     # ------------------------------------------------------------------
     # Bresenham helpers
@@ -900,7 +867,6 @@ class SketchGenerator(Generator):
         orig_dark = residual_dark.copy()
 
         # Internal constants (not exposed as parameters)
-        block_size = 8
         brightness_ceiling = 250
 
         # --- generation parameters ---
@@ -965,6 +931,12 @@ class SketchGenerator(Generator):
         total_segments = 0
         num_passes = len(profiles_to_run)
 
+        # Seed batch state — rebuilt at the start of each pass and when exhausted
+        rng = np.random.default_rng()
+        _seed_batch_ys: np.ndarray | None = None
+        _seed_batch_xs: np.ndarray | None = None
+        _seed_batch_idx: int = 0
+
         for pass_idx, profile in enumerate(profiles_to_run):
             if cancelled_callback and cancelled_callback():
                 break
@@ -982,6 +954,11 @@ class SketchGenerator(Generator):
             pass_segments = 0
             consecutive_failures = 0
             MAX_CONSECUTIVE_FAILURES = 1000
+            # Reset seed batch at the start of each pass so the distribution
+            # is rebuilt from the current residual_dark / coverage state.
+            _seed_batch_ys = None
+            _seed_batch_xs = None
+            _seed_batch_idx = 0
 
             # Continuous-chaining state (reset each pass)
             current_chain: list[tuple[float, float]] = []
@@ -1000,14 +977,27 @@ class SketchGenerator(Generator):
                 was_chaining = chaining
 
                 if not chaining:
-                    # (1) Find darkest tile → darkest seed pixel
-                    br, bc = self._find_darkest_region(lightened, block_size)
-                    seed_y, seed_x = self._find_darkest_pixel(lightened, br, bc, block_size)
+                    # (1) Sample seed from weighted probability distribution
+                    if _seed_batch_ys is None or _seed_batch_idx >= len(_seed_batch_ys):
+                        remaining = max(1, pass_target - pass_segments)
+                        batch_size = min(5000, max(2000, remaining * 2))
+                        _seed_batch_ys, _seed_batch_xs = self._sample_seed_batch(
+                            residual_dark, edge_normalized, coverage,
+                            img_h, img_w, batch_size,
+                            dark_power=profile["dark_power"],
+                            edge_bias=edge_power / 100.0,
+                            max_pixel_coverage=max_pixel_coverage,
+                            min_darkness=_min_dark_threshold,
+                            rng=rng,
+                        )
+                        _seed_batch_idx = 0
+                    seed_y = int(_seed_batch_ys[_seed_batch_idx])
+                    seed_x = int(_seed_batch_xs[_seed_batch_idx])
+                    _seed_batch_idx += 1
 
                     # Check if seed is too bright to start from
                     seed_val = int(lightened[seed_y, seed_x])
                     if seed_val > pass_ceiling:
-                        lightened[seed_y, seed_x] = 255
                         consecutive_failures += 1
                         continue
 

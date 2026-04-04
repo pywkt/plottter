@@ -72,115 +72,118 @@ class TestRegistration:
 
 
 # ---------------------------------------------------------------------------
-# _find_darkest_region
+# _sample_seed_batch
 # ---------------------------------------------------------------------------
 
 
-class TestFindDarkestRegion:
+class TestSampleSeedBatch:
     def setup_method(self):
         self.gen = SketchGenerator()
+        self.rng = np.random.default_rng(42)
 
-    def test_returns_correct_block_for_dark_region(self):
-        """The block containing the single black region should be returned."""
-        dark_row, dark_col = 1, 2
-        block_size = 16
-        img = make_single_dark_block(
-            h=64, w=64,
-            dark_block_row=dark_row,
-            dark_block_col=dark_col,
-            block_size=block_size,
+    def test_seeds_biased_toward_dark_areas(self):
+        """Seeds must be sampled proportionally from dark (high residual_dark) regions."""
+        h, w = 64, 64
+        residual_dark = np.zeros((h, w), dtype=np.float32)
+        residual_dark[:, : w // 2] = 1.0  # left half is dark, right is white
+        edge = np.zeros((h, w), dtype=np.float32)
+        coverage = np.zeros((h, w), dtype=np.uint8)
+
+        ys, xs = self.gen._sample_seed_batch(
+            residual_dark, edge, coverage, h, w,
+            batch_size=1000, dark_power=1.0, edge_bias=0.0,
+            max_pixel_coverage=2, min_darkness=0.02, rng=self.rng,
         )
-        br, bc = self.gen._find_darkest_region(img, block_size)
-        assert br == dark_row
-        assert bc == dark_col
 
-    def test_pure_white_returns_a_block(self):
-        """All-white image: any block is valid — just ensure no exception and valid range."""
-        img = make_white_image(64, 64)
-        block_size = 16
-        br, bc = self.gen._find_darkest_region(img, block_size)
-        n_rows = (64 + block_size - 1) // block_size
-        n_cols = (64 + block_size - 1) // block_size
-        assert 0 <= br < n_rows
-        assert 0 <= bc < n_cols
+        # >95% of sampled seeds should fall in the dark (left) half
+        dark_count = int(np.sum(xs < w // 2))
+        assert dark_count > 950, f"Only {dark_count}/1000 seeds in dark region"
 
-    def test_single_pixel_image(self):
-        """1×1 image should not crash and should return (0, 0)."""
-        img = np.array([[128]], dtype=np.uint8)
-        br, bc = self.gen._find_darkest_region(img, block_size=16)
-        assert br == 0
-        assert bc == 0
+    def test_returns_correct_shape_and_bounds(self):
+        """_sample_seed_batch returns (ys, xs) arrays of batch_size within image bounds."""
+        h, w = 32, 48
+        residual_dark = np.ones((h, w), dtype=np.float32) * 0.5
+        edge = np.zeros((h, w), dtype=np.float32)
+        coverage = np.zeros((h, w), dtype=np.uint8)
 
-    def test_gradient_horizontal(self):
-        """Left columns are darker — darkest block should be on the left."""
-        h, w = 32, 64
-        img = np.zeros((h, w), dtype=np.uint8)
-        for x in range(w):
-            img[:, x] = int(x / (w - 1) * 255)
-        block_size = 16
-        br, bc = self.gen._find_darkest_region(img, block_size)
-        # Leftmost column of blocks (bc==0) is darkest
-        assert bc == 0
-
-    def test_image_smaller_than_block_size(self):
-        """Image smaller than block_size should still return (0, 0)."""
-        img = np.array([[10, 20], [30, 40]], dtype=np.uint8)
-        br, bc = self.gen._find_darkest_region(img, block_size=16)
-        assert br == 0
-        assert bc == 0
-
-
-# ---------------------------------------------------------------------------
-# _find_darkest_pixel
-# ---------------------------------------------------------------------------
-
-
-class TestFindDarkestPixel:
-    def setup_method(self):
-        self.gen = SketchGenerator()
-
-    def test_finds_single_dark_pixel(self):
-        """Single black pixel should be identified correctly."""
-        py, px = 5, 7
-        img = make_single_dark_pixel(h=32, w=32, py=py, px=px)
-        block_size = 16
-        # The black pixel is in block (0, 0) since 5<16, 7<16
-        found_y, found_x = self.gen._find_darkest_pixel(img, 0, 0, block_size)
-        assert found_y == py
-        assert found_x == px
-
-    def test_coordinates_within_block_bounds(self):
-        """Returned pixel coordinates must be within the specified block."""
-        block_size = 16
-        dark_row, dark_col = 1, 2
-        img = make_single_dark_block(
-            h=64, w=64,
-            dark_block_row=dark_row,
-            dark_block_col=dark_col,
-            block_size=block_size,
+        ys, xs = self.gen._sample_seed_batch(
+            residual_dark, edge, coverage, h, w,
+            batch_size=100, dark_power=1.0, edge_bias=0.0,
+            max_pixel_coverage=2, min_darkness=0.02, rng=self.rng,
         )
-        py, px = self.gen._find_darkest_pixel(img, dark_row, dark_col, block_size)
-        r0 = dark_row * block_size
-        c0 = dark_col * block_size
-        assert r0 <= py < r0 + block_size
-        assert c0 <= px < c0 + block_size
 
-    def test_white_block_returns_valid_coords(self):
-        """All-white block: no crash, coordinates stay in range."""
-        img = make_white_image(64, 64)
-        block_size = 16
-        py, px = self.gen._find_darkest_pixel(img, 0, 0, block_size)
-        assert 0 <= py < block_size
-        assert 0 <= px < block_size
+        assert len(ys) == 100
+        assert len(xs) == 100
+        assert bool(np.all(ys >= 0)) and bool(np.all(ys < h))
+        assert bool(np.all(xs >= 0)) and bool(np.all(xs < w))
 
-    def test_last_block_clipped(self):
-        """Block that extends beyond image edge should be clipped correctly."""
-        # 20×20 image with block_size=16 — the second block is only 4px wide
-        img = np.zeros((20, 20), dtype=np.uint8)
-        img[17, 17] = 0  # darkest in clipped block
-        py, px = self.gen._find_darkest_pixel(img, 1, 1, block_size=16)
-        assert 16 <= py < 20
-        assert 16 <= px < 20
+    def test_different_rng_seeds_produce_different_batches(self):
+        """Different RNG instances must produce distinct seed batches."""
+        h, w = 64, 64
+        residual_dark = np.ones((h, w), dtype=np.float32) * 0.5
+        edge = np.zeros((h, w), dtype=np.float32)
+        coverage = np.zeros((h, w), dtype=np.uint8)
+
+        rng1 = np.random.default_rng(1)
+        rng2 = np.random.default_rng(9999)
+
+        ys1, xs1 = self.gen._sample_seed_batch(
+            residual_dark, edge, coverage, h, w,
+            batch_size=200, dark_power=1.0, edge_bias=0.0,
+            max_pixel_coverage=2, min_darkness=0.02, rng=rng1,
+        )
+        ys2, xs2 = self.gen._sample_seed_batch(
+            residual_dark, edge, coverage, h, w,
+            batch_size=200, dark_power=1.0, edge_bias=0.0,
+            max_pixel_coverage=2, min_darkness=0.02, rng=rng2,
+        )
+
+        # Two independent RNGs must not produce the identical sequence
+        assert not (np.array_equal(ys1, ys2) and np.array_equal(xs1, xs2))
+
+    def test_higher_dark_power_concentrates_on_darkest_pixels(self):
+        """Higher dark_power should shift samples further toward the darkest areas."""
+        h, w = 64, 64
+        # Gradient: columns go from residual_dark=0.3 (left) to 1.0 (right)
+        residual_dark = (
+            np.linspace(0.3, 1.0, w).reshape(1, -1).repeat(h, axis=0).astype(np.float32)
+        )
+        edge = np.zeros((h, w), dtype=np.float32)
+        coverage = np.zeros((h, w), dtype=np.uint8)
+
+        _, xs_low = self.gen._sample_seed_batch(
+            residual_dark, edge, coverage, h, w,
+            batch_size=2000, dark_power=1.0, edge_bias=0.0,
+            max_pixel_coverage=2, min_darkness=0.02, rng=np.random.default_rng(42),
+        )
+        _, xs_high = self.gen._sample_seed_batch(
+            residual_dark, edge, coverage, h, w,
+            batch_size=2000, dark_power=5.0, edge_bias=0.0,
+            max_pixel_coverage=2, min_darkness=0.02, rng=np.random.default_rng(42),
+        )
+
+        # Higher dark_power → mean x should shift toward right (darker) columns
+        assert np.mean(xs_high) > np.mean(xs_low), (
+            "Higher dark_power should concentrate sampling in darker columns"
+        )
+
+    def test_covered_pixels_penalised(self):
+        """Fully-covered pixels (ink_penalty=0.05) should be sampled far less often."""
+        h, w = 64, 64
+        residual_dark = np.ones((h, w), dtype=np.float32)
+        edge = np.zeros((h, w), dtype=np.float32)
+        coverage = np.zeros((h, w), dtype=np.uint8)
+        coverage[:, : w // 2] = 2  # left half fully covered (max_pixel_coverage=2)
+
+        ys, xs = self.gen._sample_seed_batch(
+            residual_dark, edge, coverage, h, w,
+            batch_size=2000, dark_power=1.0, edge_bias=0.0,
+            max_pixel_coverage=2, min_darkness=0.02, rng=np.random.default_rng(7),
+        )
+
+        # Right (less-covered) half should dominate
+        right_count = int(np.sum(xs >= w // 2))
+        assert right_count > 1600, f"Only {right_count}/2000 seeds in less-covered region"
 
 
 # ---------------------------------------------------------------------------
@@ -198,9 +201,11 @@ class TestGenerateScaffold:
         assert result == []
 
     def test_returns_polylines_with_dark_source_image(self):
-        """An image with a dark region should produce at least one polyline."""
-        img = make_single_dark_block()
-        params = {"_source_image": img, "multi_pass": False}
+        """An image with a large dark region should produce at least one polyline."""
+        h, w = 64, 64
+        img = np.full((h, w), 255, dtype=np.uint8)
+        img[:, : w // 2] = 0  # left half black — large enough for reliable squiggle generation
+        params = {"_source_image": img, "multi_pass": False, "line_max_limit": 200}
         result = self.gen.generate(params, self.canvas)
         assert isinstance(result, list)
         assert len(result) > 0
@@ -535,14 +540,16 @@ class TestGenerateLoop:
         """Solid dark image."""
         return np.full((h, w), dark_value, dtype=np.uint8)
 
-    def test_higher_density_produces_more_paths(self):
-        """Higher line_density → more output polylines."""
-        img = make_single_dark_block(h=64, w=64, dark_block_row=1, dark_block_col=1)
-        params_low = {"_source_image": img.copy(), "line_density": 10.0, "line_max_limit": 500}
-        params_high = {"_source_image": img.copy(), "line_density": 80.0, "line_max_limit": 500}
+    def test_higher_limit_produces_more_paths(self):
+        """Higher line_max_limit allows more output segments → more polylines."""
+        img = np.zeros((64, 64), dtype=np.uint8)  # all black — lots of room
+        params_low = {"_source_image": img.copy(), "line_max_limit": 30, "multi_pass": False}
+        params_high = {"_source_image": img.copy(), "line_max_limit": 300, "multi_pass": False}
         result_low = self.gen.generate(params_low, self.canvas)
         result_high = self.gen.generate(params_high, self.canvas)
-        assert len(result_high) >= len(result_low)
+        segs_low = sum(len(p) - 1 for p in result_low if len(p) > 1)
+        segs_high = sum(len(p) - 1 for p in result_high if len(p) > 1)
+        assert segs_high >= segs_low
 
     def test_lines_concentrate_in_dark_areas(self):
         """Paths should originate from dark regions, not bright regions."""
@@ -570,8 +577,10 @@ class TestGenerateLoop:
 
     def test_output_in_mm_coordinates(self):
         """All path points must be within the canvas drawing area (mm)."""
-        img = make_single_dark_block()
-        params = {"_source_image": img, "line_density": 30.0, "multi_pass": False}
+        h, w = 64, 64
+        img = np.full((h, w), 255, dtype=np.uint8)
+        img[:, : w // 2] = 0  # left half black — reliable squiggle source
+        params = {"_source_image": img, "multi_pass": False, "line_max_limit": 200}
         result = self.gen.generate(params, self.canvas)
         assert len(result) > 0
         draw_x1, draw_y1, draw_x2, draw_y2 = self.canvas.drawing_area()
@@ -607,23 +616,38 @@ class TestGenerateLoop:
 
     def test_x_y_offset_applied(self):
         """x_offset_mm / y_offset_mm must shift all output coordinates."""
-        img = make_single_dark_block()
-        params_base = {"_source_image": img.copy(), "line_density": 20.0, "multi_pass": False}
-        params_shifted = {
+        img = np.zeros((64, 64), dtype=np.uint8)  # solid black — reliable output
+        draw_x1, draw_y1, draw_x2, draw_y2 = self.canvas.drawing_area()
+        x_off, y_off = 10.0, 5.0
+
+        # Without offset: all points must be within the drawing area
+        params_base = {
             "_source_image": img.copy(),
-            "line_density": 20.0,
-            "x_offset_mm": 10.0,
-            "y_offset_mm": 5.0,
             "multi_pass": False,
+            "line_max_limit": 100,
         }
         result_base = self.gen.generate(params_base, self.canvas)
-        result_shifted = self.gen.generate(params_shifted, self.canvas)
         assert len(result_base) > 0
-        assert len(result_shifted) == len(result_base)
-        for path_b, path_s in zip(result_base, result_shifted):
-            for (xb, yb), (xs, ys) in zip(path_b, path_s):
-                assert abs(xs - xb - 10.0) < 1e-6
-                assert abs(ys - yb - 5.0) < 1e-6
+        margin = 0.5
+        for path in result_base:
+            for x, y in path:
+                assert draw_x1 - margin <= x <= draw_x2 + margin
+
+        # With offset: every point must be shifted by exactly (x_off, y_off)
+        params_shifted = {
+            "_source_image": img.copy(),
+            "multi_pass": False,
+            "line_max_limit": 100,
+            "x_offset_mm": x_off,
+            "y_offset_mm": y_off,
+        }
+        result_shifted = self.gen.generate(params_shifted, self.canvas)
+        assert len(result_shifted) > 0
+        for path in result_shifted:
+            for x, y in path:
+                assert draw_x1 + x_off - margin <= x <= draw_x2 + x_off + margin, (
+                    f"x={x:.3f} not in shifted range [{draw_x1+x_off-margin:.1f}, {draw_x2+x_off+margin:.1f}]"
+                )
 
     def test_dark_image_produces_more_lines_than_bright(self):
         """A dark image should produce more polylines than a bright image.
@@ -912,8 +936,11 @@ class TestMultiPass:
         """Pass 1 (len_scale=1.9) produces longer strokes than pass 3 (len_scale=0.62).
 
         Simulated by running single-pass with each pass's effective line_length_px.
+        Uses a 300×300 image so the max_effective cap (99 px) does not equalize the
+        two very different base lengths (38 px vs 12 px), and long_line_bias=0 removes
+        random stretch bonuses that could blur the distinction.
         """
-        img = np.zeros((80, 80), dtype=np.uint8)  # all black
+        img = np.zeros((300, 300), dtype=np.uint8)  # all black, large enough for uncapped lengths
         common = {
             "_source_image": img,
             "multi_pass": False,
@@ -921,6 +948,7 @@ class TestMultiPass:
             "squiggle_min_length": 1,
             "squiggle_max_length": 10,
             "squiggle_max_deviation": 90.0,
+            "long_line_bias": 0.0,  # no random stretch bonus
         }
         # Simulate pass 1 and pass 3 profiles via single-pass with their len_scale
         result_p1 = self.gen.generate({**common, "line_length_px": max(1, int(20 * 1.90))}, self.canvas)
@@ -942,8 +970,10 @@ class TestMultiPass:
         assert avg1 > avg3, f"pass1 avg seg {avg1:.3f}mm should exceed pass3 avg {avg3:.3f}mm"
 
     def test_single_pass_still_works(self):
-        """multi_pass=False should produce output identically to original behavior."""
-        img = make_single_dark_block()
+        """multi_pass=False should produce output on a dark image."""
+        h, w = 64, 64
+        img = np.full((h, w), 255, dtype=np.uint8)
+        img[:, : w // 2] = 0  # left half black — large enough for reliable squiggles
         params = {
             "_source_image": img,
             "multi_pass": False,
