@@ -18,13 +18,11 @@ except ImportError:
     _NUMPY_AVAILABLE = False
 
 from plottter.generators import register_generator
-from plottter.generators._helpers import _load_source_image
 from plottter.generators.base import (
     BoolParam,
     ChoiceParam,
     FloatParam,
     Generator,
-    ImageParam,
     IntParam,
     Parameter,
     Preset,
@@ -105,6 +103,7 @@ class DotGridGenerator(Generator):
 
     name = "Dot Grid"
     category = "math"
+    uses_source_image = True
 
     def get_parameters(self) -> list[Parameter]:
         return [
@@ -240,15 +239,6 @@ class DotGridGenerator(Generator):
                 description=(
                     "Nudge grid points toward darker image areas — "
                     "0 = regular grid, 1 = maximum attraction"
-                ),
-            ),
-            ImageParam(
-                name="_source_image",
-                label="Source Image",
-                randomizable=False,
-                description=(
-                    "Image used to drive point convergence (dark areas attract grid points). "
-                    "Only active when Convergence > 0."
                 ),
             ),
             FloatParam(
@@ -408,7 +398,7 @@ class DotGridGenerator(Generator):
         filled = bool(params.get("filled", False))
         pen_width = float(params.get("pen_width_mm", 0.3))
         convergence = float(params.get("convergence", 0.0))
-        source_image = _load_source_image(params.get("_source_image"))
+        source_image: np.ndarray | None = params.get("_source_image")
         x_off = float(params.get("x_offset_mm", 0.0))
         y_off = float(params.get("y_offset_mm", 0.0))
 

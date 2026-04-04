@@ -2610,15 +2610,11 @@ class SettingsPanel(QScrollArea):
         self._update_param_visibility()
 
         # For Math Art generators: show image source + preprocessing panels when the
-        # generator has any ImageParam (any future math generator with image input gets
-        # the full panel automatically).
+        # generator declares uses_source_image = True.
         if self._current_mode == "Math Art":
-            from plottter.generators.base import ImageParam as _ImageParam
-            has_image_param = any(
-                isinstance(p, _ImageParam) for p in generator.get_parameters()
-            )
-            self._image_source_group.setVisible(has_image_param)
-            self._preprocessing_group.setVisible(has_image_param)
+            has_image_input = getattr(generator, "uses_source_image", False)
+            self._image_source_group.setVisible(has_image_input)
+            self._preprocessing_group.setVisible(has_image_input)
 
     def _update_param_visibility(self, *_args: Any) -> None:
         """Show/hide parameter rows based on their visible_when conditions."""
@@ -3054,6 +3050,13 @@ class SettingsPanel(QScrollArea):
         from plottter.generators.scene3d_generator import Scene3DGenerator
         if isinstance(self._generator, Scene3DGenerator):
             params["_sibling_3d_shapes"] = self._build_sibling_3d_shapes(layer_id)
+
+        # Inject preprocessed image for Math Art generators that use source image
+        if (
+            self._current_mode == "Math Art"
+            and getattr(self._generator, "uses_source_image", False)
+        ):
+            params["_source_image"] = self._preprocessed_image
 
         self._worker = GeneratorWorker(self._generator, params, canvas)
         self._worker.progress.connect(self._on_progress)

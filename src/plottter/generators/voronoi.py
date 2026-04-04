@@ -13,13 +13,11 @@ import numpy as np
 from shapely.geometry import LineString, box as shapely_box
 
 from plottter.generators import register_generator
-from plottter.generators._helpers import _load_source_image
 from plottter.generators.base import (
     BoolParam,
     ChoiceParam,
     FloatParam,
     Generator,
-    ImageParam,
     IntParam,
     Parameter,
     Preset,
@@ -673,6 +671,7 @@ class VoronoiGenerator(Generator):
 
     name = "Voronoi / Delaunay"
     category = "math"
+    uses_source_image = True
 
     def get_parameters(self) -> list[Parameter]:
         return [
@@ -781,13 +780,6 @@ class VoronoiGenerator(Generator):
                     "Modulate seed point density by image brightness. "
                     "Dark areas get more seeds; bright areas get fewer."
                 ),
-            ),
-            ImageParam(
-                name="_source_image",
-                label="Source Image",
-                randomizable=False,
-                visible_when={"image_density": [True]},
-                description="Image used to drive seed density (dark → dense, bright → sparse).",
             ),
             FloatParam(
                 name="brightness",
@@ -985,7 +977,7 @@ class VoronoiGenerator(Generator):
         # Prepare density image when image-density mode is active
         density_img: np.ndarray | None = None
         if image_density:
-            source: np.ndarray | None = _load_source_image(params.get("_source_image"))
+            source: np.ndarray | None = params.get("_source_image")
             if source is not None:
                 density_img = _prepare_density_image(source, params, draw_w, draw_h)
 

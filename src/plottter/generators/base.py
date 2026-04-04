@@ -110,6 +110,9 @@ class Generator(ABC):
 
     name: str = ""
     category: str = ""
+    #: Set to True in generators that accept a preprocessed image via
+    #: ``params["_source_image"]`` (numpy array injected by the settings panel).
+    uses_source_image: bool = False
 
     @abstractmethod
     def get_parameters(self) -> list[Parameter]:
