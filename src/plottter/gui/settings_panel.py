@@ -620,6 +620,19 @@ class SettingsPanel(QScrollArea):
         self._blur_slider.valueChanged.connect(self._on_preprocessing_changed)
         prep_form.addRow(QLabel("Blur"), self._blur_slider)
 
+        # Unsharp mask: slider value 0–50 → amount 0.0–5.0
+        self._unsharp_slider = QSlider(Qt.Orientation.Horizontal)
+        self._unsharp_slider.setRange(0, 50)
+        self._unsharp_slider.setValue(0)
+        self._unsharp_slider.valueChanged.connect(self._on_preprocessing_changed)
+        self._unsharp_val_label = QLabel("0.0")
+        unsharp_row = QHBoxLayout()
+        unsharp_row.addWidget(self._unsharp_slider)
+        unsharp_row.addWidget(self._unsharp_val_label)
+        unsharp_row_widget = QWidget()
+        unsharp_row_widget.setLayout(unsharp_row)
+        prep_form.addRow(QLabel("Unsharp Mask"), unsharp_row_widget)
+
         # Threshold: checkbox enables it; slider sets value 0–255
         threshold_row_widget = QWidget()
         threshold_row = QHBoxLayout(threshold_row_widget)
@@ -4303,6 +4316,7 @@ class SettingsPanel(QScrollArea):
 
     def _on_preprocessing_changed(self, *_args: Any) -> None:
         self._gamma_val_label.setText(f"{self._gamma_slider.value() / 100:.2f}")
+        self._unsharp_val_label.setText(f"{self._unsharp_slider.value() / 10:.1f}")
         self._preprocess_timer.start()
 
     def _reset_image_size_to_canvas(self) -> None:
@@ -4375,6 +4389,9 @@ class SettingsPanel(QScrollArea):
         blur = self._blur_slider.value()
         if blur > 0:
             params["blur"] = float(blur)
+        unsharp = self._unsharp_slider.value() / 10.0
+        if unsharp > 0:
+            params["unsharp_amount"] = unsharp
         if self._threshold_check.isChecked():
             params["threshold"] = float(self._threshold_slider.value())
         if self._invert_check.isChecked():

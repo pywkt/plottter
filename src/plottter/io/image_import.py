@@ -223,16 +223,17 @@ def preprocess(image: np.ndarray, params: dict[str, Any]) -> np.ndarray:
     ============  ====================  ========================
     Key           Type                  Description
     ============  ====================  ========================
-    brightness    float −100 … 100      Default 0 (no change)
-    contrast      float −100 … 100      Default 0 (no change)
-    gamma         float 0.1 … 5.0       Default 1.0 (no change)
-    blur          float ≥ 0             Default 0 (disabled)
-    sharpen       float ≥ 0             Default 0 (disabled)
-    remove_background float|None        Default None (disabled)
-    crop_width    float                 Both crop_* required
-    crop_height   float                 Both crop_* required
-    threshold     float 0-255 | None    Default None (disabled)
-    invert        bool                  Default False
+    brightness      float −100 … 100      Default 0 (no change)
+    contrast        float −100 … 100      Default 0 (no change)
+    gamma           float 0.1 … 5.0       Default 1.0 (no change)
+    blur            float ≥ 0             Default 0 (disabled)
+    sharpen         float ≥ 0             Default 0 (disabled)
+    unsharp_amount  float 0.0 … 5.0       Default 0 (disabled)
+    remove_background float|None          Default None (disabled)
+    crop_width      float                 Both crop_* required
+    crop_height     float                 Both crop_* required
+    threshold       float 0-255 | None    Default None (disabled)
+    invert          bool                  Default False
     ============  ====================  ========================
     """
     result = image.copy()
@@ -256,6 +257,12 @@ def preprocess(image: np.ndarray, params: dict[str, Any]) -> np.ndarray:
     sharpen = float(params.get("sharpen", 0))
     if sharpen > 0:
         result = apply_sharpen(result, sharpen)
+
+    unsharp_amount = float(params.get("unsharp_amount", 0))
+    if unsharp_amount > 0:
+        import cv2
+        blurred = cv2.GaussianBlur(result, (0, 0), 2)
+        result = cv2.addWeighted(result, 1 + unsharp_amount, blurred, -unsharp_amount, 0)
 
     bg_tol = params.get("remove_background", None)
     if bg_tol is not None:
