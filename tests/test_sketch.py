@@ -250,7 +250,7 @@ class TestGenerateScaffold:
     def test_presets_defined(self):
         presets = self.gen.get_presets()
         assert len(presets) >= 1
-        assert presets[0].name == "Default"
+        assert presets[0].name == "Quick Sketch"
 
     def test_new_parameters_defined(self):
         """squiggle params, angle_tests, line_length_px must exist."""
@@ -726,12 +726,15 @@ class TestPresets:
 
     def test_preset_names(self):
         names = [p.name for p in self.gen.get_presets()]
-        assert "Default" in names
+        assert "Quick Sketch" in names
         assert "Portrait" in names
-        assert "Contour Sketch" in names
-        assert "Dense Crosshatch" in names
+        assert "Contour Portrait" in names
+        assert "Dense Ink" in names
+        assert "Crosshatch" in names
         assert "Loose Sketch" in names
         assert "Edge Trace" in names
+        assert "Scribble" in names
+        assert "Hybrid Portrait" in names
 
     def test_all_presets_generate_valid_output(self):
         """Every preset must produce a non-empty list of polylines on a dark image."""
