@@ -353,31 +353,39 @@ class TestFindDarkestLine:
         assert 0 <= end_x < 64
         assert 0 <= end_y < 64
 
-    def test_best_direction_lower_brightness_than_worst(self):
-        """The chosen direction should have lower (or equal) avg brightness
-        than any other valid direction."""
+    def test_best_direction_highest_score(self):
+        """The chosen direction should have the highest score among all valid
+        candidates using the weighted formula: dark*1.45 + dark_peak*0.45."""
         rng = np.random.default_rng(99)
         img = rng.integers(0, 256, (64, 64), dtype=np.uint8)
         angle_tests = 8
         line_length_px = 8
         result = self.gen._find_darkest_line(img, 32, 32, angle_tests, line_length_px)
         assert result is not None
-        best_end_x, best_end_y, best_avg = result
+        best_end_x, best_end_y, _ = result
 
-        # Manually compute avg brightness for each candidate; best must win
+        # Replicate the scoring logic (no maps → edge_strength=0, cov=0)
         h, w = img.shape[:2]
+        scores: dict[tuple[int, int], float] = {}
         for i in range(angle_tests):
             angle = i * 2.0 * np.pi / angle_tests
             ex = 32 + int(round(np.cos(angle) * line_length_px))
             ey = 32 + int(round(np.sin(angle) * line_length_px))
             if not (0 <= ey < h and 0 <= ex < w):
                 continue
-            pixels = list(self.gen._bresenham_line(32, 32, ex, ey))
-            if not all(0 <= py < h and 0 <= px < w for px, py in pixels):
-                continue
-            avg = sum(int(img[py, px]) for px, py in pixels) / len(pixels)
-            assert best_avg <= avg + 1e-9, (
-                f"Best avg {best_avg:.1f} > candidate avg {avg:.1f} for angle {i}"
+            dx, dy = ex - 32, ey - 32
+            span = max(abs(dx), abs(dy))
+            num_samples = max(5, min(15, int(span / 2) + 2))
+            sxs = np.clip(np.round(np.linspace(32, ex, num_samples)).astype(np.int32), 0, w - 1)
+            sys_arr = np.clip(np.round(np.linspace(32, ey, num_samples)).astype(np.int32), 0, h - 1)
+            dark_vals = 1.0 - img[sys_arr, sxs].astype(np.float32) / 255.0
+            score = float(np.mean(dark_vals)) * 1.45 + float(np.max(dark_vals)) * 0.45
+            scores[(ex, ey)] = score
+
+        best_score = scores[(best_end_x, best_end_y)]
+        for (ex, ey), score in scores.items():
+            assert best_score >= score - 1e-9, (
+                f"Best score {best_score:.4f} < candidate score {score:.4f} for ({ex},{ey})"
             )
 
     def test_bresenham_circle_mode_angle_tests_36(self):

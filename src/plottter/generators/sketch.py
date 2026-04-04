@@ -473,73 +473,56 @@ class SketchGenerator(Generator):
         cur_y: int,
         angle_tests: int,
         line_length_px: int,
-        sobel_x: np.ndarray | None = None,
-        sobel_y: np.ndarray | None = None,
-        edge_map: np.ndarray | None = None,
-        directionality: float = 0.0,
-        edge_power: float = 0.0,
+        residual_dark: np.ndarray | None = None,
+        edge_normalized: np.ndarray | None = None,
+        coverage: np.ndarray | None = None,
+        max_pixel_coverage: int = 1,
     ) -> tuple[int, int, float] | None:
         """Find the single best line segment from ``(cur_x, cur_y)``.
 
         Tests candidate endpoints at distance ``line_length_px`` from the
-        current position and returns the one whose full Bresenham line has
-        the lowest average brightness.
+        current position. Scoring uses a weighted formula combining residual
+        darkness, peak darkness, edge strength, and coverage penalty.
 
         Candidate generation:
         - If ``angle_tests < 36``: test ``angle_tests`` evenly-spaced angles.
         - If ``angle_tests >= 36``: test all integer points on the Bresenham
           circle of radius ``line_length_px`` (full pixel-resolution coverage).
 
-        Scoring blends three components (same weights as the legacy tracer):
-        - **luminance**: average brightness along the Bresenham line (lower = darker).
-        - **directionality**: alignment with local iso-brightness contour tangent.
-        - **edge_power**: average edge density along the line.
+        Scoring formula (higher = better)::
+
+            score = dark * 1.45 + dark_peak * 0.45 + edge_strength * 0.24 - cov * 1.08
+
+        Samples are drawn via ``np.linspace`` along each candidate line.
 
         Parameters
         ----------
         lightened:
-            2-D uint8 grayscale image (0=black, 255=white).
+            2-D uint8 grayscale image (0=black, 255=white). Used to derive
+            darkness when ``residual_dark`` is not provided, and to compute
+            ``avg_brightness`` for the squiggle stopping check.
         cur_x, cur_y:
             Current pixel position (column, row).
         angle_tests:
             Number of candidate angles (< 36) or Bresenham-circle mode (>= 36).
         line_length_px:
             Radius / length of each candidate line segment in pixels.
-        sobel_x, sobel_y:
-            Float32 Sobel gradient arrays. Required when *directionality* > 0.
-        edge_map:
-            uint8 binary edge map (0 or 255). Required when *edge_power* > 0.
-        directionality, edge_power:
-            Blend weights (0–100) for contour-following / edge-attraction.
+        residual_dark:
+            Float32 array [0, 1] of remaining darkness (1=black, 0=white).
+        edge_normalized:
+            Float32 normalized Sobel magnitude [0, 1].
+        coverage:
+            uint8 array counting how many accepted paths touched each pixel.
+        max_pixel_coverage:
+            Maximum coverage count used to normalize the coverage penalty.
 
         Returns
         -------
         ``(end_x, end_y, avg_brightness)`` for the winning endpoint, or
-        ``None`` if no valid candidate exists.
+        ``None`` if no valid candidate exists.  ``avg_brightness`` is the
+        mean of ``lightened`` values along the sampled points (0–255 range).
         """
         h, w = lightened.shape[:2]
-
-        # Normalised blending weights
-        lum_power = max(0.0, 100.0 - directionality - edge_power)
-        total_power = lum_power + directionality + edge_power
-        if total_power < 1e-9:
-            lum_w, dir_w, edge_w = 1.0, 0.0, 0.0
-        else:
-            lum_w = lum_power / total_power
-            dir_w = directionality / total_power
-            edge_w = edge_power / total_power
-
-        use_dir = dir_w > 1e-6 and sobel_x is not None and sobel_y is not None
-        use_edge = edge_w > 1e-6 and edge_map is not None
-
-        # Gradient at current position for directionality scoring
-        gx_cur = gy_cur = grad_mag = 0.0
-        if use_dir:
-            iy_cur = max(0, min(h - 1, cur_y))
-            ix_cur = max(0, min(w - 1, cur_x))
-            gx_cur = float(sobel_x[iy_cur, ix_cur])
-            gy_cur = float(sobel_y[iy_cur, ix_cur])
-            grad_mag = (gx_cur ** 2 + gy_cur ** 2) ** 0.5
 
         # Generate candidate endpoints
         r = max(1, line_length_px)
@@ -570,49 +553,55 @@ class SketchGenerator(Generator):
                 ey = cur_y + int(round(np.sin(angle) * r))
                 candidates.append((ex, ey))
 
-        best_score = float("inf")
+        best_score = float("-inf")
         best_end: tuple[int, int] | None = None
         best_avg_brightness = float("inf")
+
+        denom_cov = 1.0 / max(1, max_pixel_coverage)
 
         for ex, ey in candidates:
             # Skip endpoints outside image bounds
             if not (0 <= ey < h and 0 <= ex < w):
                 continue
 
-            # Trace Bresenham line; accumulate brightness (and optional edge) sum
-            pixel_sum = 0
-            pixel_count = 0
-            edge_sum = 0
-            valid = True
+            dx = ex - cur_x
+            dy = ey - cur_y
+            span = max(abs(dx), abs(dy))
+            num_samples = max(5, min(15, int(span / 2) + 2))
 
-            for px, py in SketchGenerator._bresenham_line(cur_x, cur_y, ex, ey):
-                if not (0 <= py < h and 0 <= px < w):
-                    valid = False
-                    break
-                pixel_sum += int(lightened[py, px])
-                pixel_count += 1
-                if use_edge:
-                    edge_sum += int(edge_map[py, px])
+            sxs_f = np.linspace(cur_x, ex, num_samples)
+            sys_f = np.linspace(cur_y, ey, num_samples)
+            sxs = np.clip(np.round(sxs_f).astype(np.int32), 0, w - 1)
+            sys_arr = np.clip(np.round(sys_f).astype(np.int32), 0, h - 1)
 
-            if not valid or pixel_count == 0:
-                continue
+            # Darkness component
+            if residual_dark is not None:
+                dark_vals = residual_dark[sys_arr, sxs]
+            else:
+                dark_vals = 1.0 - lightened[sys_arr, sxs].astype(np.float32) / 255.0
+            dark = float(np.mean(dark_vals))
+            dark_peak = float(np.max(dark_vals))
 
-            avg_brightness = pixel_sum / pixel_count
-            score = lum_w * (avg_brightness / 255.0)
+            # Edge component
+            edge_strength = (
+                float(np.mean(edge_normalized[sys_arr, sxs]))
+                if edge_normalized is not None
+                else 0.0
+            )
 
-            if use_dir and grad_mag > 1e-6:
-                ddx = ex - cur_x
-                ddy = ey - cur_y
-                seg_mag = (ddx ** 2 + ddy ** 2) ** 0.5
-                if seg_mag > 1e-6:
-                    # Alignment with contour tangent (-gy, gx)
-                    alignment = abs(-gy_cur * (ddx / seg_mag) + gx_cur * (ddy / seg_mag)) / grad_mag
-                    score -= dir_w * alignment
+            # Coverage penalty
+            cov = (
+                float(np.mean(coverage[sys_arr, sxs].astype(np.float32) * denom_cov))
+                if coverage is not None
+                else 0.0
+            )
 
-            if use_edge:
-                score -= edge_w * (edge_sum / pixel_count / 255.0)
+            score = dark * 1.45 + dark_peak * 0.45 + edge_strength * 0.24 - cov * 1.08
 
-            if score < best_score:
+            # avg_brightness from lightened for squiggle stopping check
+            avg_brightness = float(np.mean(lightened[sys_arr, sxs].astype(np.float32)))
+
+            if score > best_score:
                 best_score = score
                 best_end = (ex, ey)
                 best_avg_brightness = avg_brightness
@@ -861,27 +850,15 @@ class SketchGenerator(Generator):
         # After max_pixel_coverage hits, residual reaches 0 for that pixel.
         lighten_amount = 1.0 / max(1, max_pixel_coverage)
 
-        # --- precompute gradient and edge maps ---
-        sobel_x_map: np.ndarray | None = None
-        sobel_y_map: np.ndarray | None = None
-        edge_map: np.ndarray | None = None
-
-        if directionality > 0.0:
-            try:
-                import cv2
-                sobel_x_map = cv2.Sobel(img, cv2.CV_32F, 1, 0, ksize=3)
-                sobel_y_map = cv2.Sobel(img, cv2.CV_32F, 0, 1, ksize=3)
-            except ImportError:
-                gy_np, gx_np = np.gradient(img.astype(np.float32))
-                sobel_x_map = gx_np
-                sobel_y_map = gy_np
-
-        if edge_power > 0.0:
-            try:
-                import cv2
-                edge_map = cv2.Canny(img, 50, 150)
-            except ImportError:
-                pass  # Canny unavailable without OpenCV; edge_power has no effect
+        # --- precompute normalized Sobel edge map ---
+        try:
+            import cv2
+            _gx = cv2.Sobel(img, cv2.CV_32F, 1, 0, ksize=3)
+            _gy = cv2.Sobel(img, cv2.CV_32F, 0, 1, ksize=3)
+        except ImportError:
+            _gy, _gx = np.gradient(img.astype(np.float32))
+        _mag = np.sqrt(_gx ** 2 + _gy ** 2).astype(np.float32)
+        edge_normalized = (_mag / (_mag.max() + 1e-8)).astype(np.float32)
 
         # --- coordinate mapping: pixel → mm ---
         rect_x1, rect_y1, rect_x2, rect_y2 = img_rect
@@ -954,11 +931,10 @@ class SketchGenerator(Generator):
                     line_result = self._find_darkest_line(
                         lightened, cur_x, cur_y,
                         angle_tests, pass_line_length,
-                        sobel_x=sobel_x_map,
-                        sobel_y=sobel_y_map,
-                        edge_map=edge_map,
-                        directionality=directionality,
-                        edge_power=edge_power,
+                        residual_dark=residual_dark,
+                        edge_normalized=edge_normalized,
+                        coverage=coverage,
+                        max_pixel_coverage=max_pixel_coverage,
                     )
                     if line_result is None:
                         break
