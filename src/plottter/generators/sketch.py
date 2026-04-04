@@ -206,6 +206,15 @@ class SketchGenerator(Generator):
                 default=18,
                 description="Maximum segments chained without pen lift",
             ),
+            FloatParam(
+                name="long_line_bias",
+                label="Long Line Bias",
+                min=0.0,
+                max=1.0,
+                step=0.05,
+                default=0.5,
+                description="Probability of random long-line bonus in dark areas — 0 = uniform length, 1 = frequent long strokes",
+            ),
             BoolParam(
                 name="multi_pass",
                 label="Multi-Pass",
@@ -298,6 +307,7 @@ class SketchGenerator(Generator):
             "coverage_radius": 1,
             "continuous": True,
             "chain_max": 18,
+            "long_line_bias": 0.5,
             "multi_pass": True,
             "x_offset_mm": 0.0,
             "y_offset_mm": 0.0,
@@ -842,6 +852,9 @@ class SketchGenerator(Generator):
         coverage = np.zeros((img_h, img_w), dtype=np.uint8)
         residual_dark = np.clip(1.0 - img.astype(np.float32) / 255.0, 0.0, 1.0)
 
+        # Original darkness — used for step-length modulation (constant, not updated during generation).
+        orig_dark = residual_dark.copy()
+
         # Internal constants (not exposed as parameters)
         block_size = 8
         brightness_ceiling = 250
@@ -869,6 +882,7 @@ class SketchGenerator(Generator):
         lighten_amount = 1.0 / max(1, max_pixel_coverage)
         continuous = bool(params.get("continuous", True))
         chain_max = int(params.get("chain_max", 18))
+        long_line_bias = float(params.get("long_line_bias", 0.5))
         _min_dark_threshold = 0.02
 
         # --- precompute normalized Sobel edge map ---
@@ -965,9 +979,23 @@ class SketchGenerator(Generator):
                 chain_start_len = len(current_chain)
 
                 for _ in range(max_segs_this):
+                    # Variable step length by original darkness (not residual, so it's
+                    # independent of coverage/lighten settings and stays constant per pixel)
+                    local_dark = float(orig_dark[int(cur_y), int(cur_x)])
+                    effective_length = int(round(pass_line_length * (0.85 + local_dark * 1.15)))
+                    if long_line_bias > 0.0:
+                        long_prob = long_line_bias * (0.30 + 0.70 * local_dark)
+                        if np.random.random() < long_prob:
+                            effective_length = int(round(effective_length * np.random.uniform(1.8, 3.8)))
+                    # Cap so candidates stay within image bounds.
+                    # Using //3 - 1 ensures 64×64 images cap at 20 (≈ pass_line_length default),
+                    # preserving original behaviour while giving room for bonus on larger images.
+                    max_effective = max(1, min(img_w, img_h) // 3 - 1)
+                    effective_length = max(1, min(effective_length, max_effective))
+
                     line_result = self._find_darkest_line(
                         lightened, cur_x, cur_y,
-                        angle_tests, pass_line_length,
+                        angle_tests, effective_length,
                         residual_dark=residual_dark,
                         edge_normalized=edge_normalized,
                         coverage=coverage,

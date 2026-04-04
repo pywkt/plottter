@@ -843,6 +843,8 @@ class TestCoverageMap:
             "squiggle_min_length": 1,
             "coverage_radius": 1,
             "max_overlap_ratio": 0.55,
+            "multi_pass": False,    # isolate coverage from multi-pass length variation
+            "long_line_bias": 0.0,  # no random bonus — deterministic comparison
         }
         result_low = self.gen.generate(
             {**common, "_source_image": img.copy(), "max_pixel_coverage": 1},
@@ -1118,3 +1120,104 @@ class TestContinuousChaining:
         # Each polyline should have at most squiggle_max_length+1 points
         for path in result:
             assert len(path) <= 5 + 1, f"Path has {len(path)} points with squiggle_max_length=5"
+
+
+# ---------------------------------------------------------------------------
+# Variable step length by darkness
+# ---------------------------------------------------------------------------
+
+
+class TestVariableStepLength:
+    def setup_method(self):
+        self.gen = SketchGenerator()
+        self.canvas = make_canvas()
+
+    def test_long_line_bias_param_defined(self):
+        """long_line_bias FloatParam must be registered."""
+        names = {p.name for p in self.gen.get_parameters()}
+        assert "long_line_bias" in names
+
+    def test_presets_include_long_line_bias(self):
+        """All presets must include long_line_bias."""
+        for preset in self.gen.get_presets():
+            assert "long_line_bias" in preset.params, (
+                f"Preset '{preset.name}' missing long_line_bias"
+            )
+
+    def test_long_line_bias_zero_no_huge_outliers(self):
+        """long_line_bias=0 means no random bonus — max seg length near 2× base."""
+        # 100×100 image gives cap=33px; with line_length_px=10, base dark=20px,
+        # long_line_bias=1 bonus → 36-76px capped at 33. Ratio 33/20=1.65 > 1.5.
+        img = np.zeros((100, 100), dtype=np.uint8)  # all black
+        common = {
+            "_source_image": img.copy(),
+            "multi_pass": False,
+            "line_max_limit": 300,
+            "squiggle_min_length": 1,
+            "squiggle_max_length": 3,
+            "squiggle_max_deviation": 90.0,
+            "line_length_px": 10,
+            "angle_tests": 8,
+            "continuous": False,
+        }
+        result_no_bonus = self.gen.generate({**common, "long_line_bias": 0.0}, self.canvas)
+        result_max_bonus = self.gen.generate({**common, "long_line_bias": 1.0}, self.canvas)
+
+        assert len(result_no_bonus) > 0
+        assert len(result_max_bonus) > 0
+
+        def max_seg_len_mm(paths):
+            max_len = 0.0
+            for path in paths:
+                for i in range(1, len(path)):
+                    dx = path[i][0] - path[i - 1][0]
+                    dy = path[i][1] - path[i - 1][1]
+                    max_len = max(max_len, (dx * dx + dy * dy) ** 0.5)
+            return max_len
+
+        max_no_bonus = max_seg_len_mm(result_no_bonus)
+        max_with_bonus = max_seg_len_mm(result_max_bonus)
+        # With max_bonus there's a high chance of strokes 1.8-3.8× longer
+        # bias=1.0 in dark: prob = 1.0*(0.30+0.70*1.0) = 1.0 → always bonus
+        # So max_with_bonus should be significantly larger
+        assert max_with_bonus > max_no_bonus * 1.5, (
+            f"long_line_bias=1 max={max_with_bonus:.2f}mm should greatly exceed "
+            f"long_line_bias=0 max={max_no_bonus:.2f}mm"
+        )
+
+    def test_dark_areas_get_longer_strokes_than_bright(self):
+        """Darker image yields longer average segments (local_dark * 1.15 modulation)."""
+        common_params = {
+            "multi_pass": False,
+            "line_max_limit": 300,
+            "squiggle_min_length": 1,
+            "squiggle_max_length": 3,
+            "squiggle_max_deviation": 90.0,
+            "line_length_px": 10,
+            "angle_tests": 8,
+            "continuous": False,
+            "long_line_bias": 0.0,  # no random bonus, pure darkness modulation
+        }
+        dark_img = np.zeros((80, 80), dtype=np.uint8)      # all black → local_dark≈1 → factor≈2.0
+        medium_img = np.full((80, 80), 128, dtype=np.uint8)  # grey → local_dark≈0.5 → factor≈1.425
+
+        result_dark = self.gen.generate({"_source_image": dark_img, **common_params}, self.canvas)
+        result_medium = self.gen.generate({"_source_image": medium_img, **common_params}, self.canvas)
+
+        assert len(result_dark) > 0
+
+        def avg_seg_len_mm(paths):
+            lengths = []
+            for path in paths:
+                for i in range(1, len(path)):
+                    dx = path[i][0] - path[i - 1][0]
+                    dy = path[i][1] - path[i - 1][1]
+                    lengths.append((dx * dx + dy * dy) ** 0.5)
+            return sum(lengths) / len(lengths) if lengths else 0.0
+
+        avg_dark = avg_seg_len_mm(result_dark)
+        avg_medium = avg_seg_len_mm(result_medium) if result_medium else 0.0
+        # Dark image segments should be longer due to higher local_dark factor
+        assert avg_dark > avg_medium, (
+            f"Dark avg seg {avg_dark:.3f}mm should exceed medium avg {avg_medium:.3f}mm"
+        )
