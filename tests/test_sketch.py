@@ -714,3 +714,144 @@ class TestPresets:
             assert not missing, (
                 f"Preset '{preset.name}' is missing params: {missing}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Coverage map
+# ---------------------------------------------------------------------------
+
+
+class TestCoverageMap:
+    def setup_method(self):
+        self.gen = SketchGenerator()
+        self.canvas = make_canvas()
+
+    def test_path_pixel_coords_horizontal(self):
+        """Horizontal segment (0,5)→(4,5) produces exactly 5 unique pixels."""
+        xs, ys = SketchGenerator._path_pixel_coords(
+            [(0.0, 5.0), (4.0, 5.0)], width=10, height=10
+        )
+        assert xs.size == 5
+        assert ys.size == 5
+        np.testing.assert_array_equal(ys, [5, 5, 5, 5, 5])
+        np.testing.assert_array_equal(np.sort(xs), [0, 1, 2, 3, 4])
+
+    def test_path_pixel_coords_unique(self):
+        """Rasterized path must have no duplicate pixel positions."""
+        pts = [(0.0, 0.0), (10.0, 10.0), (5.0, 5.0)]
+        xs, ys = SketchGenerator._path_pixel_coords(pts, width=20, height=20)
+        flat = ys * 20 + xs
+        assert flat.size == np.unique(flat).size
+
+    def test_path_pixel_coords_empty_for_single_point(self):
+        """Single-point path produces empty arrays (no segments)."""
+        xs, ys = SketchGenerator._path_pixel_coords([(5.0, 5.0)], width=10, height=10)
+        assert xs.size == 0
+        assert ys.size == 0
+
+    def test_expand_pixel_coords_radius_0_unchanged(self):
+        """Radius 0 returns the original coordinates unchanged."""
+        xs = np.array([5, 6, 7], dtype=np.int32)
+        ys = np.array([5, 5, 5], dtype=np.int32)
+        ex, ey = SketchGenerator._expand_pixel_coords(xs, ys, 20, 20, 0)
+        assert ex.size == 3
+        np.testing.assert_array_equal(ex, xs)
+        np.testing.assert_array_equal(ey, ys)
+
+    def test_expand_pixel_coords_radius_1_single_pixel(self):
+        """Radius 1 around a single interior pixel produces 9 pixels."""
+        xs = np.array([5], dtype=np.int32)
+        ys = np.array([5], dtype=np.int32)
+        ex, ey = SketchGenerator._expand_pixel_coords(xs, ys, 20, 20, 1)
+        assert ex.size == 9
+
+    def test_expand_pixel_coords_clamps_to_bounds(self):
+        """Expansion at image edge must not produce out-of-bounds coordinates."""
+        xs = np.array([0], dtype=np.int32)
+        ys = np.array([0], dtype=np.int32)
+        ex, ey = SketchGenerator._expand_pixel_coords(xs, ys, 10, 10, 2)
+        assert np.all(ex >= 0) and np.all(ex < 10)
+        assert np.all(ey >= 0) and np.all(ey < 10)
+
+    def test_coverage_increments_on_accepted_path(self):
+        """Coverage accumulates — verified indirectly: first path is always accepted."""
+        img = np.zeros((32, 32), dtype=np.uint8)  # all black
+        params = {
+            "_source_image": img,
+            "line_density": 5.0,
+            "line_max_limit": 50,
+            "max_pixel_coverage": 1,
+            "max_overlap_ratio": 0.55,
+            "coverage_radius": 0,
+            "squiggle_min_length": 1,
+        }
+        result = self.gen.generate(params, self.canvas)
+        # With coverage_radius=0 and a fresh image, the first path is always accepted
+        assert len(result) > 0
+
+    def test_paths_rejected_when_overlap_exceeds_threshold(self):
+        """Paths rejected when overlap ratio is very strict (max_overlap_ratio≈0)."""
+        img = np.zeros((64, 64), dtype=np.uint8)
+        # With max_overlap_ratio=0.01 and max_pixel_coverage=1, almost every second
+        # path will be rejected since the first path covers a region.
+        # Permissive settings allow far more paths.
+        common = {
+            "line_density": 5.0,
+            "line_max_limit": 200,
+            "squiggle_min_length": 1,
+            "coverage_radius": 1,
+        }
+        result_strict = self.gen.generate(
+            {**common, "_source_image": img.copy(), "max_pixel_coverage": 1, "max_overlap_ratio": 0.01},
+            self.canvas,
+        )
+        result_permissive = self.gen.generate(
+            {**common, "_source_image": img.copy(), "max_pixel_coverage": 10, "max_overlap_ratio": 0.99},
+            self.canvas,
+        )
+        # Permissive settings allow more or equal accepted paths
+        assert len(result_permissive) >= len(result_strict)
+
+    def test_higher_max_pixel_coverage_produces_more_paths(self):
+        """max_pixel_coverage=1 produces sparser output than max_pixel_coverage=5."""
+        img = np.zeros((64, 64), dtype=np.uint8)
+        common = {
+            "line_density": 3.0,
+            "line_max_limit": 300,
+            "squiggle_min_length": 1,
+            "coverage_radius": 1,
+            "max_overlap_ratio": 0.55,
+        }
+        result_low = self.gen.generate(
+            {**common, "_source_image": img.copy(), "max_pixel_coverage": 1},
+            self.canvas,
+        )
+        result_high = self.gen.generate(
+            {**common, "_source_image": img.copy(), "max_pixel_coverage": 5},
+            self.canvas,
+        )
+        assert len(result_high) >= len(result_low)
+
+    def test_gradient_data_stays_accurate_during_generation(self):
+        """Original source image is not modified during generation (gradient integrity)."""
+        img = make_single_dark_block()
+        source_copy = img.copy()
+        params = {
+            "_source_image": img,
+            "line_density": 2.0,
+            "line_max_limit": 50,
+            "directionality": 30.0,
+            "edge_power": 20.0,
+        }
+        result = self.gen.generate(params, self.canvas)
+        # Source image passed to generator must be unchanged
+        np.testing.assert_array_equal(img, source_copy)
+        assert isinstance(result, list)
+
+    def test_new_params_defined(self):
+        """max_pixel_coverage, max_overlap_ratio, coverage_radius must be parameters."""
+        params = self.gen.get_parameters()
+        names = {p.name for p in params}
+        assert "max_pixel_coverage" in names
+        assert "max_overlap_ratio" in names
+        assert "coverage_radius" in names

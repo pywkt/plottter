@@ -164,6 +164,33 @@ class SketchGenerator(Generator):
                 default=0.0,
                 description="Attract lines toward detected edges",
             ),
+            IntParam(
+                name="max_pixel_coverage",
+                label="Max Pixel Coverage",
+                min=1,
+                max=10,
+                step=1,
+                default=2,
+                description="Maximum times a pixel can be used by accepted paths — prevents over-inking",
+            ),
+            FloatParam(
+                name="max_overlap_ratio",
+                label="Max Overlap Ratio",
+                min=0.0,
+                max=1.0,
+                step=0.05,
+                default=0.55,
+                description="Reject paths where this fraction of pixels already have ink",
+            ),
+            IntParam(
+                name="coverage_radius",
+                label="Coverage Radius (px)",
+                min=0,
+                max=5,
+                step=1,
+                default=1,
+                description="Pixel radius to reserve around accepted paths",
+            ),
             # --- standard image preprocessing params ---
             BoolParam(
                 name="invert",
@@ -245,6 +272,9 @@ class SketchGenerator(Generator):
             "tone": 0.5,
             "directionality": 0.0,
             "edge_power": 0.0,
+            "max_pixel_coverage": 2,
+            "max_overlap_ratio": 0.55,
+            "coverage_radius": 1,
             "x_offset_mm": 0.0,
             "y_offset_mm": 0.0,
         }
@@ -666,6 +696,74 @@ class SketchGenerator(Generator):
         return total_delta
 
     # ------------------------------------------------------------------
+    # Coverage-map helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _path_pixel_coords(
+        points: list[tuple[float, float]],
+        width: int,
+        height: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Rasterize a polyline to unique pixel coordinates using np.linspace interpolation.
+
+        Returns ``(xs, ys)`` arrays of int32 pixel coordinates within the image bounds.
+        """
+        if len(points) < 2:
+            return np.array([], dtype=np.int32), np.array([], dtype=np.int32)
+
+        xs_parts: list[np.ndarray] = []
+        ys_parts: list[np.ndarray] = []
+
+        for (x0, y0), (x1, y1) in zip(points[:-1], points[1:]):
+            steps = max(1, int(max(abs(x1 - x0), abs(y1 - y0))))
+            seg_x = np.rint(np.linspace(x0, x1, steps + 1)).astype(np.int32)
+            seg_y = np.rint(np.linspace(y0, y1, steps + 1)).astype(np.int32)
+            valid = (seg_x >= 0) & (seg_x < width) & (seg_y >= 0) & (seg_y < height)
+            if np.any(valid):
+                xs_parts.append(seg_x[valid])
+                ys_parts.append(seg_y[valid])
+
+        if not xs_parts:
+            return np.array([], dtype=np.int32), np.array([], dtype=np.int32)
+
+        xs = np.concatenate(xs_parts)
+        ys = np.concatenate(ys_parts)
+        flat = ys * width + xs
+        unique_flat = np.unique(flat)
+        return (unique_flat % width).astype(np.int32), (unique_flat // width).astype(np.int32)
+
+    @staticmethod
+    def _expand_pixel_coords(
+        xs: np.ndarray,
+        ys: np.ndarray,
+        width: int,
+        height: int,
+        radius: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Expand pixel coordinates outward by *radius* using meshgrid offsets.
+
+        Returns a deduplicated ``(xs, ys)`` pair clamped to image bounds.
+        """
+        if xs.size == 0 or ys.size == 0 or radius <= 0:
+            return xs, ys
+
+        offsets = np.arange(-radius, radius + 1, dtype=np.int32)
+        dx, dy = np.meshgrid(offsets, offsets)
+        dx = dx.ravel()
+        dy = dy.ravel()
+
+        ex = (xs[:, None] + dx[None, :]).ravel()
+        ey = (ys[:, None] + dy[None, :]).ravel()
+        valid = (ex >= 0) & (ex < width) & (ey >= 0) & (ey < height)
+        ex = ex[valid]
+        ey = ey[valid]
+
+        flat = ey * width + ex
+        unique_flat = np.unique(flat)
+        return (unique_flat % width).astype(np.int32), (unique_flat // width).astype(np.int32)
+
+    # ------------------------------------------------------------------
     # Generate
     # ------------------------------------------------------------------
 
@@ -725,6 +823,11 @@ class SketchGenerator(Generator):
         # Working copy for darkness search
         lightened = img.copy()
 
+        # Coverage map: counts how many accepted paths have touched each pixel.
+        # residual_dark: float32 array tracking remaining darkness per pixel (0=white, 1=black).
+        coverage = np.zeros((img_h, img_w), dtype=np.uint8)
+        residual_dark = np.clip(1.0 - img.astype(np.float32) / 255.0, 0.0, 1.0)
+
         # Internal constants (not exposed as parameters)
         block_size = 8
         brightness_ceiling = 250
@@ -744,11 +847,18 @@ class SketchGenerator(Generator):
         tone = float(params.get("tone", 0.5))
         directionality = float(params.get("directionality", 0.0))
         edge_power = float(params.get("edge_power", 0.0))
+        max_pixel_coverage = int(params.get("max_pixel_coverage", 2))
+        max_overlap_ratio = float(params.get("max_overlap_ratio", 0.55))
+        coverage_radius = int(params.get("coverage_radius", 1))
+        # Amount to subtract from residual_dark per accepted coverage hit.
+        # After max_pixel_coverage hits, residual reaches 0 for that pixel.
+        lighten_amount = 1.0 / max(1, max_pixel_coverage)
 
-        # --- running brightness sum (avoids full-image mean() each iteration) ---
+        # --- residual darkness tracking for stopping condition ---
         total_pixels = img_h * img_w
-        running_sum = float(lightened.sum())
-        initial_avg = running_sum / total_pixels
+        initial_residual_mean = float(residual_dark.mean())
+        # stop_denom_r: higher line_density → larger denominator → harder to stop → more lines
+        stop_denom_r = initial_residual_mean * max(1e-9, line_density)
 
         # --- precompute gradient and edge maps ---
         sobel_x_map: np.ndarray | None = None
@@ -777,10 +887,6 @@ class SketchGenerator(Generator):
         rect_w = rect_x2 - rect_x1
         rect_h = rect_y2 - rect_y1
 
-        # DrawingBotV3 stopping denominator: (253.5 - initial_avg) * line_density
-        # progress = (current_avg - initial_avg) / denom; stop at >= 1.0
-        stop_denom = (253.5 - initial_avg) * max(1e-9, line_density)
-
         result: list[Polyline] = []
         total_segments = 0
         consecutive_failures = 0
@@ -793,8 +899,8 @@ class SketchGenerator(Generator):
             if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                 break
 
-            current_avg = running_sum / total_pixels
-            lum_progress = (current_avg - initial_avg) / stop_denom
+            current_residual_mean = float(residual_dark.mean())
+            lum_progress = (initial_residual_mean - current_residual_mean) / max(1e-9, stop_denom_r)
             if lum_progress >= 1.0 or total_segments >= line_max_limit:
                 break
 
@@ -805,7 +911,6 @@ class SketchGenerator(Generator):
             # Check if seed is too bright to start a squiggle from
             seed_val = int(lightened[seed_y, seed_x])
             if seed_val > brightness_ceiling:
-                running_sum += 255 - seed_val
                 lightened[seed_y, seed_x] = 255
                 consecutive_failures += 1
                 continue
@@ -846,42 +951,54 @@ class SketchGenerator(Generator):
                         end_x, end_y,
                     )
                 ]
-                delta = self._erase_along_path(
+                self._erase_along_path(
                     lightened, seg_pixels,
                     erase_min, erase_max,
                     erase_radius_min, erase_radius_max, tone,
                 )
-                running_sum += delta
                 cur_x, cur_y = end_x, end_y
 
             if squiggle_segments == 0:
                 # No segments traced — erase at seed to avoid re-selection
-                delta = self._erase_along_path(
+                self._erase_along_path(
                     lightened, [(float(seed_x), float(seed_y))],
                     erase_min, erase_max,
                     erase_radius_min, erase_radius_max, tone,
                 )
-                running_sum += delta
                 consecutive_failures += 1
             else:
                 consecutive_failures = 0
                 # (4) Add squiggle polyline to output if it meets minimum length
                 if squiggle_segments >= squiggle_min_length:
-                    mm_path: Polyline = [
-                        (
-                            rect_x1 + px_x * rect_w / img_w,
-                            rect_y1 + px_y * rect_h / img_h,
-                        )
-                        for px_x, px_y in squiggle
-                    ]
-                    result.append(mm_path)
-                    total_segments += squiggle_segments
+                    # Coverage overlap check — reject paths where too many pixels are already inked
+                    px_arr, py_arr = self._path_pixel_coords(squiggle, img_w, img_h)
+                    if px_arr.size > 0 and np.mean(coverage[py_arr, px_arr] >= max_pixel_coverage) > max_overlap_ratio:
+                        # Reject: over-inked region — count as failure to avoid infinite loops
+                        consecutive_failures += 1
+                    else:
+                        # Accept: update coverage map and residual_dark
+                        ex_arr, ey_arr = self._expand_pixel_coords(px_arr, py_arr, img_w, img_h, coverage_radius)
+                        if ex_arr.size > 0:
+                            coverage[ey_arr, ex_arr] = np.minimum(
+                                coverage[ey_arr, ex_arr].astype(np.int32) + 1, 255
+                            ).astype(np.uint8)
+                            residual_dark[ey_arr, ex_arr] = np.maximum(
+                                residual_dark[ey_arr, ex_arr] - lighten_amount, 0.0
+                            )
+                        mm_path: Polyline = [
+                            (
+                                rect_x1 + px_x * rect_w / img_w,
+                                rect_y1 + px_y * rect_h / img_h,
+                            )
+                            for px_x, px_y in squiggle
+                        ]
+                        result.append(mm_path)
+                        total_segments += squiggle_segments
 
             # (E) Report progress as min(line_progress, lum_progress)
             if progress_callback:
                 line_progress = total_segments / max(1, line_max_limit)
-                lum_prog = (current_avg - initial_avg) / stop_denom
-                pct = int(min(line_progress, lum_prog) * 100)
+                pct = int(min(line_progress, lum_progress) * 100)
                 progress_callback(min(99, max(0, pct)))
 
         x_off = float(params.get("x_offset_mm", 0.0))
