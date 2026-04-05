@@ -1,5 +1,10 @@
 """Path post-processing and optimization utilities."""
 
+from plottter.processing.plugin import (
+    PROCESSING_PLUGINS,
+    ProcessingPlugin,
+    register_processing_plugin,
+)
 from plottter.processing.simplify import simplify_paths, simplify_polyline
 from plottter.processing.filter import filter_short_paths
 from plottter.processing.clip import clip_to_bounds
@@ -20,6 +25,9 @@ from plottter.processing.offset import offset_paths
 from plottter.processing.scale import scale_paths_to_canvas
 
 __all__ = [
+    "PROCESSING_PLUGINS",
+    "ProcessingPlugin",
+    "register_processing_plugin",
     "simplify_paths",
     "simplify_polyline",
     "filter_short_paths",

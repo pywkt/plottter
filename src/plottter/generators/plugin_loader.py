@@ -77,7 +77,7 @@ def _get_plugin_dirs() -> list[Path]:
 
 
 def load_plugins(extra_dirs: list[str | Path] | None = None) -> list[str]:
-    """Scan plugin directories and load any valid generator plugins.
+    """Scan plugin directories and load any valid generator or processing plugins.
 
     Parameters
     ----------
@@ -90,13 +90,15 @@ def load_plugins(extra_dirs: list[str | Path] | None = None) -> list[str]:
         Names of generator classes that were successfully loaded.
     """
     from plottter.generators import GENERATORS
+    from plottter.processing.plugin import PROCESSING_PLUGINS, ProcessingPlugin
 
     scan_dirs: list[Path] = _get_plugin_dirs()
     if extra_dirs:
         scan_dirs.extend(Path(d) for d in extra_dirs)
 
     loaded_names: list[str] = []
-    before_names = set(GENERATORS.keys())
+    before_gen_names = set(GENERATORS.keys())
+    before_proc_names = set(PROCESSING_PLUGINS.keys())
 
     for plugin_dir in scan_dirs:
         if not plugin_dir.exists() or not plugin_dir.is_dir():
@@ -121,21 +123,64 @@ def load_plugins(extra_dirs: list[str | Path] | None = None) -> list[str]:
                 sys.modules[module_name] = module
                 spec.loader.exec_module(module)  # type: ignore[union-attr]
                 logger.info("Loaded plugin: %s from %s", module_name, py_file)
+
+                # Auto-register any ProcessingPlugin subclasses that did not
+                # use @register_processing_plugin themselves.
+                for attr_name in dir(module):
+                    obj = getattr(module, attr_name, None)
+                    if (
+                        isinstance(obj, type)
+                        and issubclass(obj, ProcessingPlugin)
+                        and obj is not ProcessingPlugin
+                        and obj.name
+                        and obj.name not in PROCESSING_PLUGINS
+                    ):
+                        PROCESSING_PLUGINS[obj.name] = obj
+                        logger.info(
+                            "Auto-registered processing plugin '%s' from %s",
+                            obj.name,
+                            py_file,
+                        )
             except Exception as exc:
                 logger.error("Failed to load plugin %s: %s", py_file, exc)
                 # Remove from sys.modules if partially loaded
                 sys.modules.pop(module_name, None)
                 continue
 
-    # Report which generators were newly registered
-    after_names = set(GENERATORS.keys())
-    new_names = sorted(after_names - before_names)
-    loaded_names.extend(new_names)
+    # Report which generators and processing plugins were newly registered
+    after_gen_names = set(GENERATORS.keys())
+    new_gen_names = sorted(after_gen_names - before_gen_names)
+    loaded_names.extend(new_gen_names)
 
-    if new_names:
-        logger.info("Plugin system registered generators: %s", new_names)
+    after_proc_names = set(PROCESSING_PLUGINS.keys())
+    new_proc_names = sorted(after_proc_names - before_proc_names)
+    loaded_names.extend(new_proc_names)
+
+    if new_gen_names:
+        logger.info("Plugin system registered generators: %s", new_gen_names)
+    if new_proc_names:
+        logger.info("Plugin system registered processing plugins: %s", new_proc_names)
 
     return loaded_names
+
+
+def load_processing_plugins(extra_dirs: list[str | Path] | None = None) -> list[str]:
+    """Scan plugin directories and return newly registered processing plugin names.
+
+    This is a convenience wrapper around :func:`load_plugins` that returns only
+    the processing plugin names (not generator names).
+
+    Returns
+    -------
+    list[str]
+        Names of processing plugin classes that were newly registered.
+    """
+    from plottter.processing.plugin import PROCESSING_PLUGINS
+
+    before = set(PROCESSING_PLUGINS.keys())
+    load_plugins(extra_dirs=extra_dirs)
+    after = set(PROCESSING_PLUGINS.keys())
+    return sorted(after - before)
 
 
 def get_plugin_dirs() -> list[Path]:
