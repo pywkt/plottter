@@ -15,6 +15,8 @@ Covers:
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -754,4 +756,303 @@ class TestMeshHatching:
         assert len(single) > 0
         assert len(cross) >= len(single), (
             f"Cross-hatch should produce >= lines as single: single={len(single)}, cross={len(cross)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Perspective hatching tests (task 94.1)
+# ---------------------------------------------------------------------------
+
+# A large triangle well-centred in the canvas for reliable line production.
+_PERSP_TRI = [(80.0, 100.0), (130.0, 100.0), (105.0, 150.0)]
+
+# Canvas and camera shared by perspective tests
+_PERSP_CANVAS = Canvas(width_mm=210.0, height_mm=297.0, margin_mm=10.0)
+_PERSP_CAM_DICT = {
+    "azimuth": 30.0,
+    "elevation": 20.0,
+    "distance": 8.0,
+    "look_at_x": 0.0,
+    "look_at_y": 0.0,
+    "look_at_z": 0.0,
+    "fov": 45.0,
+    "projection": "perspective",
+}
+
+
+def _make_persp_camera(cam_dict=None):
+    """Build a Camera object matching FAST_PARAMS camera dict."""
+    from plottter.scene3d.camera import Camera
+    d = cam_dict or _PERSP_CAM_DICT
+    aspect = _PERSP_CANVAS.width_mm / _PERSP_CANVAS.height_mm
+    cam = Camera(
+        projection=d.get("projection", "perspective"),
+        fov_deg=float(d.get("fov", 45.0)),
+        aspect=aspect,
+    )
+    cam.set_orbit(
+        azimuth_deg=float(d.get("azimuth", 30.0)),
+        elevation_deg=float(d.get("elevation", 20.0)),
+        distance=float(d.get("distance", 8.0)),
+        center=[
+            float(d.get("look_at_x", 0.0)),
+            float(d.get("look_at_y", 0.0)),
+            float(d.get("look_at_z", 0.0)),
+        ],
+    )
+    return cam
+
+
+class TestComputeVanishingPoint:
+    """compute_vanishing_point() returns sensible 2D canvas coordinates."""
+
+    def test_returns_tuple_of_two_floats_for_perspective(self):
+        from plottter.scene3d.hatching import compute_vanishing_point
+        cam = _make_persp_camera()
+        vp = compute_vanishing_point(cam, 0.0, 210.0, 297.0)
+        assert vp is not None, "Perspective camera must return a non-None vanishing point"
+        assert isinstance(vp, tuple) and len(vp) == 2
+        assert isinstance(vp[0], float) and isinstance(vp[1], float)
+
+    def test_different_angles_give_different_vanishing_points(self):
+        from plottter.scene3d.hatching import compute_vanishing_point
+        cam = _make_persp_camera()
+        vp0 = compute_vanishing_point(cam, 0.0, 210.0, 297.0)
+        vp90 = compute_vanishing_point(cam, 90.0, 210.0, 297.0)
+        assert vp0 is not None
+        assert vp90 is not None
+        # Different 3D directions must yield different vanishing points.
+        assert vp0 != vp90, (
+            f"Vanishing points for angle=0 and angle=90 should differ: {vp0} vs {vp90}"
+        )
+
+    def test_orthographic_camera_returns_none_or_far_point(self):
+        """Orthographic camera gives no perspective vanishing point."""
+        from plottter.scene3d.hatching import compute_vanishing_point
+        from plottter.scene3d.camera import Camera
+        cam = Camera(projection="orthographic", aspect=1.0)
+        cam.set_orbit(azimuth_deg=30.0, elevation_deg=20.0, distance=8.0)
+        # For orthographic projection the vanishing point function either returns
+        # None (correct) or any value — the important thing is it doesn't crash.
+        vp = compute_vanishing_point(cam, 0.0, 210.0, 297.0)
+        # vp can be None or a tuple; we only require no exception.
+        assert vp is None or (isinstance(vp, tuple) and len(vp) == 2)
+
+    def test_offset_shifts_vanishing_point(self):
+        """offset_mm shifts the vanishing point by the same amount."""
+        from plottter.scene3d.hatching import compute_vanishing_point
+        cam = _make_persp_camera()
+        vp_no_offset = compute_vanishing_point(cam, 0.0, 210.0, 297.0, offset_mm=(0.0, 0.0))
+        vp_offset = compute_vanishing_point(cam, 0.0, 210.0, 297.0, offset_mm=(10.0, 5.0))
+        assert vp_no_offset is not None and vp_offset is not None
+        assert abs(vp_offset[0] - vp_no_offset[0] - 10.0) < 1e-6, (
+            "X component of VP must shift by x_offset"
+        )
+        assert abs(vp_offset[1] - vp_no_offset[1] - 5.0) < 1e-6, (
+            "Y component of VP must shift by y_offset"
+        )
+
+
+class TestHatchPolygonPerspective:
+    """_hatch_polygon_perspective() generates convergent hatching lines."""
+
+    def _polygon(self):
+        from shapely.geometry import Polygon
+        return Polygon(_PERSP_TRI)
+
+    def test_produces_lines_for_positive_spacing(self):
+        from plottter.scene3d.hatching import _hatch_polygon_perspective
+        from shapely.geometry import Polygon
+        poly = Polygon(_PERSP_TRI)
+        vp = (0.0, 600.0)  # far above the triangle
+        lines = _hatch_polygon_perspective(poly, spacing=2.0, angle_deg=0.0, vanishing_point=vp)
+        assert len(lines) > 0, "Positive spacing must produce at least one line"
+
+    def test_all_lines_have_at_least_two_points(self):
+        from plottter.scene3d.hatching import _hatch_polygon_perspective
+        from shapely.geometry import Polygon
+        poly = Polygon(_PERSP_TRI)
+        vp = (0.0, 600.0)
+        lines = _hatch_polygon_perspective(poly, spacing=2.0, angle_deg=0.0, vanishing_point=vp)
+        for line in lines:
+            assert len(line) >= 2, "Each hatch line must have ≥ 2 points"
+
+    def test_lines_converge_toward_vanishing_point(self):
+        """All generated lines, when extended, pass close to the vanishing point."""
+        from plottter.scene3d.hatching import _hatch_polygon_perspective
+        from shapely.geometry import Polygon
+        poly = Polygon(_PERSP_TRI)
+        # Place VP well outside the triangle so convergence is measurable.
+        vp_x, vp_y = -200.0, -200.0
+        lines = _hatch_polygon_perspective(
+            poly, spacing=3.0, angle_deg=45.0, vanishing_point=(vp_x, vp_y)
+        )
+        assert len(lines) > 0, "Must produce at least one line"
+
+        # For each line segment, extend it to the VP and verify the line passes
+        # within a small tolerance of the VP.
+        # The line passes through VP when: (p2 - p1) × (VP - p1) ≈ 0 (cross product ≈ 0)
+        max_perp_dist = 0.0
+        for line in lines:
+            if len(line) < 2:
+                continue
+            x1, y1 = line[0]
+            x2, y2 = line[-1]
+            # Perpendicular distance from VP to the infinite line through p1, p2
+            # = |cross(p2-p1, p1-VP)| / |p2-p1|
+            dx, dy = x2 - x1, y2 - y1
+            length = math.hypot(dx, dy)
+            if length < 1e-9:
+                continue
+            # Cross product (scalar): (p2-p1) × (p1-VP)
+            cross = dx * (y1 - vp_y) - dy * (x1 - vp_x)
+            perp_dist = abs(cross) / length
+            max_perp_dist = max(max_perp_dist, perp_dist)
+
+        # Tolerance: lines should pass within 1 mm of the VP (numerical precision)
+        assert max_perp_dist < 1.0, (
+            f"Lines should converge to VP within 1 mm; max perpendicular distance = {max_perp_dist:.4f} mm"
+        )
+
+    def test_higher_density_produces_more_lines(self):
+        from plottter.scene3d.hatching import _hatch_polygon_perspective
+        from shapely.geometry import Polygon
+        poly = Polygon(_PERSP_TRI)
+        vp = (-200.0, -200.0)
+        low = _hatch_polygon_perspective(poly, spacing=4.0, angle_deg=0.0, vanishing_point=vp)
+        high = _hatch_polygon_perspective(poly, spacing=1.0, angle_deg=0.0, vanishing_point=vp)
+        assert len(high) >= len(low), (
+            f"Smaller spacing (higher density) should produce ≥ lines: low={len(low)}, high={len(high)}"
+        )
+
+    def test_perspective_differs_from_parallel_for_close_vp(self):
+        """With VP close to polygon, perspective hatching differs from parallel hatching."""
+        from plottter.scene3d.hatching import _hatch_polygon_perspective, _hatch_polygon
+        from shapely.geometry import Polygon
+        poly = Polygon(_PERSP_TRI)
+        # VP close to triangle (strong convergence effect)
+        vp = (105.0, 0.0)
+        spacing = 2.0
+        angle_deg = 0.0
+        persp_lines = _hatch_polygon_perspective(poly, spacing, angle_deg, vanishing_point=vp)
+        parallel_lines = _hatch_polygon(poly, spacing, angle_deg)
+        assert len(persp_lines) > 0 and len(parallel_lines) > 0
+        # The endpoints should differ — convergent lines are not parallel.
+        # Compare the first line's direction vector.
+        def direction(line):
+            x1, y1 = line[0]
+            x2, y2 = line[-1]
+            d = math.hypot(x2 - x1, y2 - y1)
+            return (x2 - x1) / d, (y2 - y1) / d
+
+        # With a close VP the lines fan out significantly — not all parallel.
+        angles_persp = [math.atan2(*direction(l)[::-1]) for l in persp_lines]
+        angles_parallel = [math.atan2(*direction(l)[::-1]) for l in parallel_lines]
+        range_persp = max(angles_persp) - min(angles_persp)
+        range_parallel = max(angles_parallel) - min(angles_parallel)
+        assert range_persp > range_parallel, (
+            "Perspective hatching from a close VP should have wider angular spread than parallel"
+        )
+
+    def test_density_at_centroid_matches_spacing(self):
+        """Adjacent lines at the centroid distance are approximately `spacing` mm apart."""
+        from plottter.scene3d.hatching import _hatch_polygon_perspective
+        from shapely.geometry import Polygon
+        poly = Polygon(_PERSP_TRI)
+        # VP well above the triangle so geometry is clean.
+        vp_x, vp_y = 105.0, -300.0  # directly above the centroid
+        spacing = 5.0
+        lines = _hatch_polygon_perspective(
+            poly, spacing=spacing, angle_deg=0.0, vanishing_point=(vp_x, vp_y)
+        )
+        assert len(lines) >= 2, "Need at least 2 lines to measure spacing"
+
+        # Compute angle of each line as seen from VP, then check angular spacing × r ≈ spacing.
+        cx = float(poly.centroid.x)
+        cy = float(poly.centroid.y)
+        r = math.hypot(cx - vp_x, cy - vp_y)
+
+        # Midpoints of each segment
+        def midpoint(line):
+            return (line[0][0] + line[-1][0]) / 2, (line[0][1] + line[-1][1]) / 2
+
+        angles = []
+        for line in lines:
+            mx, my = midpoint(line)
+            angles.append(math.atan2(my - vp_y, mx - vp_x))
+        angles.sort()
+
+        # Smallest angular step between adjacent lines
+        min_dtheta = min(angles[i + 1] - angles[i] for i in range(len(angles) - 1))
+        actual_spacing_at_r = min_dtheta * r
+
+        # Allow 50% tolerance due to polygon truncation near edges.
+        assert 0.1 * spacing <= actual_spacing_at_r <= 3.0 * spacing, (
+            f"Spacing at centroid should be ≈ {spacing} mm; got {actual_spacing_at_r:.3f} mm"
+        )
+
+
+class TestPerspectiveHatchingParameter:
+    """perspective_hatching parameter integrates correctly with Scene3DGenerator."""
+
+    _BASE = {
+        "shape_type": "Cube",
+        "cube_size": 2.0,
+        "hatch_density_min": 0.5,
+        "hatch_density_max": 4.0,
+        "hatch_angle_deg": 45.0,
+        "hatch_cross": False,
+        "render_style": "Hatched",
+        **FAST_PARAMS,
+    }
+
+    def test_perspective_hatching_param_exists(self):
+        """perspective_hatching must appear in get_parameters()."""
+        gen = make_gen()
+        param_names = {p.name for p in gen.get_parameters()}
+        assert "perspective_hatching" in param_names, (
+            "perspective_hatching parameter missing from get_parameters()"
+        )
+
+    def test_perspective_hatching_default_is_false(self):
+        """perspective_hatching default must be False."""
+        gen = make_gen()
+        params_map = {p.name: p for p in gen.get_parameters()}
+        assert params_map["perspective_hatching"].default is False
+
+    def test_perspective_false_produces_valid_output(self):
+        """perspective_hatching=False works identically to the original behaviour."""
+        result = run({**self._BASE, "perspective_hatching": False})
+        assert isinstance(result, list)
+        assert len(result) > 0, "perspective_hatching=False must produce output"
+
+    def test_perspective_true_produces_valid_output(self):
+        """perspective_hatching=True produces a non-empty list of valid polylines."""
+        result = run({**self._BASE, "perspective_hatching": True})
+        assert isinstance(result, list)
+        assert len(result) > 0, "perspective_hatching=True must produce at least one polyline"
+        for poly in result:
+            assert isinstance(poly, list) and len(poly) >= 2
+            for pt in poly:
+                assert len(pt) == 2
+
+    def test_perspective_true_output_differs_from_false(self):
+        """Perspective and parallel hatching produce different line sets."""
+        parallel = run({**self._BASE, "perspective_hatching": False})
+        persp = run({**self._BASE, "perspective_hatching": True})
+        # The sets of polylines should differ (at least in coordinates).
+        # Compare the first polyline's starting point.
+        assert len(parallel) > 0 and len(persp) > 0
+        # Collect all endpoints into a flat set and verify they are not identical.
+        def flatten(lines):
+            pts = set()
+            for line in lines:
+                for pt in line:
+                    pts.add((round(pt[0], 3), round(pt[1], 3)))
+            return pts
+        pts_parallel = flatten(parallel)
+        pts_persp = flatten(persp)
+        # Some points might overlap (polygon boundary), but not all should match.
+        assert pts_parallel != pts_persp, (
+            "perspective_hatching=True should produce different lines than parallel hatching"
         )

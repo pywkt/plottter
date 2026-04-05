@@ -809,6 +809,17 @@ class Scene3DGenerator(Generator):
                 visible_when={"render_style": ["Hatched", "Wireframe + Hatched"]},
                 description="Add perpendicular cross-hatching for darker areas (brightness < 0.3)",
             ),
+            BoolParam(
+                name="perspective_hatching",
+                label="Perspective Hatching",
+                default=False,
+                visible_when={"render_style": ["Hatched", "Wireframe + Hatched"]},
+                description=(
+                    "Use perspective-correct convergent hatching: lines radiate from "
+                    "the vanishing point instead of running in parallel, giving a more "
+                    "natural look for rectilinear 3D subjects"
+                ),
+            ),
         ]
 
     # ------------------------------------------------------------------
@@ -1159,12 +1170,27 @@ class Scene3DGenerator(Generator):
             from plottter.scene3d.hatching import (
                 _fill_triangle_with_hatching,
                 brightness_to_density,
+                compute_vanishing_point,
             )
 
             hatch_density_min = float(params.get("hatch_density_min", 0.5))
             hatch_density_max = float(params.get("hatch_density_max", 4.0))
             hatch_angle = float(params.get("hatch_angle_deg", 45.0))
             hatch_cross = bool(params.get("hatch_cross", False))
+            perspective_hatching = bool(params.get("perspective_hatching", False))
+
+            # Compute vanishing point for perspective hatching.
+            vanishing_point: tuple[float, float] | None = None
+            if perspective_hatching:
+                vanishing_point = compute_vanishing_point(
+                    camera,
+                    hatch_angle,
+                    canvas.width_mm,
+                    canvas.height_mm,
+                    offset_mm=(x_off, y_off),
+                )
+                # If VP is at infinity (orthographic-like), fall back to parallel.
+                # vanishing_point will be None in that case.
 
             # Use the scene light direction if shadows are enabled; otherwise use
             # a sensible default directional light for brightness computation.
@@ -1192,7 +1218,8 @@ class Scene3DGenerator(Generator):
                 # Cross-hatch only for deep-shadow faces (brightness < 0.3).
                 cross_for_face = hatch_cross and (brightness < 0.3)
                 face_lines = _fill_triangle_with_hatching(
-                    verts_2d, density, hatch_angle, cross_for_face
+                    verts_2d, density, hatch_angle, cross_for_face,
+                    vanishing_point=vanishing_point,
                 )
                 hatch_polylines.extend(face_lines)
 
