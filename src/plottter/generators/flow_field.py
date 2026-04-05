@@ -8,6 +8,7 @@ from typing import Any
 
 from plottter.generators.base import (
     BoolParam,
+    ChoiceParam,
     FloatParam,
     Generator,
     IntParam,
@@ -20,6 +21,15 @@ from plottter.models import Canvas, Polyline
 _TWO_PI = 2.0 * math.pi
 
 
+def _superformula(theta: float, m: float, n1: float, n2: float, n3: float) -> float:
+    """Gielis superformula: r = (|cos(m*theta/4)|^n2 + |sin(m*theta/4)|^n3)^(-1/n1)."""
+    t = m * theta / 4.0
+    base = abs(math.cos(t)) ** n2 + abs(math.sin(t)) ** n3
+    if base == 0.0:
+        return 0.0
+    return base ** (-1.0 / n1)
+
+
 @register_generator
 class FlowFieldGenerator(Generator):
     """Generates particle trails driven by a Perlin noise angle field."""
@@ -29,6 +39,13 @@ class FlowFieldGenerator(Generator):
 
     def get_parameters(self) -> list[Parameter]:
         return [
+            ChoiceParam(
+                name="field_mode",
+                label="Field mode",
+                choices=["Perlin Noise", "Superformula"],
+                default="Perlin Noise",
+                description="Flow field generation mode — Perlin Noise uses classic noise, Superformula uses Gielis superformula tangents",
+            ),
             IntParam(
                 name="num_particles",
                 label="Number of particles",
@@ -135,6 +152,60 @@ class FlowFieldGenerator(Generator):
                 label="Rectilinear mode",
                 default=False,
                 description="Constrain paths to mostly horizontal/vertical with alternating axes — creates a digital circuit-board aesthetic",
+            ),
+            FloatParam(
+                name="sf_m",
+                label="SF: Lobes (m)",
+                min=1.0,
+                max=20.0,
+                step=0.5,
+                default=6.0,
+                description="Number of petals/lobes in the superformula shape (field_mode=Superformula)",
+            ),
+            FloatParam(
+                name="sf_n1",
+                label="SF: Curvature (n1)",
+                min=0.1,
+                max=40.0,
+                step=0.1,
+                default=1.0,
+                description="Shape curvature — controls how pointy or rounded the lobes are (field_mode=Superformula)",
+            ),
+            FloatParam(
+                name="sf_n2",
+                label="SF: Sine factor (n2)",
+                min=0.1,
+                max=40.0,
+                step=0.1,
+                default=1.0,
+                description="Sine factor — affects lobe symmetry (field_mode=Superformula)",
+            ),
+            FloatParam(
+                name="sf_n3",
+                label="SF: Cosine factor (n3)",
+                min=0.1,
+                max=40.0,
+                step=0.1,
+                default=1.0,
+                description="Cosine factor — affects lobe symmetry (field_mode=Superformula)",
+            ),
+            FloatParam(
+                name="sf_center_x",
+                label="SF: Center X (%)",
+                min=0.0,
+                max=100.0,
+                step=1.0,
+                default=50.0,
+                description="Center X as % of canvas width (field_mode=Superformula)",
+            ),
+            FloatParam(
+                name="sf_center_y",
+                label="SF: Center Y (%)",
+                min=0.0,
+                max=100.0,
+                step=1.0,
+                default=50.0,
+                description="Center Y as % of canvas height (field_mode=Superformula)",
             ),
         ]
 
@@ -257,6 +328,54 @@ class FlowFieldGenerator(Generator):
                     "rectilinear": True,
                 },
             ),
+            Preset(
+                name="Flower Flow",
+                params={
+                    "field_mode": "Superformula",
+                    "num_particles": 2000,
+                    "step_size_mm": 1.0,
+                    "max_steps": 100,
+                    "seed": 42,
+                    "sf_m": 6.0,
+                    "sf_n1": 1.0,
+                    "sf_n2": 1.0,
+                    "sf_n3": 1.0,
+                    "sf_center_x": 50.0,
+                    "sf_center_y": 50.0,
+                },
+            ),
+            Preset(
+                name="Star Flow",
+                params={
+                    "field_mode": "Superformula",
+                    "num_particles": 1500,
+                    "step_size_mm": 1.0,
+                    "max_steps": 100,
+                    "seed": 42,
+                    "sf_m": 5.0,
+                    "sf_n1": 0.3,
+                    "sf_n2": 0.3,
+                    "sf_n3": 0.3,
+                    "sf_center_x": 50.0,
+                    "sf_center_y": 50.0,
+                },
+            ),
+            Preset(
+                name="Organic Swirl",
+                params={
+                    "field_mode": "Superformula",
+                    "num_particles": 2000,
+                    "step_size_mm": 1.0,
+                    "max_steps": 100,
+                    "seed": 42,
+                    "sf_m": 3.0,
+                    "sf_n1": 2.0,
+                    "sf_n2": 2.0,
+                    "sf_n3": 2.0,
+                    "sf_center_x": 50.0,
+                    "sf_center_y": 50.0,
+                },
+            ),
         ]
 
     def generate(
@@ -266,14 +385,17 @@ class FlowFieldGenerator(Generator):
         progress_callback: Any = None,
         cancelled_callback: Any = None,
     ) -> list[Polyline]:
-        try:
-            import noise as pnoise
-        except ImportError as exc:
-            raise RuntimeError(
-                "The 'noise' package is required for Flow Field generation. "
-                "Install it with: pip install noise"
-            ) from exc
+        pnoise = None
+        if str(params.get("field_mode", "Perlin Noise")) != "Superformula":
+            try:
+                import noise as pnoise  # type: ignore[assignment]
+            except ImportError as exc:
+                raise RuntimeError(
+                    "The 'noise' package is required for Perlin Noise mode. "
+                    "Install it with: pip install noise"
+                ) from exc
 
+        field_mode = str(params.get("field_mode", "Perlin Noise"))
         num_particles = int(params.get("num_particles", 1000))
         step_size = float(params.get("step_size_mm", 1.0))
         max_steps = int(params.get("max_steps", 100))
@@ -285,12 +407,24 @@ class FlowFieldGenerator(Generator):
         quantize_offset_rad = math.radians(float(params.get("quantize_offset_deg", 0.0)))
         rectilinear = bool(params.get("rectilinear", False))
 
+        # Superformula parameters
+        sf_m = float(params.get("sf_m", 6.0))
+        sf_n1 = float(params.get("sf_n1", 1.0))
+        sf_n2 = float(params.get("sf_n2", 1.0))
+        sf_n3 = float(params.get("sf_n3", 1.0))
+        sf_center_x_pct = float(params.get("sf_center_x", 50.0))
+        sf_center_y_pct = float(params.get("sf_center_y", 50.0))
+
         rng = _random.Random(seed)
         noise_base = seed % 256
 
         draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
         draw_w = draw_x2 - draw_x1
         draw_h = draw_y2 - draw_y1
+
+        # Superformula center in mm
+        sf_cx = draw_x1 + draw_w * sf_center_x_pct / 100.0
+        sf_cy = draw_y1 + draw_h * sf_center_y_pct / 100.0
 
         # Optional image for brightness-based jitter
         source_image = params.get("_source_image")
@@ -317,13 +451,20 @@ class FlowFieldGenerator(Generator):
             trail: Polyline = [(x, y)]
             prev_axis: int | None = None
             for _ in range(max_steps):
-                n = pnoise.pnoise2(
-                    x * noise_scale,
-                    y * noise_scale,
-                    octaves=octaves,
-                    base=noise_base,
-                )
-                angle = n * angle_range
+                if field_mode == "Superformula":
+                    theta = math.atan2(y - sf_cy, x - sf_cx)
+                    r_sf = _superformula(theta, sf_m, sf_n1, sf_n2, sf_n3)
+                    r_sf2 = _superformula(theta + 0.01, sf_m, sf_n1, sf_n2, sf_n3)
+                    dr = r_sf2 - r_sf
+                    angle = theta + math.pi / 2.0 + math.atan2(dr, r_sf * 0.01)
+                else:
+                    n = pnoise.pnoise2(
+                        x * noise_scale,
+                        y * noise_scale,
+                        octaves=octaves,
+                        base=noise_base,
+                    )
+                    angle = n * angle_range
                 if quantize_directions > 0:
                     step_angle = _TWO_PI / quantize_directions
                     angle_shifted = angle - quantize_offset_rad
