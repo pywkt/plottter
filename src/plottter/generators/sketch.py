@@ -174,6 +174,155 @@ def _compute_weights(
     return weights
 
 
+@_numba_njit(cache=True)
+def _rasterize_path_numba(
+    points_x,
+    points_y,
+    width,
+    height,
+    coverage_radius,
+):
+    """Rasterize a polyline to unique pixel coordinates, expanded by *coverage_radius*.
+
+    Uses Bresenham-style interpolation (integer steps along the longer axis) for each
+    consecutive pair of points, collects unique pixel coordinates, then expands by
+    ``coverage_radius`` using nested offset loops over the square offset grid.
+
+    Written with explicit ``for`` loops so numba can compile to fast native code.
+    Falls back to pure-Python when numba is unavailable (slow but correct).
+
+    Parameters
+    ----------
+    points_x, points_y:
+        Float64 arrays of path point coordinates in pixel space.
+    width, height:
+        Image dimensions in pixels.
+    coverage_radius:
+        Pixel radius to expand around rasterized path pixels.
+
+    Returns
+    -------
+    ``(xs, ys)`` arrays of int32 pixel coordinates within image bounds.
+    """
+    n_pts = points_x.shape[0]
+    if n_pts < 2:
+        return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32)
+
+    # --- Step 1: Collect path pixels via Bresenham-style interpolation ---
+    # Pre-estimate buffer size: sum of max(|dx|, |dy|) + 1 per segment
+    path_est = 0
+    for i in range(n_pts - 1):
+        adx = abs(int(round(points_x[i + 1])) - int(round(points_x[i])))
+        ady = abs(int(round(points_y[i + 1])) - int(round(points_y[i])))
+        steps = adx if adx > ady else ady
+        path_est += steps + 1
+
+    path_buf = np.empty(path_est + n_pts, dtype=np.int32)
+    path_sz = 0
+
+    for i in range(n_pts - 1):
+        x0 = int(round(points_x[i]))
+        y0 = int(round(points_y[i]))
+        x1 = int(round(points_x[i + 1]))
+        y1 = int(round(points_y[i + 1]))
+
+        adx = abs(x1 - x0)
+        ady = abs(y1 - y0)
+        steps = adx if adx > ady else ady
+
+        for s in range(steps + 1):
+            if steps > 0:
+                t = float(s) / float(steps)
+            else:
+                t = 0.0
+            px = int(round(float(x0) + float(x1 - x0) * t))
+            py = int(round(float(y0) + float(y1 - y0) * t))
+            if 0 <= px < width and 0 <= py < height:
+                if path_sz < path_buf.shape[0]:
+                    path_buf[path_sz] = py * width + px
+                    path_sz += 1
+
+    if path_sz == 0:
+        return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32)
+
+    # Deduplicate path pixels via sort + unique iteration
+    path_flat = path_buf[:path_sz].copy()
+    path_flat.sort()
+
+    # --- Step 2: Expand by coverage_radius ---
+    if coverage_radius <= 0:
+        # No expansion: extract unique path pixels directly
+        unique_cnt = 1
+        for i in range(1, path_sz):
+            if path_flat[i] != path_flat[i - 1]:
+                unique_cnt += 1
+        xs_out = np.empty(unique_cnt, dtype=np.int32)
+        ys_out = np.empty(unique_cnt, dtype=np.int32)
+        xs_out[0] = path_flat[0] % width
+        ys_out[0] = path_flat[0] // width
+        out_idx = 0
+        for i in range(1, path_sz):
+            if path_flat[i] != path_flat[i - 1]:
+                out_idx += 1
+                xs_out[out_idx] = path_flat[i] % width
+                ys_out[out_idx] = path_flat[i] // width
+        return xs_out, ys_out
+
+    # Count unique path pixels to size the expansion buffer
+    unique_path_cnt = 1
+    for i in range(1, path_sz):
+        if path_flat[i] != path_flat[i - 1]:
+            unique_path_cnt += 1
+
+    er = 2 * coverage_radius + 1
+    exp_est = unique_path_cnt * er * er + 10
+    exp_buf = np.empty(exp_est, dtype=np.int32)
+    exp_sz = 0
+
+    # Expand each unique path pixel over the offset grid
+    prev_fv = path_flat[0] - 1  # sentinel: guaranteed != path_flat[0]
+    for i in range(path_sz):
+        fv = path_flat[i]
+        if fv == prev_fv:
+            continue
+        prev_fv = fv
+        py_c = fv // width
+        px_c = fv % width
+        for dy_off in range(-coverage_radius, coverage_radius + 1):
+            for dx_off in range(-coverage_radius, coverage_radius + 1):
+                nx = px_c + dx_off
+                ny = py_c + dy_off
+                if 0 <= nx < width and 0 <= ny < height:
+                    if exp_sz < exp_est:
+                        exp_buf[exp_sz] = ny * width + nx
+                        exp_sz += 1
+
+    if exp_sz == 0:
+        return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32)
+
+    # Deduplicate expanded pixels
+    exp_flat = exp_buf[:exp_sz].copy()
+    exp_flat.sort()
+
+    unique_cnt = 1
+    for i in range(1, exp_sz):
+        if exp_flat[i] != exp_flat[i - 1]:
+            unique_cnt += 1
+
+    xs_out = np.empty(unique_cnt, dtype=np.int32)
+    ys_out = np.empty(unique_cnt, dtype=np.int32)
+    xs_out[0] = exp_flat[0] % width
+    ys_out[0] = exp_flat[0] // width
+    out_idx = 0
+    for i in range(1, exp_sz):
+        if exp_flat[i] != exp_flat[i - 1]:
+            out_idx += 1
+            xs_out[out_idx] = exp_flat[i] % width
+            ys_out[out_idx] = exp_flat[i] // width
+
+    return xs_out, ys_out
+
+
 @register_generator
 class SketchGenerator(Generator):
     name = "Sketch"
@@ -1526,8 +1675,14 @@ class SketchGenerator(Generator):
                     consecutive_failures = 0
                     self._erase_along_path(lightened, list(_hbest_pts), erase_min, erase_max,
                                            erase_radius_min, erase_radius_max, tone)
-                    _hex_arr, _hey_arr = self._expand_pixel_coords(
-                        _hpx_arr, _hpy_arr, img_w, img_h, coverage_radius)
+                    if _NUMBA_AVAILABLE:
+                        _hpts_x = np.array([p[0] for p in _hbest_pts], dtype=np.float64)
+                        _hpts_y = np.array([p[1] for p in _hbest_pts], dtype=np.float64)
+                        _hex_arr, _hey_arr = _rasterize_path_numba(
+                            _hpts_x, _hpts_y, img_w, img_h, coverage_radius)
+                    else:
+                        _hex_arr, _hey_arr = self._expand_pixel_coords(
+                            _hpx_arr, _hpy_arr, img_w, img_h, coverage_radius)
                     if _hex_arr.size > 0:
                         coverage[_hey_arr, _hex_arr] = np.minimum(
                             coverage[_hey_arr, _hex_arr].astype(np.int32) + 1, 255
@@ -1727,7 +1882,14 @@ class SketchGenerator(Generator):
                             consecutive_failures += 1
                         else:
                             # Accept: update coverage map and residual_dark
-                            ex_arr, ey_arr = self._expand_pixel_coords(px_arr, py_arr, img_w, img_h, coverage_radius)
+                            if _NUMBA_AVAILABLE:
+                                _nc_pts_x = np.array([p[0] for p in squiggle], dtype=np.float64)
+                                _nc_pts_y = np.array([p[1] for p in squiggle], dtype=np.float64)
+                                ex_arr, ey_arr = _rasterize_path_numba(
+                                    _nc_pts_x, _nc_pts_y, img_w, img_h, coverage_radius)
+                            else:
+                                ex_arr, ey_arr = self._expand_pixel_coords(
+                                    px_arr, py_arr, img_w, img_h, coverage_radius)
                             if ex_arr.size > 0:
                                 coverage[ey_arr, ex_arr] = np.minimum(
                                     coverage[ey_arr, ex_arr].astype(np.int32) + 1, 255
@@ -1773,7 +1935,14 @@ class SketchGenerator(Generator):
                         chain_seg_count = 0
                     else:
                         # Accept: update coverage map and residual_dark for new segments
-                        ex_arr, ey_arr = self._expand_pixel_coords(px_arr, py_arr, img_w, img_h, coverage_radius)
+                        if _NUMBA_AVAILABLE:
+                            _c_pts_x = np.array([p[0] for p in new_seg_pts], dtype=np.float64)
+                            _c_pts_y = np.array([p[1] for p in new_seg_pts], dtype=np.float64)
+                            ex_arr, ey_arr = _rasterize_path_numba(
+                                _c_pts_x, _c_pts_y, img_w, img_h, coverage_radius)
+                        else:
+                            ex_arr, ey_arr = self._expand_pixel_coords(
+                                px_arr, py_arr, img_w, img_h, coverage_radius)
                         if ex_arr.size > 0:
                             coverage[ey_arr, ex_arr] = np.minimum(
                                 coverage[ey_arr, ex_arr].astype(np.int32) + 1, 255

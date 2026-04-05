@@ -1549,3 +1549,157 @@ class TestHybridMarkMode:
         for x, y in pts:
             assert 0.0 <= x <= 31.0, f"x={x} out of bounds"
             assert 0.0 <= y <= 31.0, f"y={y} out of bounds"
+
+
+# ---------------------------------------------------------------------------
+# _rasterize_path_numba
+# ---------------------------------------------------------------------------
+
+
+class TestRasterizePathNumba:
+    """Tests for _rasterize_path_numba and its equivalence to the numpy fallback."""
+
+    def test_horizontal_segment_exact_pixels(self):
+        """Horizontal segment (0,5)→(4,5) rasterizes to exactly 5 unique pixels."""
+        from plottter.generators.sketch import _rasterize_path_numba
+
+        pts_x = np.array([0.0, 4.0], dtype=np.float64)
+        pts_y = np.array([5.0, 5.0], dtype=np.float64)
+        xs, ys = _rasterize_path_numba(pts_x, pts_y, 10, 10, 0)
+
+        assert xs.size == 5
+        assert ys.size == 5
+        np.testing.assert_array_equal(np.sort(xs), [0, 1, 2, 3, 4])
+        assert np.all(ys == 5)
+
+    def test_single_point_returns_empty(self):
+        """Path with fewer than 2 points returns empty arrays."""
+        from plottter.generators.sketch import _rasterize_path_numba
+
+        pts_x = np.array([5.0], dtype=np.float64)
+        pts_y = np.array([5.0], dtype=np.float64)
+        xs, ys = _rasterize_path_numba(pts_x, pts_y, 10, 10, 0)
+        assert xs.size == 0
+        assert ys.size == 0
+
+    def test_radius_1_interior_pixel_expands_to_9(self):
+        """A single interior pixel with coverage_radius=1 expands to 9 pixels."""
+        from plottter.generators.sketch import _rasterize_path_numba
+
+        # Zero-length segment: single pixel at (5, 5)
+        pts_x = np.array([5.0, 5.0], dtype=np.float64)
+        pts_y = np.array([5.0, 5.0], dtype=np.float64)
+        xs, ys = _rasterize_path_numba(pts_x, pts_y, 20, 20, 1)
+        assert xs.size == 9, f"Expected 9 pixels (3×3 around (5,5)), got {xs.size}"
+
+    def test_radius_1_corner_pixel_clamped(self):
+        """Expansion at image corner must not produce out-of-bounds pixels."""
+        from plottter.generators.sketch import _rasterize_path_numba
+
+        pts_x = np.array([0.0, 0.0], dtype=np.float64)
+        pts_y = np.array([0.0, 0.0], dtype=np.float64)
+        xs, ys = _rasterize_path_numba(pts_x, pts_y, 10, 10, 1)
+        assert np.all(xs >= 0) and np.all(xs < 10)
+        assert np.all(ys >= 0) and np.all(ys < 10)
+        assert xs.size == 4  # only (0,0),(1,0),(0,1),(1,1) are in bounds
+
+    def test_radius_0_matches_path_pixel_coords(self):
+        """With coverage_radius=0, output matches _path_pixel_coords."""
+        from plottter.generators.sketch import _rasterize_path_numba
+
+        pts = [(2.0, 3.0), (8.0, 3.0), (8.0, 7.0)]
+        pts_x = np.array([p[0] for p in pts], dtype=np.float64)
+        pts_y = np.array([p[1] for p in pts], dtype=np.float64)
+        width, height = 20, 20
+
+        xs_nb, ys_nb = _rasterize_path_numba(pts_x, pts_y, width, height, 0)
+        flat_nb = set(int(y) * width + int(x) for x, y in zip(xs_nb, ys_nb))
+
+        gen = SketchGenerator()
+        xs_np, ys_np = gen._path_pixel_coords(pts, width, height)
+        flat_np = set(int(y) * width + int(x) for x, y in zip(xs_np, ys_np))
+
+        assert flat_nb == flat_np, (
+            f"Numba {len(flat_nb)} pixels vs numpy {len(flat_np)} pixels; "
+            f"diff={flat_nb.symmetric_difference(flat_np)}"
+        )
+
+    def test_numba_matches_numpy_fallback_with_radius(self):
+        """With coverage_radius=1, output matches _path_pixel_coords + _expand_pixel_coords."""
+        from plottter.generators.sketch import _rasterize_path_numba
+
+        pts = [(5.0, 5.0), (10.0, 8.0), (7.0, 12.0)]
+        pts_x = np.array([p[0] for p in pts], dtype=np.float64)
+        pts_y = np.array([p[1] for p in pts], dtype=np.float64)
+        width, height = 30, 30
+        radius = 1
+
+        xs_nb, ys_nb = _rasterize_path_numba(pts_x, pts_y, width, height, radius)
+        flat_nb = set(int(y) * width + int(x) for x, y in zip(xs_nb, ys_nb))
+
+        gen = SketchGenerator()
+        xs_np, ys_np = gen._path_pixel_coords(pts, width, height)
+        ex_np, ey_np = gen._expand_pixel_coords(xs_np, ys_np, width, height, radius)
+        flat_np = set(int(y) * width + int(x) for x, y in zip(ex_np, ey_np))
+
+        assert flat_nb == flat_np, (
+            f"Numba {len(flat_nb)} pixels vs numpy {len(flat_np)} pixels; "
+            f"diff={flat_nb.symmetric_difference(flat_np)}"
+        )
+
+    def test_output_unique_pixels(self):
+        """All returned pixel coordinates must be unique."""
+        from plottter.generators.sketch import _rasterize_path_numba
+
+        pts_x = np.array([0.0, 10.0, 5.0], dtype=np.float64)
+        pts_y = np.array([0.0, 10.0, 5.0], dtype=np.float64)
+        xs, ys = _rasterize_path_numba(pts_x, pts_y, 20, 20, 1)
+
+        flat = ys * 20 + xs
+        assert flat.size == np.unique(flat).size, "Duplicate pixel coordinates returned"
+
+    def test_coverage_increments_correctly(self):
+        """Coverage map increments by 1 at all rasterized + expanded pixels."""
+        from plottter.generators.sketch import _rasterize_path_numba
+
+        width, height = 32, 32
+        coverage = np.zeros((height, width), dtype=np.uint8)
+        pts_x = np.array([5.0, 10.0], dtype=np.float64)
+        pts_y = np.array([5.0, 5.0], dtype=np.float64)
+
+        xs, ys = _rasterize_path_numba(pts_x, pts_y, width, height, 0)
+        assert xs.size > 0
+        coverage[ys, xs] = np.minimum(
+            coverage[ys, xs].astype(np.int32) + 1, 255
+        ).astype(np.uint8)
+
+        # All pixels along the horizontal segment y=5, x=5..10 should be 1
+        assert np.all(coverage[5, 5:11] == 1), (
+            f"Expected all ones at y=5, x=5..10, got {coverage[5, 5:11]}"
+        )
+        # Pixels outside the segment should still be 0
+        assert coverage[5, 4] == 0
+        assert coverage[5, 11] == 0
+
+    def test_large_radius_matches_numpy(self):
+        """With coverage_radius=3, output matches the numpy expand approach."""
+        from plottter.generators.sketch import _rasterize_path_numba
+
+        pts = [(10.0, 10.0), (15.0, 10.0)]
+        pts_x = np.array([p[0] for p in pts], dtype=np.float64)
+        pts_y = np.array([p[1] for p in pts], dtype=np.float64)
+        width, height = 40, 40
+        radius = 3
+
+        xs_nb, ys_nb = _rasterize_path_numba(pts_x, pts_y, width, height, radius)
+        flat_nb = set(int(y) * width + int(x) for x, y in zip(xs_nb, ys_nb))
+
+        gen = SketchGenerator()
+        xs_np, ys_np = gen._path_pixel_coords(pts, width, height)
+        ex_np, ey_np = gen._expand_pixel_coords(xs_np, ys_np, width, height, radius)
+        flat_np = set(int(y) * width + int(x) for x, y in zip(ex_np, ey_np))
+
+        assert flat_nb == flat_np, (
+            f"radius=3: numba {len(flat_nb)} vs numpy {len(flat_np)}; "
+            f"diff={flat_nb.symmetric_difference(flat_np)}"
+        )
