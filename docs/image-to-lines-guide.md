@@ -2,7 +2,7 @@
 
 Image-to-Lines mode converts raster images (photos, illustrations, scans) into plotter-ready
 polyline paths. The workflow has two stages: **preprocessing** (adjusting the image) and
-**line generation** (choosing an algorithm to trace paths). There are **16 image algorithms**
+**line generation** (choosing an algorithm to trace paths). There are **18 image algorithms**
 available, ranging from edge detection and hatching to stippling, halftone, and flow-based
 streamline art.
 
@@ -596,6 +596,30 @@ An iterative "find darkest area → trace path → erase" algorithm that progres
 - **Hybrid mode** produces the most natural-looking output by mixing mark types, but is slower
 - If output is **too sparse**, increase `line_density` and/or `line_max_limit`
 - If output is **too uniform**, increase `tone` (0.6–0.8) so dark areas accumulate more strokes
+
+---
+
+## ASCII Art
+
+**Generator:** ASCII Art
+
+Places single-stroke Hershey font characters on a grid, with character selection based on local image brightness. Heavier characters (more strokes) go in dark areas, lighter characters in bright areas. Characters are rendered as plotter-friendly single-line strokes, not outlines.
+
+### Key Parameters
+
+| Parameter | Effect |
+|-----------|--------|
+| `cell_size_mm` | Grid cell size — smaller = more characters, finer detail |
+| `min_darkness` | Skip cells brighter than this (0.1 = skip near-white) |
+| `char_scale` | Character size relative to cell (0.75 = 75% of cell) |
+| `rotation_mode` | Fixed angle, random, or gradient-aligned (follows edges) |
+
+### Presets
+
+- **Typewriter** — regular grid, no rotation
+- **Scattered Type** — random rotation per character
+- **Contour Text** — characters rotated to follow image edges (gradient mode)
+- **Large Print** — bigger cells, bold characters
 
 ---
 

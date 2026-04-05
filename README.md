@@ -6,11 +6,11 @@ A free, open-source desktop application for generating pen-plotter-ready vector 
 
 ## Features
 
-**27 generators** across math art, image-to-lines, and 3D:
+**32 generators** across math art, image-to-lines, and 3D:
 
-- **Math Art** — Parametric curves, polar curves, modular multiplication, Perlin noise flow fields, L-system fractals, grid patterns, Islamic geometric tiling, Celtic knots, concentric rings, dot grids, geometric grids, Voronoi/Delaunay tessellation, Penrose aperiodic tiling, calligraphy, and text rendering
-- **Image to Lines** — Edge detection (Canny), hatching, flow field/squiggle, Voronoi stippling, contour lines, XDoG, FDoG (coherent lines), hedcut portraits, scanline halftone, circular scribble art, Line Integral Convolution (LIC), Tonal Art Maps (TAM), and dot grid halftone
-- **3D Scene** — Wireframe and hatched/shaded rendering with hidden line removal, 10+ primitive shapes, OBJ/STL mesh import, camera controls, and shadow effects
+- **Math Art** — Parametric curves, polar curves, modular multiplication, Perlin noise flow fields (with quantized and rectilinear modes), superformula fields, L-system fractals, grid patterns, concentric rings, dot grids, geometric grids, Voronoi/Delaunay tessellation, Penrose aperiodic tiling, and text rendering
+- **Image to Lines** — Edge detection (Canny), hatching (with oscillation mode), flow field/squiggle, Voronoi stippling (with TSP single-line mode), contour lines, XDoG, FDoG (coherent lines), hedcut portraits, scanline halftone, circular scribble, LIC, TAM, dot grid halftone, spiral portraits, sketch (iterative darkest-trace-erase with hybrid marks), mosaic hatching (triangles/Voronoi/rectangles/hexagons/quadtree/superpixels), and ASCII art
+- **3D Scene** — Wireframe, hatched/shaded, and perspective-hatched rendering with hidden line removal, 10+ primitive shapes, OBJ/STL mesh import and slicing, camera controls, and shadow effects
 
 **Multi-layer system** with per-layer pen colors and opacity, drag reorder, visibility/lock controls, and color separation (K-Means, Luminance, RGB, CMYK).
 
@@ -20,7 +20,7 @@ A free, open-source desktop application for generating pen-plotter-ready vector 
 
 **Post-processing tools:** Path optimization (nearest-neighbor + 2-opt + 3-opt + Or-opt), simplification, merge, clip, weld overlapping paths, Bezier curve fitting, path tapering (fade stroke width at endpoints), path offsetting (parallel curves), and a brush system (stippled, multi-stroke, calligraphic).
 
-**Other features:** Stroke-order animation, pen-up travel visualization, pen jitter simulation, AI result caching, CLI batch mode, plugin system, Google Fonts integration, and AI-powered depth maps and background removal via Replicate.
+**Other features:** Stroke-order animation, pen-up travel visualization, pen jitter simulation, AI result caching, auto contrast and unsharp mask preprocessing, CLI batch mode, extensible plugin system (generators, processing, and export format plugins), Google Fonts integration, and AI-powered depth maps and background removal via Replicate.
 
 ## Requirements
 
