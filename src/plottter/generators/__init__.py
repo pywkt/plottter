@@ -51,6 +51,7 @@ def _import_builtin_generators() -> None:
     from plottter.generators.spiral import SpiralGenerator  # noqa: F401
     from plottter.generators import sketch as _sketch  # noqa: F401
     from plottter.generators import mesh_slicer as _mesh_slicer  # noqa: F401
+    from plottter.generators import ascii_art as _ascii_art  # noqa: F401
 
 
 def load_plugins(extra_dirs=None) -> list[str]:
