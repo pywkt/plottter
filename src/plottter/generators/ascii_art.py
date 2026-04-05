@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
 
 from plottter.generators import register_generator
 from plottter.generators._helpers import compute_image_rect
+from plottter.generators._hershey import CAP_HEIGHT, glyph_strokes
 from plottter.generators.base import (
     BoolParam,
     ChoiceParam,
@@ -104,6 +106,79 @@ def compute_cell_characters(
             result.append((cx_mm, cy_mm, char))
 
     return result
+
+
+def _render_glyph(
+    char: str,
+    x_mm: float,
+    y_mm: float,
+    size_mm: float,
+    angle_deg: float,
+    font: str = "Simplex",
+) -> list[Polyline]:
+    """Render a Hershey glyph as polylines centered at (x_mm, y_mm).
+
+    Parameters
+    ----------
+    char:
+        Character to render.
+    x_mm, y_mm:
+        Canvas position (cell center) in mm.
+    size_mm:
+        Target cap height in mm.
+    angle_deg:
+        Rotation in degrees (0 = upright, positive = counter-clockwise).
+    font:
+        Hershey font variant.
+    """
+    left, right, strokes = glyph_strokes(char, font)
+    if not strokes:
+        return []
+
+    scale = size_mm / CAP_HEIGHT
+
+    # Center of the glyph bounding box in Hershey units
+    cx_h = (left + right) / 2.0
+    cy_h = CAP_HEIGHT / 2.0  # baseline=0, cap-top=21 → center at 10.5
+
+    angle_rad = math.radians(angle_deg)
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+
+    result: list[Polyline] = []
+    for stroke in strokes:
+        polyline: Polyline = []
+        for hx, hy in stroke:
+            # Scale and center; flip y because canvas y increases downward
+            dx = (hx - cx_h) * scale
+            dy = -(hy - cy_h) * scale
+            # Rotate around glyph center
+            rx = dx * cos_a - dy * sin_a
+            ry = dx * sin_a + dy * cos_a
+            polyline.append((x_mm + rx, y_mm + ry))
+        if len(polyline) >= 2:
+            result.append(polyline)
+
+    return result
+
+
+def _gradient_angles(img: np.ndarray) -> np.ndarray:
+    """Return per-pixel gradient direction in degrees using Sobel operators.
+
+    Result shape matches input shape.  The angle is atan2(gy, gx) in degrees,
+    where positive x is right and positive y is down.
+    """
+    img_f = img.astype(np.float32)
+    try:
+        import cv2
+        gx = cv2.Sobel(img_f, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(img_f, cv2.CV_32F, 0, 1, ksize=3)
+    except ImportError:
+        gx = np.zeros_like(img_f)
+        gy = np.zeros_like(img_f)
+        gx[:, 1:-1] = img_f[:, 2:] - img_f[:, :-2]
+        gy[1:-1, :] = img_f[2:, :] - img_f[:-2, :]
+    return np.degrees(np.arctan2(gy, gx))
 
 
 @register_generator
@@ -225,6 +300,27 @@ class ASCIIArtGenerator(Generator):
                 default=0.0,
                 description="Gaussian blur radius applied before processing (0 = none)",
             ),
+            ChoiceParam(
+                name="rotation_mode",
+                label="Rotation Mode",
+                choices=["Fixed", "Random", "Gradient"],
+                default="Fixed",
+                description=(
+                    "Fixed: all characters at the same angle; "
+                    "Random: each character rotated randomly; "
+                    "Gradient: characters aligned with image edge direction (Sobel)"
+                ),
+            ),
+            FloatParam(
+                name="fixed_angle_deg",
+                label="Angle (deg)",
+                min=0.0,
+                max=360.0,
+                step=1.0,
+                default=0.0,
+                visible_when={"rotation_mode": ["Fixed"]},
+                description="Character rotation angle in degrees (used when Rotation Mode is Fixed)",
+            ),
         ]
 
     def get_presets(self) -> list[Preset]:
@@ -340,12 +436,55 @@ class ASCIIArtGenerator(Generator):
         if progress_callback:
             progress_callback(20)
 
-        # Compute cell character assignments (glyph rendering in next task)
-        _cells = compute_cell_characters(img, canvas, params, img_rect)
+        # Compute cell character assignments
+        cells = compute_cell_characters(img, canvas, params, img_rect)
+
+        if progress_callback:
+            progress_callback(40)
+
+        # --- Rotation setup ---
+        rotation_mode = str(params.get("rotation_mode", "Fixed"))
+        fixed_angle = float(params.get("fixed_angle_deg", 0.0))
+
+        grad_angles: np.ndarray | None = None
+        if rotation_mode == "Gradient":
+            grad_angles = _gradient_angles(img)
+
+        rng = np.random.default_rng()
+
+        # --- Glyph size ---
+        cell_size_mm = float(params.get("cell_size_mm", 6.0))
+        char_scale = float(params.get("char_scale", 0.75))
+        size_mm = char_scale * cell_size_mm
+
+        # Mapping from mm back to pixel coords (for gradient sampling)
+        img_x1, img_y1, img_x2, img_y2 = img_rect
+        img_h_px, img_w_px = img.shape[:2]
+        img_w_mm = img_x2 - img_x1
+        img_h_mm = img_y2 - img_y1
+
+        # --- Render glyphs ---
+        polylines: list[Polyline] = []
+        total = len(cells)
+        for i, (cx_mm, cy_mm, char) in enumerate(cells):
+            if rotation_mode == "Fixed":
+                angle = fixed_angle
+            elif rotation_mode == "Random":
+                angle = float(rng.uniform(0.0, 360.0))
+            else:  # Gradient — align character with edge direction (perpendicular to gradient)
+                px = int((cx_mm - img_x1) / img_w_mm * img_w_px) if img_w_mm > 0 else 0
+                py = int((cy_mm - img_y1) / img_h_mm * img_h_px) if img_h_mm > 0 else 0
+                px = max(0, min(img_w_px - 1, px))
+                py = max(0, min(img_h_px - 1, py))
+                angle = float(grad_angles[py, px]) + 90.0  # type: ignore[index]
+
+            glyphs = _render_glyph(char, cx_mm, cy_mm, size_mm, angle)
+            polylines.extend(glyphs)
+
+            if progress_callback and total > 0 and i % max(1, total // 20) == 0:
+                progress_callback(40 + int(60 * i / total))
 
         if progress_callback:
             progress_callback(100)
 
-        # Glyph rendering not yet implemented — return empty polylines
-        # (cell data is computed but strokes will be added in the next task)
-        return []
+        return polylines

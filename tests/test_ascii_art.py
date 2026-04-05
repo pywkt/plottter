@@ -5,7 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from plottter.generators.ascii_art import ASCII_CHARS, ASCIIArtGenerator, compute_cell_characters
+from plottter.generators.ascii_art import (
+    ASCII_CHARS,
+    ASCIIArtGenerator,
+    _render_glyph,
+    compute_cell_characters,
+)
 from plottter.generators._helpers import compute_image_rect
 from plottter.models.canvas import Canvas
 
@@ -41,6 +46,8 @@ def make_default_params(cell_size_mm: float = 6.0, min_darkness: float = 0.1) ->
         "brightness": 0.0,
         "contrast": 0.0,
         "blur_radius": 0.0,
+        "rotation_mode": "Fixed",
+        "fixed_angle_deg": 0.0,
     }
 
 
@@ -235,8 +242,8 @@ class TestASCIIArtGeneratorIntegration:
         from plottter.generators import GENERATORS
         assert "ASCII Art" in GENERATORS
 
-    def test_generate_returns_empty_polylines_for_now(self):
-        """Generator returns empty list (glyph rendering not yet implemented)."""
+    def test_generate_returns_polylines_for_dark_image(self):
+        """Generator returns non-empty polylines for a dark source image."""
         gen = ASCIIArtGenerator()
         canvas = make_canvas()
         img = make_dark_image()
@@ -245,7 +252,10 @@ class TestASCIIArtGeneratorIntegration:
 
         result = gen.generate(params, canvas)
         assert isinstance(result, list)
-        assert result == []
+        assert len(result) > 0, "Expected polylines for a dark image"
+        # Each polyline must have at least 2 points
+        for poly in result:
+            assert len(poly) >= 2
 
     def test_generate_returns_empty_without_source_image(self):
         """Generator returns empty list when no source image is provided."""
@@ -286,3 +296,146 @@ class TestASCIICharsOrdering:
 
     def test_chars_heaviest_is_at(self):
         assert ASCII_CHARS[-1] == "@"
+
+
+# ---------------------------------------------------------------------------
+# Tests: _render_glyph
+# ---------------------------------------------------------------------------
+
+
+class TestRenderGlyph:
+    def test_returns_polylines_for_known_char(self):
+        """_render_glyph should return at least one polyline for 'A'."""
+        glyphs = _render_glyph("A", x_mm=50.0, y_mm=50.0, size_mm=5.0, angle_deg=0.0)
+        assert len(glyphs) > 0, "Expected polylines for character 'A'"
+
+    def test_each_polyline_has_min_two_points(self):
+        for char in "ABCabc123":
+            glyphs = _render_glyph(char, x_mm=0.0, y_mm=0.0, size_mm=5.0, angle_deg=0.0)
+            for poly in glyphs:
+                assert len(poly) >= 2, f"Polyline for '{char}' has < 2 points"
+
+    def test_char_size_matches_scale(self):
+        """Rendered glyph should fit within size_mm bounding box."""
+        size_mm = 6.0
+        glyphs = _render_glyph("O", x_mm=0.0, y_mm=0.0, size_mm=size_mm, angle_deg=0.0)
+        assert glyphs, "Expected polylines"
+        all_pts = [pt for poly in glyphs for pt in poly]
+        xs = [p[0] for p in all_pts]
+        ys = [p[1] for p in all_pts]
+        width = max(xs) - min(xs)
+        height = max(ys) - min(ys)
+        # Bounding box should be close to size_mm (within a factor of 1.5 to allow for glyph variation)
+        assert width <= size_mm * 1.5, f"Glyph width {width:.2f} > {size_mm * 1.5:.2f}"
+        assert height <= size_mm * 1.5, f"Glyph height {height:.2f} > {size_mm * 1.5:.2f}"
+
+    def test_rotation_shifts_points(self):
+        """Rotating a glyph 90 degrees should produce different point coordinates."""
+        glyphs_0 = _render_glyph("A", 0.0, 0.0, 5.0, 0.0)
+        glyphs_90 = _render_glyph("A", 0.0, 0.0, 5.0, 90.0)
+        assert glyphs_0 and glyphs_90
+        pts_0 = glyphs_0[0]
+        pts_90 = glyphs_90[0]
+        # At least some coordinates must differ
+        assert any(
+            abs(a[0] - b[0]) > 0.01 or abs(a[1] - b[1]) > 0.01
+            for a, b in zip(pts_0, pts_90)
+        ), "Rotation by 90° produced identical points"
+
+    def test_translation_shifts_center(self):
+        """Placing glyph at (10, 20) vs (0, 0) should shift all points by (10, 20)."""
+        glyphs_origin = _render_glyph("X", 0.0, 0.0, 5.0, 0.0)
+        glyphs_shifted = _render_glyph("X", 10.0, 20.0, 5.0, 0.0)
+        assert glyphs_origin and glyphs_shifted
+        for poly_o, poly_s in zip(glyphs_origin, glyphs_shifted):
+            for (ox, oy), (sx, sy) in zip(poly_o, poly_s):
+                assert abs((sx - ox) - 10.0) < 1e-9, f"x shift wrong: {sx - ox}"
+                assert abs((sy - oy) - 20.0) < 1e-9, f"y shift wrong: {sy - oy}"
+
+    def test_space_character_returns_empty(self):
+        """Space character has no strokes — should return empty list."""
+        glyphs = _render_glyph(" ", 0.0, 0.0, 5.0, 0.0)
+        assert glyphs == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: rotation_mode in generate()
+# ---------------------------------------------------------------------------
+
+
+class TestRotationModes:
+    def test_fixed_rotation_all_same_angle(self):
+        """With rotation_mode=Fixed and angle=45, all glyphs use same rotation."""
+        gen = ASCIIArtGenerator()
+        canvas = make_canvas()
+        # Use a uniform dark image so all cells use the same character
+        img = make_dark_image(value=0)
+        params = make_default_params(cell_size_mm=10.0, min_darkness=0.0)
+        params["_source_image"] = img
+        params["rotation_mode"] = "Fixed"
+        params["fixed_angle_deg"] = 45.0
+
+        result = gen.generate(params, canvas)
+        assert len(result) > 0
+
+    def test_random_rotation_produces_varied_angles(self):
+        """Random rotation should produce different angles across glyphs."""
+        gen = ASCIIArtGenerator()
+        canvas = make_canvas()
+        img = make_dark_image(value=0)
+        params = make_default_params(cell_size_mm=10.0, min_darkness=0.0)
+        params["_source_image"] = img
+        params["rotation_mode"] = "Random"
+
+        result1 = gen.generate(params, canvas)
+        result2 = gen.generate(params, canvas)
+        assert len(result1) > 0
+        assert len(result2) > 0
+        # Two runs with random rotation should differ (astronomically unlikely to match)
+        pts1 = result1[0][0]
+        pts2 = result2[0][0]
+        # Points from two random runs should differ (with extremely high probability)
+        all_same = all(abs(a - b) < 1e-9 for a, b in zip(pts1, pts2))
+        assert not all_same, "Random rotation produced identical results in two runs"
+
+    def test_gradient_rotation_produces_output(self):
+        """Gradient rotation mode should return polylines without error."""
+        gen = ASCIIArtGenerator()
+        canvas = make_canvas()
+        # Create an image with a clear edge (left half dark, right half bright)
+        img = np.zeros((100, 100), dtype=np.uint8)
+        img[:, 50:] = 200
+        params = make_default_params(cell_size_mm=10.0, min_darkness=0.0)
+        params["_source_image"] = img
+        params["rotation_mode"] = "Gradient"
+
+        result = gen.generate(params, canvas)
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+    def test_gradient_rotation_varies_across_cells(self):
+        """With a clear edge, gradient angles should vary between cell columns."""
+        from plottter.generators.ascii_art import _gradient_angles
+
+        # Image with vertical edge: left half black, right half white
+        img = np.zeros((100, 100), dtype=np.uint8)
+        img[:, 50:] = 255
+
+        angles = _gradient_angles(img)
+        assert angles.shape == (100, 100)
+
+        # Near the edge (col ~50), gradient should be strong in x direction (~0°)
+        # Far from edge (col 10), gradient should be near 0 magnitude
+        edge_angle = float(angles[50, 50])
+        flat_angle = float(angles[50, 10])
+
+        # Edge angle should be close to 0° (strong horizontal gradient)
+        assert abs(edge_angle) < 30.0 or abs(abs(edge_angle) - 180.0) < 30.0, (
+            f"Edge angle {edge_angle:.1f}° unexpected for vertical edge"
+        )
+
+    def test_get_parameters_includes_rotation_params(self):
+        gen = ASCIIArtGenerator()
+        param_names = {p.name for p in gen.get_parameters()}
+        assert "rotation_mode" in param_names
+        assert "fixed_angle_deg" in param_names
