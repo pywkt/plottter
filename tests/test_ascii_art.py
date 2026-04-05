@@ -439,3 +439,79 @@ class TestRotationModes:
         param_names = {p.name for p in gen.get_parameters()}
         assert "rotation_mode" in param_names
         assert "fixed_angle_deg" in param_names
+
+
+# ---------------------------------------------------------------------------
+# Tests: New presets (task 92.3)
+# ---------------------------------------------------------------------------
+
+
+class TestNewPresets:
+    def _get_preset(self, name: str):
+        gen = ASCIIArtGenerator()
+        for p in gen.get_presets():
+            if p.name == name:
+                return p
+        raise KeyError(f"Preset '{name}' not found")
+
+    def test_typewriter_preset_exists(self):
+        p = self._get_preset("Typewriter")
+        assert p.params["cell_size_mm"] == 5.0
+        assert p.params["char_scale"] == 0.7
+        assert p.params["rotation_mode"] == "Fixed"
+        assert p.params["fixed_angle_deg"] == 0.0
+
+    def test_scattered_type_preset_exists(self):
+        p = self._get_preset("Scattered Type")
+        assert p.params["cell_size_mm"] == 6.0
+        assert p.params["char_scale"] == 0.6
+        assert p.params["rotation_mode"] == "Random"
+
+    def test_contour_text_preset_exists(self):
+        p = self._get_preset("Contour Text")
+        assert p.params["cell_size_mm"] == 4.0
+        assert p.params["char_scale"] == 0.65
+        assert p.params["rotation_mode"] == "Gradient"
+
+    def test_large_print_preset_exists(self):
+        p = self._get_preset("Large Print")
+        assert p.params["cell_size_mm"] == 10.0
+        assert p.params["char_scale"] == 0.8
+        assert p.params["rotation_mode"] == "Fixed"
+        assert p.params["fixed_angle_deg"] == 0.0
+
+    def test_all_four_presets_registered(self):
+        gen = ASCIIArtGenerator()
+        names = {p.name for p in gen.get_presets()}
+        for expected in ("Typewriter", "Scattered Type", "Contour Text", "Large Print"):
+            assert expected in names, f"Preset '{expected}' not found in {names}"
+
+    def _run_preset(self, preset_name: str) -> list:
+        gen = ASCIIArtGenerator()
+        canvas = make_canvas()
+        p = self._get_preset(preset_name)
+        params = dict(p.params)
+        params["_source_image"] = make_dark_image()
+        return gen.generate(params, canvas)
+
+    def test_typewriter_generates_valid_output(self):
+        result = self._run_preset("Typewriter")
+        assert isinstance(result, list)
+        assert len(result) > 0
+        for poly in result:
+            assert len(poly) >= 2
+
+    def test_scattered_type_generates_valid_output(self):
+        result = self._run_preset("Scattered Type")
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+    def test_contour_text_generates_valid_output(self):
+        result = self._run_preset("Contour Text")
+        assert isinstance(result, list)
+        assert len(result) > 0
+
+    def test_large_print_generates_valid_output(self):
+        result = self._run_preset("Large Print")
+        assert isinstance(result, list)
+        assert len(result) > 0
