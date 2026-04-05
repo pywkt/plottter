@@ -27,6 +27,9 @@ dev = [
 fmm = [
     "scikit-fmm",
 ]
+image = [
+    "scikit-image>=0.22",
+]
 3d = [
     "numba>=0.59",
 ]
