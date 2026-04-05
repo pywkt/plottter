@@ -12,6 +12,7 @@ from plottter.generators.triangulated_hatch import (
     _hexagon_cells,
     _quadtree_cells,
     _rectangle_cells,
+    _superpixel_cells,
     _triangulate_and_sample,
     _voronoi_cells,
 )
@@ -1468,3 +1469,170 @@ def test_adaptive_detail_preset_exists() -> None:
     assert preset.params["max_density"] == 8.0
     assert preset.params["cross_hatch"] is True
     assert preset.params["angle_mode"] == "Edge Flow"
+
+
+# ---------------------------------------------------------------------------
+# Tests for _superpixel_cells
+# ---------------------------------------------------------------------------
+
+
+def test_superpixel_cells_returns_list() -> None:
+    """_superpixel_cells must return a non-empty list."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_gray_with_edges()
+    rgb = np.stack([gray, gray, gray], axis=-1)
+    cells = _superpixel_cells(rgb, gray, img_rect, num_segments=20, compactness=10.0)
+    assert isinstance(cells, list)
+    assert len(cells) > 0
+
+
+def test_superpixel_cells_polygon_structure() -> None:
+    """Each superpixel cell must be (list-of->=3-pairs, float)."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_uniform_gray()
+    rgb = np.stack([gray, gray, gray], axis=-1)
+    cells = _superpixel_cells(rgb, gray, img_rect, num_segments=10, compactness=10.0)
+    assert len(cells) > 0
+    for verts, brightness in cells:
+        assert len(verts) >= 3, f"Superpixel cell has only {len(verts)} vertices"
+        for pt in verts:
+            assert len(pt) == 2
+        assert 0.0 <= brightness <= 255.0
+
+
+def test_superpixel_cells_brightness_range() -> None:
+    """Each superpixel cell must have brightness in [0, 255]."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_gray_with_edges()
+    rgb = np.stack([gray, gray, gray], axis=-1)
+    cells = _superpixel_cells(rgb, gray, img_rect, num_segments=30, compactness=10.0)
+    for _, brightness in cells:
+        assert 0.0 <= brightness <= 255.0, f"Brightness {brightness} out of [0, 255]"
+
+
+def test_superpixel_num_segments_controls_count() -> None:
+    """More num_segments should produce more cells than fewer segments."""
+    img_rect = (0.0, 0.0, 100.0, 100.0)
+    gray = make_gray_with_edges()
+    rgb = np.stack([gray, gray, gray], axis=-1)
+    cells_few = _superpixel_cells(rgb, gray, img_rect, num_segments=10, compactness=10.0)
+    cells_many = _superpixel_cells(rgb, gray, img_rect, num_segments=100, compactness=10.0)
+    assert len(cells_many) > len(cells_few), (
+        f"More segments ({len(cells_many)}) should exceed fewer ({len(cells_few)})"
+    )
+
+
+def test_superpixel_cells_vertices_are_2tuples() -> None:
+    """All vertices must be (x_mm, y_mm) float tuples."""
+    img_rect = (0.0, 0.0, 50.0, 50.0)
+    gray = make_gray_with_edges()
+    rgb = np.stack([gray, gray, gray], axis=-1)
+    cells = _superpixel_cells(rgb, gray, img_rect, num_segments=20, compactness=10.0)
+    for verts, _ in cells:
+        for pt in verts:
+            assert len(pt) == 2
+            assert isinstance(pt[0], float)
+            assert isinstance(pt[1], float)
+
+
+# ---------------------------------------------------------------------------
+# Tests for Superpixels mode via generate()
+# ---------------------------------------------------------------------------
+
+
+def _make_superpixel_params(extra: dict | None = None) -> dict:
+    """Build a minimal params dict for Superpixels mode."""
+    gray = make_gray_with_edges()
+    rgb = np.stack([gray, gray, gray], axis=-1)
+    base: dict = {
+        "_source_image": rgb,
+        "mesh_type": "Superpixels",
+        "num_segments": 30,
+        "compactness": 10.0,
+        "brightness": 0.0,
+        "contrast": 0.0,
+        "blur_radius": 0.0,
+        "invert": False,
+        "x_offset_mm": 0.0,
+        "y_offset_mm": 0.0,
+        "min_density": 0.0,
+        "max_density": 6.0,
+        "angle_mode": "Fixed",
+        "fixed_angle_deg": 45.0,
+        "cross_hatch": False,
+        "cross_hatch_threshold": 0.3,
+        "draw_edges": False,
+    }
+    if extra:
+        base.update(extra)
+    return base
+
+
+def test_superpixel_mode_produces_polylines() -> None:
+    """Superpixels mesh_type must produce hatching polylines for a dark image."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+    dark = np.zeros((100, 100), dtype=np.uint8)
+    dark_rgb = np.stack([dark, dark, dark], axis=-1)
+    params = _make_superpixel_params({"_source_image": dark_rgb})
+    result = gen.generate(params, canvas)
+    assert isinstance(result, list)
+    assert len(result) > 0, "Expected hatch lines for dark image with Superpixels"
+    for poly in result:
+        assert len(poly) >= 2
+
+
+def test_superpixel_mode_bright_no_lines() -> None:
+    """Superpixels mode with all-white image and min_density=0 should produce no lines."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+    white = np.full((100, 100), 255, dtype=np.uint8)
+    white_rgb = np.stack([white, white, white], axis=-1)
+    result = gen.generate(_make_superpixel_params({"_source_image": white_rgb, "min_density": 0.0}), canvas)
+    assert result == [], f"Expected no lines for all-white image in Superpixels mode, got {len(result)}"
+
+
+def test_superpixel_num_segments_param_exists() -> None:
+    """num_segments param must exist and be visible only for Superpixels mode."""
+    gen = MosaicHatchGenerator()
+    params_dict = {p.name: p for p in gen.get_parameters()}
+    assert "num_segments" in params_dict, "num_segments parameter must exist"
+    ns = params_dict["num_segments"]
+    assert ns.visible_when is not None
+    assert "mesh_type" in ns.visible_when
+    assert "Superpixels" in ns.visible_when["mesh_type"]
+    assert "Triangles" not in ns.visible_when["mesh_type"]
+
+
+def test_superpixel_compactness_param_exists() -> None:
+    """compactness param must exist and be visible only for Superpixels mode."""
+    gen = MosaicHatchGenerator()
+    params_dict = {p.name: p for p in gen.get_parameters()}
+    assert "compactness" in params_dict, "compactness parameter must exist"
+    cp = params_dict["compactness"]
+    assert cp.visible_when is not None
+    assert "mesh_type" in cp.visible_when
+    assert "Superpixels" in cp.visible_when["mesh_type"]
+    assert "Triangles" not in cp.visible_when["mesh_type"]
+
+
+def test_mesh_type_choices_include_superpixels() -> None:
+    """mesh_type ChoiceParam must include 'Superpixels'."""
+    gen = MosaicHatchGenerator()
+    mesh_param = next(p for p in gen.get_parameters() if p.name == "mesh_type")
+    assert hasattr(mesh_param, "choices")
+    assert "Superpixels" in mesh_param.choices
+
+
+def test_superpixel_draw_edges() -> None:
+    """Superpixels with draw_edges=True must produce edge polylines."""
+    canvas = make_canvas()
+    gen = MosaicHatchGenerator()
+    white = np.full((100, 100), 255, dtype=np.uint8)
+    white_rgb = np.stack([white, white, white], axis=-1)
+    result = gen.generate(_make_superpixel_params({
+        "_source_image": white_rgb,
+        "draw_edges": True,
+        "min_density": 0.0,
+    }), canvas)
+    assert len(result) > 0, "Expected edge polylines from Superpixels with draw_edges=True"

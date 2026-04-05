@@ -502,6 +502,97 @@ def _voronoi_cells(
     return result
 
 
+def _superpixel_cells(
+    img: np.ndarray,
+    gray: np.ndarray,
+    img_rect: tuple[float, float, float, float],
+    num_segments: int,
+    compactness: float,
+) -> list[tuple[list[tuple[float, float]], float]]:
+    """Generate SLIC superpixel cells from an image.
+
+    Parameters
+    ----------
+    img:
+        Source image (RGB uint8 or grayscale uint8).
+    gray:
+        Grayscale image array (uint8, shape HxW).
+    img_rect:
+        Bounding box in mm: (x1, y1, x2, y2).
+    num_segments:
+        Target number of superpixel segments.
+    compactness:
+        Balance between color similarity and spatial proximity.
+
+    Returns
+    -------
+    list of (verts_mm, brightness) tuples where verts_mm is the segment
+    boundary polygon vertices in mm and brightness is 0–255.
+    """
+    try:
+        from skimage.segmentation import slic
+    except ImportError as exc:
+        raise RuntimeError(
+            "scikit-image is required for Superpixel mode. "
+            "Install with: pip install scikit-image"
+        ) from exc
+
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError(
+            "opencv-python is required for Superpixel mode. "
+            "Install with: pip install opencv-python"
+        ) from exc
+
+    img_x1, img_y1, img_x2, img_y2 = img_rect
+    img_h, img_w = gray.shape[:2]
+    mm_w = img_x2 - img_x1
+    mm_h = img_y2 - img_y1
+
+    # SLIC works on float images; pass color when available for better results
+    slic_img = img if img.ndim == 3 else gray
+    segments = slic(slic_img, n_segments=num_segments, compactness=compactness, start_label=0)
+
+    result: list[tuple[list[tuple[float, float]], float]] = []
+
+    for label in np.unique(segments):
+        # Binary mask for this segment
+        mask = (segments == label).astype(np.uint8) * 255
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            continue
+
+        # Use the largest contour only
+        contour = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(contour) < 1.0:
+            continue
+
+        pts = contour.squeeze()
+        if pts.ndim < 2 or len(pts) < 3:
+            continue
+
+        # Convert pixel coords → mm
+        verts_mm: list[tuple[float, float]] = [
+            (
+                img_x1 + float(pt[0]) / (img_w - 1) * mm_w,
+                img_y1 + float(pt[1]) / (img_h - 1) * mm_h,
+            )
+            for pt in pts
+        ]
+
+        # Sample brightness at the segment's pixel centroid
+        ys, xs = np.where(segments == label)
+        cx_px = float(xs.mean())
+        cy_px = float(ys.mean())
+        brightness = _bilinear_sample(gray, cx_px, cy_px)
+
+        result.append((verts_mm, brightness))
+
+    return result
+
+
 def _compute_angle_map(gray: np.ndarray, mode: str) -> np.ndarray:
     """Compute per-pixel hatch angle map (degrees) from image gradient.
 
@@ -550,9 +641,9 @@ class MosaicHatchGenerator(Generator):
             ChoiceParam(
                 name="mesh_type",
                 label="Mesh Type",
-                choices=["Triangles", "Voronoi", "Rectangles", "Hexagons", "Quadtree"],
+                choices=["Triangles", "Voronoi", "Rectangles", "Hexagons", "Quadtree", "Superpixels"],
                 default="Triangles",
-                description="Tessellation method — Triangles, Voronoi, Rectangles, Hexagons, or Quadtree",
+                description="Tessellation method — Triangles, Voronoi, Rectangles, Hexagons, Quadtree, or Superpixels",
             ),
             IntParam(
                 name="num_points",
@@ -593,6 +684,26 @@ class MosaicHatchGenerator(Generator):
                 default=4,
                 visible_when={"mesh_type": ["Quadtree"]},
                 description="Maximum subdivision depth — higher = more detail in high-contrast areas",
+            ),
+            IntParam(
+                name="num_segments",
+                label="Segments",
+                min=20,
+                max=2000,
+                step=10,
+                default=200,
+                visible_when={"mesh_type": ["Superpixels"]},
+                description="Number of superpixel segments",
+            ),
+            FloatParam(
+                name="compactness",
+                label="Compactness",
+                min=1.0,
+                max=100.0,
+                step=1.0,
+                default=10.0,
+                visible_when={"mesh_type": ["Superpixels"]},
+                description="Balance between color similarity and spatial proximity — higher = more regular shapes",
             ),
             FloatParam(
                 name="brightness",
@@ -1048,6 +1159,12 @@ class MosaicHatchGenerator(Generator):
         elif mesh_type == "Quadtree":
             quadtree_depth = int(params.get("quadtree_depth", 4))
             cells = _quadtree_cells(gray, img_rect, quadtree_depth)
+            if progress_callback:
+                progress_callback(60)
+        elif mesh_type == "Superpixels":
+            num_segments = int(params.get("num_segments", 200))
+            compactness = float(params.get("compactness", 10.0))
+            cells = _superpixel_cells(img, gray, img_rect, num_segments, compactness)
             if progress_callback:
                 progress_callback(60)
         else:
