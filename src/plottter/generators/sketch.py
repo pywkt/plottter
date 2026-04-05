@@ -17,6 +17,17 @@ _STRAIGHT_OFFSETS: list[float] = [_math.radians(a) for a in (-14, -7, 0, 7, 14)]
 _CURVE_OFFSETS: list[float] = [_math.radians(a) for a in (-80, -45, -20, 0, 20, 45, 80)]
 _AXIAL_OFFSETS: list[float] = [_math.radians(a) for a in (0, 90, 180, 270)]
 
+# Try to import Numba for JIT acceleration
+try:
+    from numba import njit as _numba_njit
+    _NUMBA_AVAILABLE = True
+except ImportError:
+    def _numba_njit(func=None, **kwargs):  # type: ignore
+        if func is not None:
+            return func
+        return lambda f: f
+    _NUMBA_AVAILABLE = False
+
 from plottter.generators import register_generator
 from plottter.generators._helpers import compute_image_rect
 from plottter.generators.base import (
@@ -29,6 +40,79 @@ from plottter.generators.base import (
     Preset,
 )
 from plottter.models import Canvas, Polyline
+
+
+@_numba_njit(cache=True)
+def _score_all_candidates(
+    cur_x,
+    cur_y,
+    ends_x,
+    ends_y,
+    residual_dark,
+    edge_normalized,
+    coverage,
+    max_pixel_coverage,
+    h,
+    w,
+):
+    """Score all candidate line endpoints using explicit for-loops (numba-compatible).
+
+    Parameters mirror the arrays used in ``_find_darkest_line``.  The function
+    is intentionally written with explicit ``for`` loops so that numba can
+    compile it to fast native code.  Without numba the function runs as pure
+    Python (slow), so ``_find_darkest_line`` falls back to the vectorized numpy
+    path when ``_NUMBA_AVAILABLE`` is ``False``.
+
+    Returns
+    -------
+    ``(scores, avg_brightnesses)`` arrays of length ``n_candidates``.
+    ``avg_brightnesses[c]`` is the mean lightness (0–255) along the sampled
+    points derived from ``residual_dark``: ``(1 - dark_mean) * 255``.
+    """
+    N_SAMPLES = 8
+    n_candidates = ends_x.shape[0]
+    denom_cov = 1.0 / (max_pixel_coverage if max_pixel_coverage > 0 else 1)
+
+    scores = np.empty(n_candidates, dtype=np.float64)
+    avg_brightnesses = np.empty(n_candidates, dtype=np.float64)
+
+    for c in range(n_candidates):
+        dark_sum = 0.0
+        dark_peak = 0.0
+        edge_sum = 0.0
+        cov_sum = 0.0
+
+        ex = int(ends_x[c])
+        ey = int(ends_y[c])
+
+        for s in range(N_SAMPLES):
+            t = s / (N_SAMPLES - 1)
+            px = int(round(cur_x + (ex - cur_x) * t))
+            py = int(round(cur_y + (ey - cur_y) * t))
+            if px < 0:
+                px = 0
+            elif px >= w:
+                px = w - 1
+            if py < 0:
+                py = 0
+            elif py >= h:
+                py = h - 1
+
+            dark_val = float(residual_dark[py, px])
+            dark_sum += dark_val
+            if dark_val > dark_peak:
+                dark_peak = dark_val
+            edge_sum += float(edge_normalized[py, px])
+            cov_sum += float(coverage[py, px]) * denom_cov
+
+        dark_mean = dark_sum / N_SAMPLES
+        edge_mean = edge_sum / N_SAMPLES
+        cov_mean = cov_sum / N_SAMPLES
+
+        scores[c] = dark_mean * 1.45 + dark_peak * 0.45 + edge_mean * 0.24 - cov_mean * 1.08
+        avg_brightnesses[c] = (1.0 - dark_mean) * 255.0
+
+    return scores, avg_brightnesses
 
 
 @register_generator
@@ -776,44 +860,69 @@ class SketchGenerator(Generator):
         if not valid:
             return None
 
-        # Vectorized scoring: sample a fixed number of points along each
-        # candidate line and score all candidates in one batch of numpy ops.
-        N_SAMPLES = 8  # fixed sample count for uniform array shapes
         n_cands = len(valid)
         ends_x = np.array([ex for ex, _ in valid], dtype=np.int32)
         ends_y = np.array([ey for _, ey in valid], dtype=np.int32)
 
-        # Build sample coordinates for all candidates at once: (n_cands, N_SAMPLES)
-        t = np.linspace(0.0, 1.0, N_SAMPLES).reshape(1, N_SAMPLES)  # (1, N)
-        sx = np.clip(np.round(cur_x + (ends_x[:, None] - cur_x) * t).astype(np.int32), 0, w - 1)  # (n_cands, N)
-        sy = np.clip(np.round(cur_y + (ends_y[:, None] - cur_y) * t).astype(np.int32), 0, h - 1)  # (n_cands, N)
-
-        # Gather values for all candidates × all samples in one indexing op
-        if residual_dark is not None:
-            dark_vals = residual_dark[sy, sx]  # (n_cands, N)
+        if _NUMBA_AVAILABLE:
+            # Numba path: explicit loops compiled to fast native code.
+            # Prepare dense arrays for the numba function (handle None maps).
+            _rd: np.ndarray = (
+                residual_dark if residual_dark is not None
+                else (1.0 - lightened.astype(np.float32) / 255.0)
+            )
+            _en: np.ndarray = (
+                edge_normalized if edge_normalized is not None
+                else np.zeros((h, w), dtype=np.float32)
+            )
+            _cov: np.ndarray = (
+                coverage if coverage is not None
+                else np.zeros((h, w), dtype=np.uint8)
+            )
+            scores, avg_brightnesses = _score_all_candidates(
+                cur_x, cur_y, ends_x, ends_y,
+                _rd, _en, _cov,
+                max_pixel_coverage, h, w,
+            )
+            best_idx = int(np.argmax(scores))
+            best_score = float(scores[best_idx])
+            best_end = (int(ends_x[best_idx]), int(ends_y[best_idx]))
+            best_avg_brightness = float(avg_brightnesses[best_idx])
         else:
-            dark_vals = 1.0 - lightened[sy, sx].astype(np.float32) / 255.0
+            # Vectorized numpy scoring: sample a fixed number of points along
+            # each candidate line and score all candidates in one batch of ops.
+            N_SAMPLES = 8  # fixed sample count for uniform array shapes
 
-        dark_means = dark_vals.mean(axis=1)       # (n_cands,)
-        dark_peaks = dark_vals.max(axis=1)         # (n_cands,)
+            # Build sample coordinates for all candidates: (n_cands, N_SAMPLES)
+            t = np.linspace(0.0, 1.0, N_SAMPLES).reshape(1, N_SAMPLES)
+            sx = np.clip(np.round(cur_x + (ends_x[:, None] - cur_x) * t).astype(np.int32), 0, w - 1)
+            sy = np.clip(np.round(cur_y + (ends_y[:, None] - cur_y) * t).astype(np.int32), 0, h - 1)
 
-        if edge_normalized is not None:
-            edge_means = edge_normalized[sy, sx].mean(axis=1)
-        else:
-            edge_means = np.zeros(n_cands, dtype=np.float32)
+            if residual_dark is not None:
+                dark_vals = residual_dark[sy, sx]  # (n_cands, N)
+            else:
+                dark_vals = 1.0 - lightened[sy, sx].astype(np.float32) / 255.0
 
-        denom_cov = 1.0 / max(1, max_pixel_coverage)
-        if coverage is not None:
-            cov_means = (coverage[sy, sx].astype(np.float32) * denom_cov).mean(axis=1)
-        else:
-            cov_means = np.zeros(n_cands, dtype=np.float32)
+            dark_means = dark_vals.mean(axis=1)
+            dark_peaks = dark_vals.max(axis=1)
 
-        scores = dark_means * 1.45 + dark_peaks * 0.45 + edge_means * 0.24 - cov_means * 1.08
+            if edge_normalized is not None:
+                edge_means = edge_normalized[sy, sx].mean(axis=1)
+            else:
+                edge_means = np.zeros(n_cands, dtype=np.float32)
 
-        best_idx = int(np.argmax(scores))
-        best_score = float(scores[best_idx])
-        best_end = (int(ends_x[best_idx]), int(ends_y[best_idx]))
-        best_avg_brightness = float(lightened[sy[best_idx], sx[best_idx]].astype(np.float32).mean())
+            denom_cov = 1.0 / max(1, max_pixel_coverage)
+            if coverage is not None:
+                cov_means = (coverage[sy, sx].astype(np.float32) * denom_cov).mean(axis=1)
+            else:
+                cov_means = np.zeros(n_cands, dtype=np.float32)
+
+            scores = dark_means * 1.45 + dark_peaks * 0.45 + edge_means * 0.24 - cov_means * 1.08
+
+            best_idx = int(np.argmax(scores))
+            best_score = float(scores[best_idx])
+            best_end = (int(ends_x[best_idx]), int(ends_y[best_idx]))
+            best_avg_brightness = float(lightened[sy[best_idx], sx[best_idx]].astype(np.float32).mean())
 
         if best_end is None:
             return None
