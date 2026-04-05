@@ -622,3 +622,231 @@ class TestMeshSlicerGenerator:
         assert abs(cy - canvas.height_mm / 2.0) < 0.5, (
             f"Y center {cy:.2f} should be near canvas center {canvas.height_mm / 2.0:.2f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# (h) view_mode: Plan View vs Stacked (task 90.3)
+# ---------------------------------------------------------------------------
+
+class TestViewMode:
+    """Tests for the view_mode parameter added in task 90.3."""
+
+    def test_stacked_view_produces_y_offsets(self, tmp_path):
+        """Stacked view: successive slices should have increasing Y centroids."""
+        from plottter.generators import GENERATORS
+        from plottter.models import Canvas
+
+        vertices, faces = _unit_cube_vf()
+        stl_path = str(tmp_path / "cube.stl")
+        _write_stl_ascii(stl_path, vertices, faces)
+
+        gen = GENERATORS["Mesh Slicer"]()
+        canvas = Canvas(width_mm=210.0, height_mm=297.0)
+        result = gen.generate({
+            "mesh_file": stl_path,
+            "slice_axis": "Z",
+            "num_slices": 5,
+            "view_mode": "Stacked",
+            "slice_spacing_mm": 5.0,
+            "scale": 10.0,
+        }, canvas)
+
+        assert len(result) == 5
+
+        # Each poly is a single closed contour from the unit cube.
+        # Their Y centroids should be monotonically increasing (stacked).
+        centroids_y = [sum(pt[1] for pt in poly) / len(poly) for poly in result]
+        for i in range(1, len(centroids_y)):
+            assert centroids_y[i] > centroids_y[i - 1], (
+                f"Stacked: slice {i} Y centroid ({centroids_y[i]:.2f}) should be "
+                f"above slice {i-1} ({centroids_y[i-1]:.2f})"
+            )
+
+    def test_plan_view_contours_overlap(self, tmp_path):
+        """Plan View: contours should NOT be artificially stacked (no slice_spacing_mm offset).
+
+        We verify this by comparing Y-centroid spread: plan view spread should be much
+        smaller than stacked view spread (which equals (n-1)*spacing = 4*5 = 20 mm).
+        """
+        from plottter.generators import GENERATORS
+        from plottter.models import Canvas
+
+        vertices, faces = _unit_cube_vf()
+        stl_path = str(tmp_path / "cube.stl")
+        _write_stl_ascii(stl_path, vertices, faces)
+
+        gen = GENERATORS["Mesh Slicer"]()
+        canvas = Canvas(width_mm=210.0, height_mm=297.0)
+
+        # Plan view run
+        result_plan = gen.generate({
+            "mesh_file": stl_path,
+            "slice_axis": "Z",
+            "num_slices": 5,
+            "view_mode": "Plan View",
+            "slice_spacing_mm": 5.0,
+            "scale": 10.0,
+        }, canvas)
+
+        # Stacked view run (same params, different view_mode)
+        result_stacked = gen.generate({
+            "mesh_file": stl_path,
+            "slice_axis": "Z",
+            "num_slices": 5,
+            "view_mode": "Stacked",
+            "slice_spacing_mm": 5.0,
+            "scale": 10.0,
+        }, canvas)
+
+        assert len(result_plan) == 5
+        assert len(result_stacked) == 5
+
+        def y_spread(polys):
+            centroids = [sum(pt[1] for pt in poly) / len(poly) for poly in polys]
+            return max(centroids) - min(centroids)
+
+        plan_spread = y_spread(result_plan)
+        stacked_spread = y_spread(result_stacked)
+
+        # Stacked spread should be ~(n-1)*spacing = 4*5 = 20 mm
+        # Plan view spread should be a tiny fraction of that (only from mesh geometry, ~scale=10mm)
+        assert stacked_spread > 15.0, (
+            f"Stacked view Y spread too small: {stacked_spread:.2f} (expected ~20)"
+        )
+        assert plan_spread < stacked_spread / 4.0, (
+            f"Plan View Y spread ({plan_spread:.2f}) should be much smaller than "
+            f"stacked spread ({stacked_spread:.2f})"
+        )
+
+    def test_plan_view_default_is_stacked(self, tmp_path):
+        """When view_mode is omitted the generator uses Stacked (default) behaviour."""
+        from plottter.generators import GENERATORS
+        from plottter.models import Canvas
+
+        vertices, faces = _unit_cube_vf()
+        stl_path = str(tmp_path / "cube.stl")
+        _write_stl_ascii(stl_path, vertices, faces)
+
+        gen = GENERATORS["Mesh Slicer"]()
+        canvas = Canvas(width_mm=210.0, height_mm=297.0)
+        # No view_mode key in params — should default to Stacked
+        result = gen.generate({
+            "mesh_file": stl_path,
+            "slice_axis": "Z",
+            "num_slices": 3,
+            "slice_spacing_mm": 5.0,
+            "scale": 10.0,
+        }, canvas)
+
+        assert len(result) == 3
+        centroids_y = [sum(pt[1] for pt in poly) / len(poly) for poly in result]
+        # Stacked: each successive centroid should be higher
+        assert centroids_y[1] > centroids_y[0]
+        assert centroids_y[2] > centroids_y[1]
+
+
+# ---------------------------------------------------------------------------
+# (i) Presets (task 90.3)
+# ---------------------------------------------------------------------------
+
+class TestPresets:
+    """Tests for the new presets added in task 90.3."""
+
+    def _preset_params(self, preset_name: str) -> dict:
+        from plottter.generators import GENERATORS
+        gen = GENERATORS["Mesh Slicer"]()
+        for preset in gen.get_presets():
+            if preset.name == preset_name:
+                return preset.params
+        raise KeyError(f"Preset '{preset_name}' not found")
+
+    def test_topographic_map_preset_exists(self):
+        """'Topographic Map' preset is registered."""
+        params = self._preset_params("Topographic Map")
+        assert params["view_mode"] == "Plan View"
+        assert params["slice_axis"] == "Z"
+        assert params["num_slices"] == 40
+
+    def test_side_profile_preset_exists(self):
+        """'Side Profile' preset is registered."""
+        params = self._preset_params("Side Profile")
+        assert params["view_mode"] == "Stacked"
+        assert params["slice_axis"] == "Z"
+        assert params["num_slices"] == 30
+        assert params["slice_spacing_mm"] == 2.0
+
+    def test_cross_sections_preset_exists(self):
+        """'Cross Sections' preset is registered."""
+        params = self._preset_params("Cross Sections")
+        assert params["view_mode"] == "Stacked"
+        assert params["slice_axis"] == "X"
+        assert params["num_slices"] == 20
+        assert params["slice_spacing_mm"] == 3.0
+
+    def test_topographic_map_generates_valid_output(self, tmp_path):
+        """'Topographic Map' preset produces valid polylines on a cube mesh."""
+        from plottter.generators import GENERATORS
+        from plottter.models import Canvas
+
+        vertices, faces = _unit_cube_vf()
+        stl_path = str(tmp_path / "cube.stl")
+        _write_stl_ascii(stl_path, vertices, faces)
+
+        gen = GENERATORS["Mesh Slicer"]()
+        canvas = Canvas(width_mm=210.0, height_mm=297.0)
+        params = self._preset_params("Topographic Map")
+        params["mesh_file"] = stl_path
+        result = gen.generate(params, canvas)
+
+        assert len(result) == params["num_slices"], (
+            f"Topographic Map: expected {params['num_slices']} polylines, got {len(result)}"
+        )
+        # Plan view: Y spread should be tiny (no stacking offset applied)
+        centroids_y = [sum(pt[1] for pt in poly) / len(poly) for poly in result]
+        y_spread = max(centroids_y) - min(centroids_y)
+        # Without stacking the spread is purely geometric: << scale (10 mm)
+        assert y_spread < params.get("scale", 10.0), (
+            f"Plan View Y spread ({y_spread:.2f}) should be < scale ({params.get('scale', 10.0)})"
+        )
+
+    def test_side_profile_generates_valid_output(self, tmp_path):
+        """'Side Profile' preset produces stacked polylines on a cube mesh."""
+        from plottter.generators import GENERATORS
+        from plottter.models import Canvas
+
+        vertices, faces = _unit_cube_vf()
+        stl_path = str(tmp_path / "cube.stl")
+        _write_stl_ascii(stl_path, vertices, faces)
+
+        gen = GENERATORS["Mesh Slicer"]()
+        canvas = Canvas(width_mm=210.0, height_mm=297.0)
+        params = self._preset_params("Side Profile")
+        params["mesh_file"] = stl_path
+        result = gen.generate(params, canvas)
+
+        assert len(result) == params["num_slices"]
+        # Stacked: each centroid Y should be monotonically increasing
+        centroids_y = [sum(pt[1] for pt in poly) / len(poly) for poly in result]
+        for i in range(1, len(centroids_y)):
+            assert centroids_y[i] > centroids_y[i - 1]
+
+    def test_cross_sections_generates_valid_output(self, tmp_path):
+        """'Cross Sections' preset produces stacked polylines on a cube mesh."""
+        from plottter.generators import GENERATORS
+        from plottter.models import Canvas
+
+        vertices, faces = _unit_cube_vf()
+        stl_path = str(tmp_path / "cube.stl")
+        _write_stl_ascii(stl_path, vertices, faces)
+
+        gen = GENERATORS["Mesh Slicer"]()
+        canvas = Canvas(width_mm=210.0, height_mm=297.0)
+        params = self._preset_params("Cross Sections")
+        params["mesh_file"] = stl_path
+        result = gen.generate(params, canvas)
+
+        assert len(result) == params["num_slices"]
+        # Stacked: each centroid Y should be monotonically increasing
+        centroids_y = [sum(pt[1] for pt in poly) / len(poly) for poly in result]
+        for i in range(1, len(centroids_y)):
+            assert centroids_y[i] > centroids_y[i - 1]

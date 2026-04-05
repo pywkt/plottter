@@ -408,6 +408,16 @@ class MeshSlicerGenerator(Generator):
                 default=40,
                 description="Number of parallel cutting planes",
             ),
+            ChoiceParam(
+                name="view_mode",
+                label="View Mode",
+                choices=["Stacked", "Plan View"],
+                default="Stacked",
+                description=(
+                    "Stacked: slices are offset vertically for a side-profile look. "
+                    "Plan View: all contours overlaid at the same position (topographic map)."
+                ),
+            ),
             FloatParam(
                 name="slice_spacing_mm",
                 label="Slice Spacing (mm)",
@@ -415,6 +425,7 @@ class MeshSlicerGenerator(Generator):
                 max=10.0,
                 step=0.1,
                 default=2.0,
+                visible_when={"view_mode": ["Stacked"]},
                 description=(
                     "Vertical spacing between contour lines when displayed — "
                     "controls how spread out the slices appear"
@@ -460,8 +471,10 @@ class MeshSlicerGenerator(Generator):
 
         slice_axis = str(params.get("slice_axis", "Z"))
         num_slices = max(1, int(params.get("num_slices", 40)))
+        view_mode = str(params.get("view_mode", "Stacked"))
         slice_spacing_mm = float(params.get("slice_spacing_mm", 2.0))
         scale = float(params.get("scale", 10.0))
+        plan_view = view_mode == "Plan View"
 
         # Compute mesh bounds along the slice axis
         axis_idx = _AXIS_MAP.get(slice_axis.upper(), 2)
@@ -490,10 +503,10 @@ class MeshSlicerGenerator(Generator):
         if cancelled_callback and cancelled_callback():
             return []
 
-        # Build polylines: scale mesh coordinates, then stack vertically
+        # Build polylines: scale mesh coordinates, then stack vertically (or overlay in plan view)
         raw_polylines: list[Polyline] = []
         for slice_idx, contours in enumerate(all_slices):
-            y_offset = slice_idx * slice_spacing_mm
+            y_offset = 0.0 if plan_view else slice_idx * slice_spacing_mm
             for contour in contours:
                 if len(contour) < 2:
                     continue
@@ -531,6 +544,7 @@ class MeshSlicerGenerator(Generator):
                 params={
                     "slice_axis": "Z",
                     "num_slices": 40,
+                    "view_mode": "Stacked",
                     "slice_spacing_mm": 2.0,
                     "scale": 10.0,
                 },
@@ -541,6 +555,7 @@ class MeshSlicerGenerator(Generator):
                 params={
                     "slice_axis": "Z",
                     "num_slices": 100,
+                    "view_mode": "Stacked",
                     "slice_spacing_mm": 1.0,
                     "scale": 8.0,
                 },
@@ -551,9 +566,43 @@ class MeshSlicerGenerator(Generator):
                 params={
                     "slice_axis": "Z",
                     "num_slices": 15,
+                    "view_mode": "Stacked",
                     "slice_spacing_mm": 5.0,
                     "scale": 15.0,
                 },
                 description="Few slices with wide spacing",
+            ),
+            Preset(
+                name="Topographic Map",
+                params={
+                    "slice_axis": "Z",
+                    "num_slices": 40,
+                    "view_mode": "Plan View",
+                    "slice_spacing_mm": 2.0,
+                    "scale": 10.0,
+                },
+                description="Z-axis slices overlaid like a topographic map viewed from above",
+            ),
+            Preset(
+                name="Side Profile",
+                params={
+                    "slice_axis": "Z",
+                    "num_slices": 30,
+                    "view_mode": "Stacked",
+                    "slice_spacing_mm": 2.0,
+                    "scale": 10.0,
+                },
+                description="Z-axis slices stacked vertically at 2 mm spacing",
+            ),
+            Preset(
+                name="Cross Sections",
+                params={
+                    "slice_axis": "X",
+                    "num_slices": 20,
+                    "view_mode": "Stacked",
+                    "slice_spacing_mm": 3.0,
+                    "scale": 10.0,
+                },
+                description="X-axis cross sections stacked at 3 mm spacing",
             ),
         ]
