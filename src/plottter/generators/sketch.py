@@ -115,6 +115,65 @@ def _score_all_candidates(
     return scores, avg_brightnesses
 
 
+@_numba_njit(cache=True)
+def _compute_weights(
+    ds_dark: np.ndarray,
+    ds_edge: np.ndarray,
+    ds_cov: np.ndarray,
+    dark_power: float,
+    edge_bias: float,
+    max_pixel_coverage: int,
+    min_darkness: float,
+) -> np.ndarray:
+    """Compute per-pixel sampling weights from downsampled maps (numba-compatible).
+
+    Written with explicit loops so numba can compile to native code.  Falls
+    back to pure-Python when numba is unavailable (slow but correct).
+
+    Parameters
+    ----------
+    ds_dark:
+        Downsampled residual darkness map, float32 [0, 1].
+    ds_edge:
+        Downsampled edge magnitude map, float32 [0, 1].
+    ds_cov:
+        Downsampled coverage map, float32.
+    dark_power:
+        Exponent applied to the darkness term.
+    edge_bias:
+        Weight for the edge term in [0, 1].
+    max_pixel_coverage:
+        Maximum coverage count for ink penalty computation.
+    min_darkness:
+        Minimum darkness threshold; pixels below are effectively excluded.
+
+    Returns
+    -------
+    weights: float64 array of shape ``(ds_h, ds_w)``.
+    """
+    ds_h = ds_dark.shape[0]
+    ds_w = ds_dark.shape[1]
+    denom_cov = 1.0 / (max_pixel_coverage if max_pixel_coverage > 0 else 1)
+    weights = np.empty((ds_h, ds_w), dtype=np.float64)
+
+    for i in range(ds_h):
+        for j in range(ds_w):
+            d = ds_dark[i, j] - min_darkness
+            if d < 0.0:
+                d = 0.0
+            elif d > 1.0:
+                d = 1.0
+            edge_term = ds_edge[i, j] ** 1.2
+            ink_val = 1.0 - ds_cov[i, j] * denom_cov
+            if ink_val < 0.05:
+                ink_val = 0.05
+            elif ink_val > 1.0:
+                ink_val = 1.0
+            weights[i, j] = (d ** dark_power) * (0.85 + edge_bias * edge_term) * ink_val + 1e-9
+
+    return weights
+
+
 @register_generator
 class SketchGenerator(Generator):
     name = "Sketch"
@@ -702,13 +761,20 @@ class SketchGenerator(Generator):
             ds_edge = edge_normalized[::DOWNSAMPLE, ::DOWNSAMPLE]
             ds_cov = coverage[::DOWNSAMPLE, ::DOWNSAMPLE].astype(np.float32)
 
-        darkness = np.clip(ds_dark - min_darkness, 0.0, 1.0)
-        edge_term = ds_edge ** 1.2
-        ink_penalty = np.clip(
-            1.0 - ds_cov / max(1, max_pixel_coverage),
-            0.05, 1.0,
-        )
-        weights = (darkness ** dark_power) * (0.85 + edge_bias * edge_term) * ink_penalty + 1e-9
+        if _NUMBA_AVAILABLE:
+            weights = _compute_weights(
+                ds_dark, ds_edge, ds_cov,
+                dark_power, edge_bias, max_pixel_coverage, min_darkness,
+            )
+        else:
+            darkness = np.clip(ds_dark - min_darkness, 0.0, 1.0)
+            edge_term = ds_edge ** 1.2
+            ink_penalty = np.clip(
+                1.0 - ds_cov / max(1, max_pixel_coverage),
+                0.05, 1.0,
+            )
+            weights = (darkness ** dark_power) * (0.85 + edge_bias * edge_term) * ink_penalty + 1e-9
+
         weights /= weights.sum()
 
         flat_weights = weights.ravel()
