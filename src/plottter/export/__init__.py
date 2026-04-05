@@ -17,6 +17,11 @@ from plottter.export.mural import (
     export_layer_mural,
     export_all_layers_mural,
 )
+from plottter.export.plugin import (
+    EXPORT_PLUGINS,
+    ExportPlugin,
+    register_export_plugin,
+)
 
 __all__ = [
     "export_layer_svg",
@@ -28,4 +33,7 @@ __all__ = [
     "export_all_layers_gcode",
     "export_layer_mural",
     "export_all_layers_mural",
+    "EXPORT_PLUGINS",
+    "ExportPlugin",
+    "register_export_plugin",
 ]

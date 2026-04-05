@@ -25,9 +25,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+#: Built-in format names (order matches stack page indices).
+_BUILTIN_FORMATS = ("SVG", "HPGL", "G-code", "Mural")
+
 
 class ExportDialog(QDialog):
-    """Dialog for configuring SVG, HPGL, and G-code export options."""
+    """Dialog for configuring SVG, HPGL, G-code, Mural, and plugin export options."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -43,7 +46,11 @@ class ExportDialog(QDialog):
         fmt_group = QGroupBox("Format")
         fmt_form = QFormLayout(fmt_group)
         self._format_combo = QComboBox()
-        self._format_combo.addItems(["SVG", "HPGL", "G-code", "Mural"])
+        self._format_combo.addItems(list(_BUILTIN_FORMATS))
+        # Append any registered export plugins
+        from plottter.export.plugin import EXPORT_PLUGINS
+        for plugin_name in sorted(EXPORT_PLUGINS.keys()):
+            self._format_combo.addItem(plugin_name)
         self._format_combo.currentTextChanged.connect(self._on_format_changed)
         fmt_form.addRow("Format:", self._format_combo)
         layout.addWidget(fmt_group)
@@ -150,6 +157,14 @@ class ExportDialog(QDialog):
         self._format_stack.addWidget(mural_widget)  # index 3
         self._update_mural_width_label(self._mural_pin_distance_spin.value())
 
+        # Page 4 — Generic plugin info page (shared by all export plugins)
+        plugin_widget = QWidget()
+        plugin_form = QFormLayout(plugin_widget)
+        self._plugin_desc_label = QLabel()
+        self._plugin_desc_label.setWordWrap(True)
+        plugin_form.addRow("Description:", self._plugin_desc_label)
+        self._format_stack.addWidget(plugin_widget)  # index 4
+
         fmt_options_group = QGroupBox("Options")
         fo_layout = QVBoxLayout(fmt_options_group)
         fo_layout.addWidget(self._format_stack)
@@ -184,10 +199,21 @@ class ExportDialog(QDialog):
     # Internal slots
 
     def _on_format_changed(self, fmt: str) -> None:
-        index = {"SVG": 0, "HPGL": 1, "G-code": 2, "Mural": 3}.get(fmt, 0)
-        self._format_stack.setCurrentIndex(index)
-        # "All Combined" only makes sense for SVG; hide it for HPGL/G-code/Mural
-        combined_visible = fmt == "SVG"
+        builtin_map = {"SVG": 0, "HPGL": 1, "G-code": 2, "Mural": 3}
+        if fmt in builtin_map:
+            self._format_stack.setCurrentIndex(builtin_map[fmt])
+        else:
+            # Plugin format — show info page
+            self._format_stack.setCurrentIndex(4)
+            from plottter.export.plugin import EXPORT_PLUGINS
+            plugin_cls = EXPORT_PLUGINS.get(fmt)
+            if plugin_cls and plugin_cls.description:
+                self._plugin_desc_label.setText(plugin_cls.description)
+            else:
+                self._plugin_desc_label.setText("No description available.")
+
+        # "All Combined" is visible for SVG and export plugins; hidden for HPGL/G-code/Mural
+        combined_visible = fmt not in ("HPGL", "G-code", "Mural")
         self._all_combined_radio.setVisible(combined_visible)
         if not combined_visible and self._all_combined_radio.isChecked():
             self._all_sep_radio.setChecked(True)
@@ -215,23 +241,34 @@ class ExportDialog(QDialog):
             if path:
                 self._path_edit.setText(path)
         else:
-            if fmt == "SVG":
-                file_filter = "SVG Files (*.svg);;All Files (*)"
-            elif fmt == "HPGL":
-                file_filter = "HPGL Files (*.plt *.hpgl);;All Files (*)"
-            elif fmt == "Mural":
-                file_filter = "Mural Files (*.mural);;All Files (*)"
-            else:
-                file_filter = "G-code Files (*.gcode *.nc);;All Files (*)"
+            file_filter = self._file_filter_for_format(fmt)
             path, _ = QFileDialog.getSaveFileName(self, "Export As", "", file_filter)
             if path:
                 path = self._ensure_extension(path, fmt)
                 self._path_edit.setText(path)
 
+    def _file_filter_for_format(self, fmt: str) -> str:
+        """Return a QFileDialog filter string for *fmt*."""
+        if fmt == "SVG":
+            return "SVG Files (*.svg);;All Files (*)"
+        if fmt == "HPGL":
+            return "HPGL Files (*.plt *.hpgl);;All Files (*)"
+        if fmt == "Mural":
+            return "Mural Files (*.mural);;All Files (*)"
+        if fmt == "G-code":
+            return "G-code Files (*.gcode *.nc);;All Files (*)"
+        # Plugin format
+        from plottter.export.plugin import EXPORT_PLUGINS
+        plugin_cls = EXPORT_PLUGINS.get(fmt)
+        if plugin_cls and plugin_cls.file_extension:
+            ext = plugin_cls.file_extension
+            return f"{fmt} Files (*{ext});;All Files (*)"
+        return "All Files (*)"
+
     # ------------------------------------------------------------------
     # Extension helpers
 
-    #: Valid extensions per format (lower-case).
+    #: Valid extensions per built-in format (lower-case).
     _VALID_EXTENSIONS: dict[str, list[str]] = {
         "SVG": [".svg"],
         "HPGL": [".plt", ".hpgl"],
@@ -239,7 +276,7 @@ class ExportDialog(QDialog):
         "Mural": [".mural"],
     }
 
-    #: Default (primary) extension per format.
+    #: Default (primary) extension per built-in format.
     _DEFAULT_EXTENSION: dict[str, str] = {
         "SVG": ".svg",
         "HPGL": ".plt",
@@ -253,19 +290,29 @@ class ExportDialog(QDialog):
 
         Rules:
         - If *path* already has a valid extension for *fmt*, return unchanged.
-        - If *path* has no extension (empty string from ``os.path.splitext``),
-          append the primary extension for *fmt*.
-        - If *path* has some other extension (e.g. ``.png``), leave it as-is
-          (do not silently overwrite a user-supplied extension).
+        - If *path* has no extension, append the primary extension for *fmt*.
+        - If *path* has some other extension, leave it as-is.
         """
-        valid = ExportDialog._VALID_EXTENSIONS.get(fmt, [])
-        default = ExportDialog._DEFAULT_EXTENSION.get(fmt, "")
         _, ext = os.path.splitext(path)
-        if ext.lower() in valid:
+
+        if fmt in ExportDialog._VALID_EXTENSIONS:
+            valid = ExportDialog._VALID_EXTENSIONS[fmt]
+            default = ExportDialog._DEFAULT_EXTENSION.get(fmt, "")
+            if ext.lower() in valid:
+                return path
+            if ext == "":
+                return path + default
             return path
-        if ext == "":
-            return path + default
-        # Has an unrecognised extension — leave it untouched.
+
+        # Plugin format
+        from plottter.export.plugin import EXPORT_PLUGINS
+        plugin_cls = EXPORT_PLUGINS.get(fmt)
+        if plugin_cls and plugin_cls.file_extension:
+            plugin_ext = plugin_cls.file_extension
+            if ext.lower() == plugin_ext.lower():
+                return path
+            if ext == "":
+                return path + plugin_ext
         return path
 
     # ------------------------------------------------------------------
@@ -412,5 +459,7 @@ class ExportDialog(QDialog):
             base["pen_down_angle"] = self._gcode_pen_down_spin.value()
         elif fmt == "Mural":
             base["top_distance"] = self._mural_pin_distance_spin.value()
+        # Plugin formats: no extra settings needed; format name is sufficient
+        # for the caller to look up the plugin in EXPORT_PLUGINS.
 
         return base

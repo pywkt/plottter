@@ -1283,6 +1283,46 @@ class MainWindow(QMainWindow):
                         "Mural Export — Out-of-Bounds Coordinates",
                         f"Some coordinates fall outside the valid drawing area:\n\n{warn_text}",
                     )
+            else:
+                # Export plugin
+                from plottter.export.plugin import EXPORT_PLUGINS
+                plugin_cls = EXPORT_PLUGINS.get(fmt)
+                if plugin_cls is None:
+                    QMessageBox.warning(self, "Export", f"Unknown export format: {fmt}")
+                    return
+                plugin = plugin_cls()
+                if mode == "current":
+                    if active is None:
+                        QMessageBox.warning(self, "Export", "No active layer to export.")
+                        return
+                    plugin.export(
+                        [(active.name, active.color, active.paths)],
+                        project.canvas,
+                        path,
+                    )
+                elif mode == "all_separate":
+                    import os as _os
+                    for layer in project.layers:
+                        if not layer.paths:
+                            continue
+                        base_p, ext_p = _os.path.splitext(path)
+                        if not ext_p and plugin_cls.file_extension:
+                            ext_p = plugin_cls.file_extension
+                        safe_name = layer.name.replace(
+                            _os.sep, "_"
+                        ).replace("/", "_")
+                        layer_path = f"{base_p}_{safe_name}{ext_p}"
+                        plugin.export(
+                            [(layer.name, layer.color, layer.paths)],
+                            project.canvas,
+                            layer_path,
+                        )
+                else:  # all_combined
+                    paths_by_layer = [
+                        (layer.name, layer.color, layer.paths)
+                        for layer in project.layers
+                    ]
+                    plugin.export(paths_by_layer, project.canvas, path)
             QMessageBox.information(self, "Export", f"Exported successfully to:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "Export Error", str(exc))

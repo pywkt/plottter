@@ -91,6 +91,7 @@ def load_plugins(extra_dirs: list[str | Path] | None = None) -> list[str]:
     """
     from plottter.generators import GENERATORS
     from plottter.processing.plugin import PROCESSING_PLUGINS, ProcessingPlugin
+    from plottter.export.plugin import EXPORT_PLUGINS, ExportPlugin
 
     scan_dirs: list[Path] = _get_plugin_dirs()
     if extra_dirs:
@@ -99,6 +100,7 @@ def load_plugins(extra_dirs: list[str | Path] | None = None) -> list[str]:
     loaded_names: list[str] = []
     before_gen_names = set(GENERATORS.keys())
     before_proc_names = set(PROCESSING_PLUGINS.keys())
+    before_export_names = set(EXPORT_PLUGINS.keys())
 
     for plugin_dir in scan_dirs:
         if not plugin_dir.exists() or not plugin_dir.is_dir():
@@ -141,13 +143,31 @@ def load_plugins(extra_dirs: list[str | Path] | None = None) -> list[str]:
                             obj.name,
                             py_file,
                         )
+
+                # Auto-register any ExportPlugin subclasses that did not
+                # use @register_export_plugin themselves.
+                for attr_name in dir(module):
+                    obj = getattr(module, attr_name, None)
+                    if (
+                        isinstance(obj, type)
+                        and issubclass(obj, ExportPlugin)
+                        and obj is not ExportPlugin
+                        and obj.name
+                        and obj.name not in EXPORT_PLUGINS
+                    ):
+                        EXPORT_PLUGINS[obj.name] = obj
+                        logger.info(
+                            "Auto-registered export plugin '%s' from %s",
+                            obj.name,
+                            py_file,
+                        )
             except Exception as exc:
                 logger.error("Failed to load plugin %s: %s", py_file, exc)
                 # Remove from sys.modules if partially loaded
                 sys.modules.pop(module_name, None)
                 continue
 
-    # Report which generators and processing plugins were newly registered
+    # Report which generators, processing plugins, and export plugins were newly registered
     after_gen_names = set(GENERATORS.keys())
     new_gen_names = sorted(after_gen_names - before_gen_names)
     loaded_names.extend(new_gen_names)
@@ -156,10 +176,16 @@ def load_plugins(extra_dirs: list[str | Path] | None = None) -> list[str]:
     new_proc_names = sorted(after_proc_names - before_proc_names)
     loaded_names.extend(new_proc_names)
 
+    after_export_names = set(EXPORT_PLUGINS.keys())
+    new_export_names = sorted(after_export_names - before_export_names)
+    loaded_names.extend(new_export_names)
+
     if new_gen_names:
         logger.info("Plugin system registered generators: %s", new_gen_names)
     if new_proc_names:
         logger.info("Plugin system registered processing plugins: %s", new_proc_names)
+    if new_export_names:
+        logger.info("Plugin system registered export plugins: %s", new_export_names)
 
     return loaded_names
 
