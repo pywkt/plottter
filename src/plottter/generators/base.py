@@ -65,6 +65,20 @@ class ImageParam(Parameter):
 
 
 @dataclass
+class FileParam(Parameter):
+    """A file-path parameter rendered as a QLineEdit + Browse button.
+
+    Parameters
+    ----------
+    default:    Initial file path (may be empty).
+    filter:     Qt file-dialog filter string, e.g. ``"Mesh Files (*.stl *.obj);;All Files (*)"``
+    """
+
+    default: str = ""
+    filter: str = "All Files (*)"
+
+
+@dataclass
 class StringParam(Parameter):
     """A free-text parameter rendered as a text input widget.
 

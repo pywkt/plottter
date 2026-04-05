@@ -2491,7 +2491,7 @@ class SettingsPanel(QScrollArea):
         try:
             from plottter.generators.base import (
                 FloatParam, IntParam, ExpressionParam, ChoiceParam, BoolParam,
-                StringParam, FontParam, ImageParam,
+                StringParam, FontParam, ImageParam, FileParam,
             )
             from plottter.gui.widgets.font_picker import FontPicker
         except ImportError:
@@ -2575,6 +2575,37 @@ class SettingsPanel(QScrollArea):
                 row_layout.addWidget(browse_btn)
                 # Store container reference so _update_param_visibility can
                 # hide/show the whole row (QLineEdit + Browse button) together.
+                line_edit.setProperty("_image_container", container)
+                if param.description:
+                    container.setToolTip(param.description)
+                    label.setToolTip(param.description)
+                self._param_widgets[param.name] = line_edit
+                self._param_labels[param.name] = label
+                self._params_form.addRow(label, container)
+                continue
+            elif isinstance(param, FileParam):
+                from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QPushButton
+                import functools
+                container = QWidget()
+                row_layout = QHBoxLayout(container)
+                row_layout.setContentsMargins(0, 0, 0, 0)
+                line_edit = QLineEdit(str(param.default) if param.default else "")
+                browse_btn = QPushButton("Browse…")
+                browse_btn.setFixedWidth(70)
+
+                def _browse_file(le: QLineEdit, filt: str) -> None:
+                    path, _ = QFileDialog.getOpenFileName(
+                        self,
+                        "Select File",
+                        "",
+                        filt,
+                    )
+                    if path:
+                        le.setText(path)
+
+                browse_btn.clicked.connect(functools.partial(_browse_file, line_edit, param.filter))
+                row_layout.addWidget(line_edit)
+                row_layout.addWidget(browse_btn)
                 line_edit.setProperty("_image_container", container)
                 if param.description:
                     container.setToolTip(param.description)

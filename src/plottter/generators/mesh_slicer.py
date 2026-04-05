@@ -1,16 +1,32 @@
 """Plane-mesh intersection (mesh slicing) utilities.
 
 Provides:
-- _slice_mesh:      Intersect a triangle mesh with a plane → raw 3D segments.
-- _chain_segments:  Chain segments into closed polylines (tolerance-based).
-- _project_to_2d:   Drop the dominant normal axis to get 2D contours.
-- slice_mesh:       All-in-one public function.
+- _slice_mesh:       Intersect a triangle mesh with a plane → raw 3D segments.
+- _chain_segments:   Chain segments into closed polylines (tolerance-based).
+- _project_to_2d:    Drop the dominant normal axis to get 2D contours.
+- slice_mesh:        All-in-one public function.
+- _slice_mesh_multi: Slice along num_slices evenly-spaced planes → list of lists of 2D polylines.
+- MeshSlicerGenerator: Generator class for multi-plane mesh slicing.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 import numpy as np
 from numpy.typing import NDArray
+
+from plottter.generators import register_generator
+from plottter.generators.base import (
+    ChoiceParam,
+    FileParam,
+    FloatParam,
+    Generator,
+    IntParam,
+    Parameter,
+    Preset,
+)
+from plottter.models import Canvas, Polyline
 
 
 # ---------------------------------------------------------------------------
@@ -294,3 +310,250 @@ def slice_mesh(
     if project:
         return _project_to_2d(contours_3d, plane_normal)
     return contours_3d
+
+
+# ---------------------------------------------------------------------------
+# Multi-plane slicing
+# ---------------------------------------------------------------------------
+
+_AXIS_MAP: dict[str, int] = {"X": 0, "Y": 1, "Z": 2}
+
+
+def _slice_mesh_multi(
+    vertices: NDArray[np.float64],
+    faces: NDArray[np.int32],
+    axis: str,
+    num_slices: int,
+    z_min: float,
+    z_max: float,
+    tol: float = 1e-6,
+) -> list[list[list[tuple[float, float]]]]:
+    """Generate ``num_slices`` evenly-spaced planes and slice the mesh with each.
+
+    Planes are distributed between ``z_min`` and ``z_max`` exclusive (endpoints
+    are not included so that degenerate tip slices are avoided).
+
+    Parameters
+    ----------
+    vertices:   (N, 3) float64 vertex positions.
+    faces:      (M, 3) int32 vertex indices.
+    axis:       Slicing axis — one of "X", "Y", "Z".
+    num_slices: Number of evenly-spaced cutting planes.
+    z_min:      Lower bound along ``axis``.
+    z_max:      Upper bound along ``axis``.
+    tol:        Endpoint-matching tolerance for segment chaining.
+
+    Returns
+    -------
+    List of length ``num_slices``.  Each element is a list of 2D polylines
+    (``list[list[tuple[float, float]]]``) produced by slicing at one plane.
+    """
+    axis_idx = _AXIS_MAP.get(axis.upper(), 2)
+    normal = np.zeros(3, dtype=np.float64)
+    normal[axis_idx] = 1.0
+
+    # num_slices interior planes between z_min and z_max (endpoints excluded)
+    positions: NDArray[np.float64] = np.linspace(z_min, z_max, num_slices + 2)[1:-1]
+
+    result: list[list[list[tuple[float, float]]]] = []
+    for pos in positions:
+        origin = np.zeros(3, dtype=np.float64)
+        origin[axis_idx] = float(pos)
+        contours_2d: list[list[tuple[float, float]]] = slice_mesh(  # type: ignore[assignment]
+            vertices, faces, origin, normal, tol=tol, project=True
+        )
+        result.append(contours_2d)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# MeshSlicerGenerator
+# ---------------------------------------------------------------------------
+
+
+@register_generator
+class MeshSlicerGenerator(Generator):
+    """Multi-plane mesh slicer.
+
+    Loads an STL or OBJ file, slices it with ``num_slices`` evenly-spaced
+    planes, and stacks the resulting 2D contours vertically for display.
+    """
+
+    name = "Mesh Slicer"
+    category = "3d"
+
+    def get_parameters(self) -> list[Parameter]:
+        return [
+            FileParam(
+                name="mesh_file",
+                label="Mesh File",
+                default="",
+                filter="Mesh Files (*.stl *.obj);;All Files (*)",
+                description="Path to an OBJ or STL mesh file",
+            ),
+            ChoiceParam(
+                name="slice_axis",
+                label="Slice Axis",
+                choices=["X", "Y", "Z"],
+                default="Z",
+                description="Axis along which to slice the mesh",
+            ),
+            IntParam(
+                name="num_slices",
+                label="Number of Slices",
+                min=5,
+                max=200,
+                step=1,
+                default=40,
+                description="Number of parallel cutting planes",
+            ),
+            FloatParam(
+                name="slice_spacing_mm",
+                label="Slice Spacing (mm)",
+                min=0.5,
+                max=10.0,
+                step=0.1,
+                default=2.0,
+                description=(
+                    "Vertical spacing between contour lines when displayed — "
+                    "controls how spread out the slices appear"
+                ),
+            ),
+            FloatParam(
+                name="scale",
+                label="Scale",
+                min=0.1,
+                max=100.0,
+                step=0.1,
+                default=10.0,
+                description="Scale factor for the mesh",
+            ),
+        ]
+
+    def generate(
+        self,
+        params: dict[str, Any],
+        canvas: Canvas,
+        progress_callback: Any = None,
+        cancelled_callback: Any = None,
+    ) -> list[Polyline]:
+        import os
+
+        from plottter.scene3d.loaders import load_obj, load_stl
+
+        mesh_file = params.get("mesh_file", "").strip()
+        if not mesh_file or not os.path.isfile(mesh_file):
+            return []
+
+        # Load mesh
+        ext = os.path.splitext(mesh_file)[1].lower()
+        if ext == ".stl":
+            vertices, faces = load_stl(mesh_file)
+        elif ext == ".obj":
+            vertices, faces = load_obj(mesh_file)
+        else:
+            return []
+
+        if len(faces) == 0:
+            return []
+
+        slice_axis = str(params.get("slice_axis", "Z"))
+        num_slices = max(1, int(params.get("num_slices", 40)))
+        slice_spacing_mm = float(params.get("slice_spacing_mm", 2.0))
+        scale = float(params.get("scale", 10.0))
+
+        # Compute mesh bounds along the slice axis
+        axis_idx = _AXIS_MAP.get(slice_axis.upper(), 2)
+        z_min = float(vertices[:, axis_idx].min())
+        z_max = float(vertices[:, axis_idx].max())
+
+        if z_max <= z_min:
+            return []
+
+        if progress_callback:
+            progress_callback(10)
+        if cancelled_callback and cancelled_callback():
+            return []
+
+        # Generate multi-plane slices
+        all_slices = _slice_mesh_multi(
+            vertices, faces,
+            axis=slice_axis,
+            num_slices=num_slices,
+            z_min=z_min,
+            z_max=z_max,
+        )
+
+        if progress_callback:
+            progress_callback(70)
+        if cancelled_callback and cancelled_callback():
+            return []
+
+        # Build polylines: scale mesh coordinates, then stack vertically
+        raw_polylines: list[Polyline] = []
+        for slice_idx, contours in enumerate(all_slices):
+            y_offset = slice_idx * slice_spacing_mm
+            for contour in contours:
+                if len(contour) < 2:
+                    continue
+                poly: Polyline = [
+                    (pt[0] * scale, pt[1] * scale + y_offset)
+                    for pt in contour
+                ]
+                raw_polylines.append(poly)
+
+        if not raw_polylines:
+            return []
+
+        # Center the result on the canvas
+        all_xs = [pt[0] for poly in raw_polylines for pt in poly]
+        all_ys = [pt[1] for poly in raw_polylines for pt in poly]
+        cx = (min(all_xs) + max(all_xs)) / 2.0
+        cy = (min(all_ys) + max(all_ys)) / 2.0
+        dx = canvas.width_mm / 2.0 - cx
+        dy = canvas.height_mm / 2.0 - cy
+
+        polylines: list[Polyline] = [
+            [(pt[0] + dx, pt[1] + dy) for pt in poly]
+            for poly in raw_polylines
+        ]
+
+        if progress_callback:
+            progress_callback(100)
+
+        return polylines
+
+    def get_presets(self) -> list[Preset]:
+        return [
+            Preset(
+                name="Default",
+                params={
+                    "slice_axis": "Z",
+                    "num_slices": 40,
+                    "slice_spacing_mm": 2.0,
+                    "scale": 10.0,
+                },
+                description="Default mesh slicing settings",
+            ),
+            Preset(
+                name="Dense Slices",
+                params={
+                    "slice_axis": "Z",
+                    "num_slices": 100,
+                    "slice_spacing_mm": 1.0,
+                    "scale": 8.0,
+                },
+                description="Many thin slices for high detail",
+            ),
+            Preset(
+                name="Sparse Slices",
+                params={
+                    "slice_axis": "Z",
+                    "num_slices": 15,
+                    "slice_spacing_mm": 5.0,
+                    "scale": 15.0,
+                },
+                description="Few slices with wide spacing",
+            ),
+        ]

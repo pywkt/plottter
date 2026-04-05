@@ -424,3 +424,201 @@ class TestProjection:
             f"Some points are not on the unit square edge: "
             f"{pts[~on_edge].tolist()}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Helpers for task 90.2 tests
+# ---------------------------------------------------------------------------
+
+def _write_stl_ascii(path: str, vertices, faces) -> None:
+    """Write a minimal ASCII STL file from vertex/face arrays."""
+    with open(path, "w") as f:
+        f.write("solid mesh\n")
+        for tri in faces:
+            v0 = vertices[tri[0]]
+            v1 = vertices[tri[1]]
+            v2 = vertices[tri[2]]
+            e1 = v1 - v0
+            e2 = v2 - v0
+            n = np.cross(e1, e2)
+            nd = np.linalg.norm(n)
+            if nd > 1e-12:
+                n = n / nd
+            else:
+                n = np.array([0.0, 0.0, 1.0])
+            f.write(f"  facet normal {n[0]:.6f} {n[1]:.6f} {n[2]:.6f}\n")
+            f.write("    outer loop\n")
+            f.write(f"      vertex {v0[0]:.6f} {v0[1]:.6f} {v0[2]:.6f}\n")
+            f.write(f"      vertex {v1[0]:.6f} {v1[1]:.6f} {v1[2]:.6f}\n")
+            f.write(f"      vertex {v2[0]:.6f} {v2[1]:.6f} {v2[2]:.6f}\n")
+            f.write("    endloop\n")
+            f.write("  endfacet\n")
+        f.write("endsolid mesh\n")
+
+
+# ---------------------------------------------------------------------------
+# (f) _slice_mesh_multi
+# ---------------------------------------------------------------------------
+
+class TestSliceMeshMulti:
+    def test_returns_correct_number_of_slices(self):
+        """_slice_mesh_multi returns exactly num_slices lists."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi
+        vertices, faces = _unit_cube_vf()
+        result = _slice_mesh_multi(vertices, faces, axis="Z", num_slices=5,
+                                   z_min=0.0, z_max=1.0)
+        assert len(result) == 5, f"Expected 5 slices, got {len(result)}"
+
+    def test_cube_each_slice_has_one_contour(self):
+        """For a convex mesh like a unit cube, each interior slice has exactly 1 contour."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi
+        vertices, faces = _unit_cube_vf()
+        result = _slice_mesh_multi(vertices, faces, axis="Z", num_slices=5,
+                                   z_min=0.0, z_max=1.0)
+        for i, contours in enumerate(result):
+            assert len(contours) == 1, (
+                f"Slice {i}: expected 1 contour for cube, got {len(contours)}"
+            )
+
+    def test_x_axis_slicing(self):
+        """_slice_mesh_multi works along the X axis."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi
+        vertices, faces = _unit_cube_vf()
+        result = _slice_mesh_multi(vertices, faces, axis="X", num_slices=3,
+                                   z_min=0.0, z_max=1.0)
+        assert len(result) == 3
+        for contours in result:
+            assert len(contours) == 1
+
+    def test_y_axis_slicing(self):
+        """_slice_mesh_multi works along the Y axis."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi
+        vertices, faces = _unit_cube_vf()
+        result = _slice_mesh_multi(vertices, faces, axis="Y", num_slices=4,
+                                   z_min=0.0, z_max=1.0)
+        assert len(result) == 4
+
+    def test_contours_are_2d(self):
+        """Each contour point from _slice_mesh_multi should be a 2-tuple."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi
+        vertices, faces = _unit_cube_vf()
+        result = _slice_mesh_multi(vertices, faces, axis="Z", num_slices=3,
+                                   z_min=0.0, z_max=1.0)
+        for contours in result:
+            for contour in contours:
+                for pt in contour:
+                    assert len(pt) == 2, f"Expected 2D point, got {pt}"
+
+
+# ---------------------------------------------------------------------------
+# (g) MeshSlicerGenerator
+# ---------------------------------------------------------------------------
+
+class TestMeshSlicerGenerator:
+    def test_registered(self):
+        """MeshSlicerGenerator is registered in GENERATORS under 'Mesh Slicer'."""
+        from plottter.generators import GENERATORS
+        assert "Mesh Slicer" in GENERATORS, (
+            f"'Mesh Slicer' not found. Keys: {list(GENERATORS.keys())}"
+        )
+
+    def test_category(self):
+        """MeshSlicerGenerator has category '3d'."""
+        from plottter.generators import GENERATORS
+        cls = GENERATORS["Mesh Slicer"]
+        assert cls.category == "3d"
+
+    def test_empty_path_returns_empty(self):
+        """generate() with no mesh_file returns an empty list."""
+        from plottter.generators import GENERATORS
+        from plottter.models import Canvas
+        gen = GENERATORS["Mesh Slicer"]()
+        canvas = Canvas(width_mm=210.0, height_mm=297.0)
+        result = gen.generate({"mesh_file": ""}, canvas)
+        assert result == []
+
+    def test_missing_file_returns_empty(self):
+        """generate() with a non-existent file path returns an empty list."""
+        from plottter.generators import GENERATORS
+        from plottter.models import Canvas
+        gen = GENERATORS["Mesh Slicer"]()
+        canvas = Canvas(width_mm=210.0, height_mm=297.0)
+        result = gen.generate({"mesh_file": "/nonexistent/file.stl"}, canvas)
+        assert result == []
+
+    def test_cube_stl_produces_polylines(self, tmp_path):
+        """Slicing a cube STL produces a non-empty list of polylines."""
+        from plottter.generators import GENERATORS
+        from plottter.models import Canvas
+
+        vertices, faces = _unit_cube_vf()
+        stl_path = str(tmp_path / "cube.stl")
+        _write_stl_ascii(stl_path, vertices, faces)
+
+        gen = GENERATORS["Mesh Slicer"]()
+        canvas = Canvas(width_mm=210.0, height_mm=297.0)
+        result = gen.generate({
+            "mesh_file": stl_path,
+            "slice_axis": "Z",
+            "num_slices": 5,
+            "slice_spacing_mm": 2.0,
+            "scale": 10.0,
+        }, canvas)
+        assert len(result) > 0, "Expected polylines from cube STL slice"
+
+    def test_num_slices_controls_count(self, tmp_path):
+        """num_slices parameter controls the number of output polylines."""
+        from plottter.generators import GENERATORS
+        from plottter.models import Canvas
+
+        vertices, faces = _unit_cube_vf()
+        stl_path = str(tmp_path / "cube.stl")
+        _write_stl_ascii(stl_path, vertices, faces)
+
+        gen = GENERATORS["Mesh Slicer"]()
+        canvas = Canvas(width_mm=210.0, height_mm=297.0)
+
+        # Unit cube: each interior Z-slice gives exactly 1 contour
+        for n in (5, 10, 20):
+            result = gen.generate({
+                "mesh_file": stl_path,
+                "slice_axis": "Z",
+                "num_slices": n,
+                "slice_spacing_mm": 2.0,
+                "scale": 10.0,
+            }, canvas)
+            assert len(result) == n, (
+                f"num_slices={n} should produce {n} polylines, got {len(result)}"
+            )
+
+    def test_output_centered_on_canvas(self, tmp_path):
+        """Output polylines should be centered on the canvas."""
+        from plottter.generators import GENERATORS
+        from plottter.models import Canvas
+
+        vertices, faces = _unit_cube_vf()
+        stl_path = str(tmp_path / "cube.stl")
+        _write_stl_ascii(stl_path, vertices, faces)
+
+        gen = GENERATORS["Mesh Slicer"]()
+        canvas = Canvas(width_mm=210.0, height_mm=297.0)
+        result = gen.generate({
+            "mesh_file": stl_path,
+            "slice_axis": "Z",
+            "num_slices": 10,
+            "slice_spacing_mm": 2.0,
+            "scale": 10.0,
+        }, canvas)
+
+        assert len(result) > 0
+        all_xs = [pt[0] for poly in result for pt in poly]
+        all_ys = [pt[1] for poly in result for pt in poly]
+        cx = (min(all_xs) + max(all_xs)) / 2.0
+        cy = (min(all_ys) + max(all_ys)) / 2.0
+
+        assert abs(cx - canvas.width_mm / 2.0) < 0.5, (
+            f"X center {cx:.2f} should be near canvas center {canvas.width_mm / 2.0:.2f}"
+        )
+        assert abs(cy - canvas.height_mm / 2.0) < 0.5, (
+            f"Y center {cy:.2f} should be near canvas center {canvas.height_mm / 2.0:.2f}"
+        )
