@@ -18,6 +18,7 @@ from numpy.typing import NDArray
 
 from plottter.generators import register_generator
 from plottter.generators.base import (
+    BoolParam,
     ChoiceParam,
     FileParam,
     FloatParam,
@@ -440,6 +441,39 @@ class MeshSlicerGenerator(Generator):
                 default=10.0,
                 description="Scale factor for the mesh",
             ),
+            FloatParam(
+                name="rot_x",
+                label="Rotation X (°)",
+                min=-360.0,
+                max=360.0,
+                step=1.0,
+                default=0.0,
+                description="Rotate the mesh around the X axis before slicing",
+            ),
+            FloatParam(
+                name="rot_y",
+                label="Rotation Y (°)",
+                min=-360.0,
+                max=360.0,
+                step=1.0,
+                default=0.0,
+                description="Rotate the mesh around the Y axis before slicing",
+            ),
+            FloatParam(
+                name="rot_z",
+                label="Rotation Z (°)",
+                min=-360.0,
+                max=360.0,
+                step=1.0,
+                default=0.0,
+                description="Rotate the mesh around the Z axis before slicing",
+            ),
+            BoolParam(
+                name="flip_vertical",
+                label="Flip Vertical",
+                default=False,
+                description="Flip the output vertically — useful when the mesh appears upside down",
+            ),
         ]
 
     def generate(
@@ -468,6 +502,29 @@ class MeshSlicerGenerator(Generator):
 
         if len(faces) == 0:
             return []
+
+        # Apply rotation to vertices before slicing
+        rot_x = float(params.get("rot_x", 0.0))
+        rot_y = float(params.get("rot_y", 0.0))
+        rot_z = float(params.get("rot_z", 0.0))
+        if rot_x != 0.0 or rot_y != 0.0 or rot_z != 0.0:
+            import math
+            # Rotation matrices applied in order: X → Y → Z
+            if rot_x != 0.0:
+                a = math.radians(rot_x)
+                c, s = math.cos(a), math.sin(a)
+                rx = np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=np.float64)
+                vertices = vertices @ rx.T
+            if rot_y != 0.0:
+                a = math.radians(rot_y)
+                c, s = math.cos(a), math.sin(a)
+                ry = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=np.float64)
+                vertices = vertices @ ry.T
+            if rot_z != 0.0:
+                a = math.radians(rot_z)
+                c, s = math.cos(a), math.sin(a)
+                rz = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float64)
+                vertices = vertices @ rz.T
 
         slice_axis = str(params.get("slice_axis", "Z"))
         num_slices = max(1, int(params.get("num_slices", 40)))
@@ -518,6 +575,16 @@ class MeshSlicerGenerator(Generator):
 
         if not raw_polylines:
             return []
+
+        # Flip vertical if requested
+        flip_vertical = bool(params.get("flip_vertical", False))
+        if flip_vertical:
+            all_ys_raw = [pt[1] for poly in raw_polylines for pt in poly]
+            y_center = (min(all_ys_raw) + max(all_ys_raw)) / 2.0
+            raw_polylines = [
+                [(pt[0], 2.0 * y_center - pt[1]) for pt in poly]
+                for poly in raw_polylines
+            ]
 
         # Center the result on the canvas
         all_xs = [pt[0] for poly in raw_polylines for pt in poly]
