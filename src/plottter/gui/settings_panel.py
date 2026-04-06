@@ -843,10 +843,19 @@ class SettingsPanel(QScrollArea):
         self._separate_btn.clicked.connect(self._on_separate)
         color_sep_layout.addWidget(self._separate_btn)
 
-        self._gen_lines_btn = QPushButton("Generate Lines for Separated Layers")
+        self._gen_lines_btn = QPushButton("Generate Lines (All Layers)")
         self._gen_lines_btn.clicked.connect(self._on_generate_lines)
         self._gen_lines_btn.setEnabled(False)
         color_sep_layout.addWidget(self._gen_lines_btn)
+
+        self._gen_lines_selected_btn = QPushButton("Generate Lines (Selected Layer)")
+        self._gen_lines_selected_btn.clicked.connect(self._on_generate_lines_selected)
+        self._gen_lines_selected_btn.setEnabled(False)
+        self._gen_lines_selected_btn.setToolTip(
+            "Generate line art for only the selected layer — allows using "
+            "a different generator/preset for each separated layer"
+        )
+        color_sep_layout.addWidget(self._gen_lines_selected_btn)
 
         # Progress bar for color sep (separate from main one)
         self._color_sep_progress = QProgressBar()
@@ -4104,6 +4113,7 @@ class SettingsPanel(QScrollArea):
         self._controller.undo_stack.endMacro()
 
         self._gen_lines_btn.setEnabled(len(self._separated_layer_ids) > 0)
+        self._gen_lines_selected_btn.setEnabled(len(self._separated_layer_ids) > 0)
         QMessageBox.information(
             self,
             "Color Separation",
@@ -4138,6 +4148,7 @@ class SettingsPanel(QScrollArea):
         from plottter.gui.generator_worker import GeneratorWorker
 
         self._gen_lines_btn.setEnabled(False)
+        self._gen_lines_selected_btn.setEnabled(False)
         self._color_sep_progress.setMaximum(len(layers_to_process))
         self._color_sep_progress.setValue(0)
         self._color_sep_progress.setVisible(True)
@@ -4150,10 +4161,53 @@ class SettingsPanel(QScrollArea):
         self._controller.undo_stack.beginMacro("Generate Lines")
         self._process_next_lines_layer()
 
+    def _on_generate_lines_selected(self) -> None:
+        """Generate line art for only the currently selected layer."""
+        if not self._separated_layer_ids:
+            return
+
+        # Find which separated layer is currently active
+        active_id = self._controller.active_layer_id
+        if active_id not in self._separated_layer_ids:
+            QMessageBox.warning(
+                self,
+                "No Separated Layer Selected",
+                "Please select one of the separated layers in the layer panel.",
+            )
+            return
+
+        if active_id not in self._layer_masks:
+            return
+
+        idx = self._color_sep_gen_combo.currentIndex()
+        if idx < 0:
+            return
+        gen_cls = self._color_sep_gen_combo.itemData(idx)
+        if gen_cls is None:
+            return
+
+        canvas = self._controller.current_project.canvas
+        mask, src_img = self._layer_masks[active_id]
+
+        self._gen_lines_btn.setEnabled(False)
+        self._gen_lines_selected_btn.setEnabled(False)
+        self._color_sep_progress.setMaximum(1)
+        self._color_sep_progress.setValue(0)
+        self._color_sep_progress.setVisible(True)
+
+        self._lines_queue = [(active_id, mask, src_img)]
+        self._lines_done = 0
+        self._lines_canvas = canvas
+        self._lines_gen_cls = gen_cls
+        self._lines_worker = None
+        self._controller.undo_stack.beginMacro("Generate Lines (Selected)")
+        self._process_next_lines_layer()
+
     def _process_next_lines_layer(self) -> None:
         if not self._lines_queue:
             self._color_sep_progress.setVisible(False)
             self._gen_lines_btn.setEnabled(True)
+            self._gen_lines_selected_btn.setEnabled(True)
             self._controller.undo_stack.endMacro()
             return
 
