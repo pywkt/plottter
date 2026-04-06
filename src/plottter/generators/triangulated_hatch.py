@@ -550,9 +550,18 @@ def _superpixel_cells(
     mm_w = img_x2 - img_x1
     mm_h = img_y2 - img_y1
 
-    # SLIC works on float images; pass color when available for better results
-    slic_img = img if img.ndim == 3 else gray
-    segments = slic(slic_img, n_segments=num_segments, compactness=compactness, start_label=0)
+    # SLIC works on float images; pass color when available for better results.
+    # channel_axis must be set explicitly: -1 for RGB, None for grayscale.
+    if img is not None and img.ndim == 3:
+        slic_img = img
+        slic_channel_axis = -1
+    else:
+        slic_img = gray
+        slic_channel_axis = None
+    segments = slic(
+        slic_img, n_segments=num_segments, compactness=compactness,
+        start_label=0, channel_axis=slic_channel_axis,
+    )
 
     result: list[tuple[list[tuple[float, float]], float]] = []
 
