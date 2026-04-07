@@ -209,6 +209,10 @@ class CanvasWidget(QWidget):
         # Live cursor preview crosshair shown while pick mode is active
         self._fmm_cursor_preview_mm: tuple[float, float] | None = None
 
+        # Space+drag hand-pan state
+        self._space_held: bool = False
+        self._hand_pan_active: bool = False
+
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
@@ -794,6 +798,16 @@ class CanvasWidget(QWidget):
                 self._pre_op_mask = None
                 self.update()
             return
+        if (
+            self._space_held
+            and event.button() == Qt.MouseButton.LeftButton
+            and not self._3d_preview_active
+        ):
+            self._last_pan_pos = event.pos()
+            self._hand_pan_active = True
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+
         if event.button() == Qt.MouseButton.MiddleButton or (
             event.button() == Qt.MouseButton.LeftButton
             and event.modifiers() & Qt.KeyboardModifier.ControlModifier
@@ -921,6 +935,7 @@ class CanvasWidget(QWidget):
             delta = event.pos() - self._last_pan_pos
             self._pan_offset += QPointF(delta.x(), delta.y())
             self._last_pan_pos = event.pos()
+            self._clamp_pan_offset()
             self.update()
 
         # Emit mm position for status bar
@@ -1031,7 +1046,13 @@ class CanvasWidget(QWidget):
             Qt.MouseButton.LeftButton,
         ) and self._last_pan_pos is not None:
             self._last_pan_pos = None
-            self.setCursor(Qt.CursorShape.CrossCursor if (self._mask_paint_active or self._shape_draw_active) else Qt.CursorShape.ArrowCursor)
+            if self._hand_pan_active:
+                self._hand_pan_active = False
+                self.setCursor(
+                    Qt.CursorShape.OpenHandCursor if self._space_held else Qt.CursorShape.ArrowCursor
+                )
+            else:
+                self.setCursor(Qt.CursorShape.CrossCursor if (self._mask_paint_active or self._shape_draw_active) else Qt.CursorShape.ArrowCursor)
 
     def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
         """Double-click in Polygon mode: close and fill the polygon."""
@@ -1157,7 +1178,53 @@ class CanvasWidget(QWidget):
             self.update()
             return
 
+        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+            _exclusive = (
+                self._3d_preview_active
+                or self._mask_paint_active
+                or self._shape_draw_active
+                or self._drag_move_active
+                or self._fmm_source_mode
+                or self._ai_mask_mode
+            )
+            if not _exclusive:
+                self._space_held = True
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+            return
+
         super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event: QKeyEvent) -> None:
+        if event.key() == Qt.Key.Key_Space and not event.isAutoRepeat():
+            self._space_held = False
+            self._hand_pan_active = False
+            _exclusive = (
+                self._3d_preview_active
+                or self._mask_paint_active
+                or self._shape_draw_active
+                or self._drag_move_active
+                or self._fmm_source_mode
+                or self._ai_mask_mode
+            )
+            if not _exclusive:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+            return
+        super().keyReleaseEvent(event)
+
+    def focusOutEvent(self, event) -> None:
+        if self._space_held:
+            self._space_held = False
+            self._hand_pan_active = False
+            self._last_pan_pos = None
+            _exclusive = (
+                self._mask_paint_active
+                or self._shape_draw_active
+                or self._drag_move_active
+                or self._3d_preview_active
+            )
+            if not _exclusive:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+        super().focusOutEvent(event)
 
     def _clamp_pan_offset(self) -> None:
         """Clamp _pan_offset so the paper cannot scroll completely off-screen.
