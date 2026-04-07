@@ -675,6 +675,23 @@ class CanvasWidget(QWidget):
                 )
                 self.update()
             return
+        # Trackpad two-finger scroll: pixelDelta is non-zero for trackpads
+        pixel_delta = event.pixelDelta()
+        if not pixel_delta.isNull():
+            self._pan_offset += QPointF(pixel_delta.x(), pixel_delta.y())
+            self._clamp_pan_offset()
+            self.update()
+            return
+
+        # Shift+wheel: horizontal pan
+        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+            angle_delta = event.angleDelta().y()
+            self._pan_offset += QPointF(angle_delta / 120.0 * 40, 0.0)
+            self._clamp_pan_offset()
+            self.update()
+            return
+
+        # Default: zoom centered on cursor
         delta = event.angleDelta().y()
         factor = 1.15 if delta > 0 else (1.0 / 1.15)
         center = event.position()
