@@ -89,7 +89,7 @@ def _run_canvas_settings(win, new_canvas: Canvas, scale_yes: bool) -> None:
         mock_qmb.StandardButton.Yes if scale_yes else mock_qmb.StandardButton.No
     )
     with patch("plottter.gui.dialogs.new_project.NewProjectDialog", mock_cls), \
-         patch("plottter.gui.main_window.QMessageBox", mock_qmb):
+         patch("plottter.gui.main_window._canvas_ops.QMessageBox", mock_qmb):
         win._on_canvas_settings()
 
 
@@ -252,7 +252,7 @@ class TestEmptyProjectSkipsQuestion:
         mock_cls = _mock_new_project_dlg(copy.copy(_A3))
         mock_qmb = MagicMock()
         with patch("plottter.gui.dialogs.new_project.NewProjectDialog", mock_cls), \
-             patch("plottter.gui.main_window.QMessageBox", mock_qmb):
+             patch("plottter.gui.main_window._canvas_ops.QMessageBox", mock_qmb):
             win._on_canvas_settings()
 
         mock_qmb.question.assert_not_called()

@@ -282,7 +282,7 @@ class TestNon3dLayersSkipped:
 
         shown = []
         monkeypatch.setattr(
-            "plottter.gui.main_window.QMessageBox.information",
+            "plottter.gui.main_window._generator_ops.QMessageBox.information",
             lambda *a, **kw: shown.append(a),
         )
 
