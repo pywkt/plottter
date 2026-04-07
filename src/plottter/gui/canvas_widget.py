@@ -1279,9 +1279,20 @@ class CanvasWidget(QWidget):
     def _clamp_pan_offset(self) -> None:
         """Clamp _pan_offset so the paper cannot scroll completely off-screen.
 
-        A full implementation is provided by task 96.6; this stub is a no-op
-        placeholder so callers compile without errors until that task runs.
+        At least 50 px of paper remains visible on each edge.
         """
+        project = self._controller.current_project
+        if project is None or project.canvas is None:
+            return
+        canvas = project.canvas
+        paper_w_px = canvas.width_mm * self._zoom
+        paper_h_px = canvas.height_mm * self._zoom
+        margin_px = 50.0
+        x = self._pan_offset.x()
+        y = self._pan_offset.y()
+        x = max(margin_px - paper_w_px, min(x, self.width() - margin_px))
+        y = max(margin_px - paper_h_px, min(y, self.height() - margin_px))
+        self._pan_offset = QPointF(x, y)
 
     # ------------------------------------------------------------------
     # Painting
