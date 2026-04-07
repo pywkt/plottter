@@ -598,6 +598,10 @@ class MainWindow(QMainWindow):
         canvas_vbox.setSpacing(0)
 
         self._canvas = CanvasWidget(self._controller)
+        self._canvas.setToolTip(
+            "Middle-drag or Space+drag to pan · Shift+wheel for horizontal pan · "
+            "Ctrl+= / Ctrl+\u2212 to zoom · Ctrl+0 to fit"
+        )
         canvas_vbox.addWidget(self._canvas, stretch=1)
 
         self._anim_bar = AnimationBar()

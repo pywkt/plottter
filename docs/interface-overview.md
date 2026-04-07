@@ -38,15 +38,20 @@ The canvas displays your artwork on a simulated sheet of paper.
 Paths that stray outside the margin boundary will be clipped when you use **Tools › Clip to
 Canvas**.
 
-### Navigation
+### Canvas Navigation
 
-| Action | How |
-|--------|-----|
-| Zoom in / out | Scroll wheel |
-| Zoom in | `Ctrl+=` |
-| Zoom out | `Ctrl+-` |
-| Fit canvas to window | `Ctrl+0` |
-| Pan | Middle-click drag, or `Ctrl` + left-click drag |
+- **Scroll wheel** — zoom in/out (anchored to cursor position)
+- **Shift+scroll wheel** — pan horizontally
+- **Trackpad two-finger swipe** — pan in any direction
+- **Middle-click drag** — pan
+- **Ctrl+left-click drag** — pan
+- **Space+drag** — hand-tool pan (hold Space, then drag)
+- **Arrow keys** — pan by a small step
+- **Shift+Arrow keys** — pan by a large step
+- **`Ctrl+=`** — zoom in
+- **`Ctrl+-`** — zoom out
+- **`Ctrl+0`** — fit canvas to window
+- **`Ctrl+Shift+0`** — reset zoom to 100 %
 
 ### Grid overlay
 

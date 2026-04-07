@@ -101,7 +101,8 @@ To start from a specific paper size:
 4. Click **Generate** (or `Ctrl+G`)
 
 The canvas shows the generated paths. Zoom with the scroll wheel; pan by holding the middle mouse
-button (or `Ctrl` + drag).
+button (or `Ctrl` + drag). See [Canvas Navigation](interface-overview.md#canvas-navigation) for the
+full list of pan and zoom options.
 
 ### Step 3 — Export as SVG
 
