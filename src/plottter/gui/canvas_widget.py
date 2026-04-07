@@ -1133,7 +1133,38 @@ class CanvasWidget(QWidget):
                 self._pre_op_mask = None
                 self.update()
                 return
+
+        # Arrow-key panning — skip in 3D preview mode (camera controls handle arrows there).
+        # Canvas receives keyboard focus via StrongFocus (set in __init__); clicking the
+        # canvas focuses it so subsequent arrow presses work without re-clicking.
+        if not self._3d_preview_active and event.key() in (
+            Qt.Key.Key_Left,
+            Qt.Key.Key_Right,
+            Qt.Key.Key_Up,
+            Qt.Key.Key_Down,
+        ):
+            step = 160.0 if (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) else 40.0
+            key = event.key()
+            if key == Qt.Key.Key_Left:
+                self._pan_offset += QPointF(step, 0.0)
+            elif key == Qt.Key.Key_Right:
+                self._pan_offset += QPointF(-step, 0.0)
+            elif key == Qt.Key.Key_Up:
+                self._pan_offset += QPointF(0.0, step)
+            elif key == Qt.Key.Key_Down:
+                self._pan_offset += QPointF(0.0, -step)
+            self._clamp_pan_offset()
+            self.update()
+            return
+
         super().keyPressEvent(event)
+
+    def _clamp_pan_offset(self) -> None:
+        """Clamp _pan_offset so the paper cannot scroll completely off-screen.
+
+        A full implementation is provided by task 96.6; this stub is a no-op
+        placeholder so callers compile without errors until that task runs.
+        """
 
     # ------------------------------------------------------------------
     # Painting
