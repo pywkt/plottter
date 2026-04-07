@@ -531,6 +531,39 @@ class CanvasWidget(QWidget):
         self._fit_to_window()
         self.update()
 
+    def center_view(self) -> None:
+        """Re-center the paper in the widget without changing zoom."""
+        if self.width() == 0 or self.height() == 0:
+            return
+        canvas = self._controller.current_project.canvas
+        paper_px_w = canvas.width_mm * self._zoom
+        paper_px_h = canvas.height_mm * self._zoom
+        self._pan_offset = QPointF(
+            (self.width() - paper_px_w) / 2,
+            (self.height() - paper_px_h) / 2,
+        )
+        self.update()
+
+    def pan_left(self) -> None:
+        self._pan_offset += QPointF(40.0, 0.0)
+        self._clamp_pan_offset()
+        self.update()
+
+    def pan_right(self) -> None:
+        self._pan_offset += QPointF(-40.0, 0.0)
+        self._clamp_pan_offset()
+        self.update()
+
+    def pan_up(self) -> None:
+        self._pan_offset += QPointF(0.0, 40.0)
+        self._clamp_pan_offset()
+        self.update()
+
+    def pan_down(self) -> None:
+        self._pan_offset += QPointF(0.0, -40.0)
+        self._clamp_pan_offset()
+        self.update()
+
     def zoom_in(self) -> None:
         self._apply_zoom(1.25, self.rect().center())
 

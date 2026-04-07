@@ -715,6 +715,31 @@ class MainWindow(QMainWindow):
         self._act_fit.triggered.connect(self._canvas.fit_to_window)
         view_menu.addAction(self._act_fit)
 
+        self._act_center = QAction("&Center View", self)
+        self._act_center.setShortcut(QKeySequence("Ctrl+Shift+0"))
+        self._act_center.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+        self._act_center.triggered.connect(self._canvas.center_view)
+        view_menu.addAction(self._act_center)
+
+        # Pan actions without keyboard shortcuts — arrow keys are handled by
+        # canvas keyPressEvent (task 96.1) so they don't conflict with the
+        # layer panel's own arrow-key navigation.
+        self._act_pan_left = QAction("Pan &Left", self)
+        self._act_pan_left.triggered.connect(self._canvas.pan_left)
+        view_menu.addAction(self._act_pan_left)
+
+        self._act_pan_right = QAction("Pan &Right", self)
+        self._act_pan_right.triggered.connect(self._canvas.pan_right)
+        view_menu.addAction(self._act_pan_right)
+
+        self._act_pan_up = QAction("Pan &Up", self)
+        self._act_pan_up.triggered.connect(self._canvas.pan_up)
+        view_menu.addAction(self._act_pan_up)
+
+        self._act_pan_down = QAction("Pan &Down", self)
+        self._act_pan_down.triggered.connect(self._canvas.pan_down)
+        view_menu.addAction(self._act_pan_down)
+
         view_menu.addSeparator()
 
         self._act_grid = QAction("Toggle &Grid", self)
