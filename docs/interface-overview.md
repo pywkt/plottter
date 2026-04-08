@@ -41,8 +41,8 @@ Canvas**.
 ### Canvas Navigation
 
 - **Scroll wheel** — zoom in/out (anchored to cursor position)
-- **Shift+scroll wheel** — pan horizontally
-- **Trackpad two-finger swipe** — pan in any direction
+- **Ctrl+scroll wheel** — pan vertically
+- **Alt+scroll wheel** — pan horizontally
 - **Middle-click drag** — pan
 - **Ctrl+left-click drag** — pan
 - **Space+drag** — hand-tool pan (hold Space, then drag)

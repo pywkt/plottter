@@ -83,8 +83,8 @@ class MainWindow(
 
         self._canvas = CanvasWidget(self._controller)
         self._canvas.setToolTip(
-            "Middle-drag or Space+drag to pan · Shift+wheel for horizontal pan · "
-            "Ctrl+= / Ctrl+\u2212 to zoom · Ctrl+0 to fit"
+            "Wheel to zoom · Ctrl+wheel to pan vertically · Alt+wheel to pan horizontally · "
+            "Middle-drag or Space+drag to pan · Ctrl+= / Ctrl+\u2212 to zoom · Ctrl+0 to fit"
         )
         canvas_vbox.addWidget(self._canvas, stretch=1)
 

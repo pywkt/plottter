@@ -29,25 +29,28 @@ class _EventsMixin:
                 )
                 self.update()
             return
-        # Trackpad two-finger scroll: pixelDelta is non-zero for trackpads
-        pixel_delta = event.pixelDelta()
-        if not pixel_delta.isNull():
-            self._pan_offset += QPointF(pixel_delta.x(), pixel_delta.y())
+        # Modifier-based pan must be checked BEFORE falling through to zoom.
+        # Use angleDelta exclusively — pixelDelta-based heuristics caused
+        # simultaneous zoom+pan on mice that emit both deltas per click.
+        modifiers = event.modifiers()
+        angle_delta = event.angleDelta().y()
+
+        # Ctrl+wheel: pan vertically
+        if modifiers & Qt.KeyboardModifier.ControlModifier:
+            self._pan_offset += QPointF(0.0, angle_delta / 120.0 * 40)
             self._clamp_pan_offset()
             self.update()
             return
 
-        # Shift+wheel: horizontal pan
-        if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
-            angle_delta = event.angleDelta().y()
+        # Alt+wheel: pan horizontally
+        if modifiers & Qt.KeyboardModifier.AltModifier:
             self._pan_offset += QPointF(angle_delta / 120.0 * 40, 0.0)
             self._clamp_pan_offset()
             self.update()
             return
 
         # Default: zoom centered on cursor
-        delta = event.angleDelta().y()
-        factor = 1.15 if delta > 0 else (1.0 / 1.15)
+        factor = 1.15 if angle_delta > 0 else (1.0 / 1.15)
         center = event.position()
         self._apply_zoom(factor, center)
 
