@@ -166,12 +166,19 @@ class NewProjectDialog(QDialog):
         if new_unit == self._unit:
             return
         factor = 25.4 if new_unit == "mm" else 1.0 / 25.4
+        # Use 3 decimals in inches mode so mm↔inches round-trips preserve
+        # enough precision (e.g. 210 mm → 8.268 in → 210.0 mm). Must be set
+        # before setValue() or the new value gets rounded to the old precision.
+        new_decimals = 1 if new_unit == "mm" else 3
         self._width_spin.blockSignals(True)
         self._height_spin.blockSignals(True)
+        self._width_spin.setDecimals(new_decimals)
+        self._height_spin.setDecimals(new_decimals)
         self._width_spin.setValue(self._width_spin.value() * factor)
         self._height_spin.setValue(self._height_spin.value() * factor)
         self._width_spin.blockSignals(False)
         self._height_spin.blockSignals(False)
+        self._margin_spin.setDecimals(new_decimals)
         self._margin_spin.setValue(self._margin_spin.value() * factor)
 
         suffix = " mm" if new_unit == "mm" else " in"
