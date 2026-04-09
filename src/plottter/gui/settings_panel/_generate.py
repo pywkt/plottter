@@ -82,7 +82,8 @@ class _GenerateMixin:
 
         # Inject sibling shapes for 3D HLR occlusion
         from plottter.generators.scene3d_generator import Scene3DGenerator
-        if isinstance(self._generator, Scene3DGenerator):
+        from plottter.generators.mesh_slicer import MeshSlicerGenerator
+        if isinstance(self._generator, (Scene3DGenerator, MeshSlicerGenerator)):
             params["_sibling_3d_shapes"] = self._build_sibling_3d_shapes(layer_id)
 
         # Inject preprocessed image for Math Art generators that use source image

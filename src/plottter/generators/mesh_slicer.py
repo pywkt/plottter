@@ -685,6 +685,9 @@ class MeshSlicerGenerator(Generator):
             chop_step = float(params.get("chop_step", 0.05))
             hlr_quality = str(params.get("hlr_quality", "Normal"))
             scene = Scene(hlr_enabled=hlr_enabled, chop_step=chop_step)
+            # Add sibling shapes for occlusion (not rendered, just block rays)
+            for sibling in params.get("_sibling_3d_shapes", []):
+                scene.add(sibling)
             scene.add(occluder)
             scene.compile()
 
