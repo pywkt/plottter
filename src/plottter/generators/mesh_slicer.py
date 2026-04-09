@@ -935,4 +935,40 @@ class MeshSlicerGenerator(Generator):
                 },
                 description="X-axis cross sections stacked at 3 mm spacing",
             ),
+            Preset(
+                name="Camera View",
+                params={
+                    "slice_axis": "Z",
+                    "num_slices": 40,
+                    "view_mode": "Camera",
+                    "hlr_enabled": True,
+                    "hlr_quality": "Normal",
+                    "chop_step": 0.05,
+                },
+                description="3D camera projection with hidden-line removal at normal quality",
+            ),
+            Preset(
+                name="Camera Fine Detail",
+                params={
+                    "slice_axis": "Z",
+                    "num_slices": 60,
+                    "view_mode": "Camera",
+                    "hlr_enabled": True,
+                    "hlr_quality": "Fine",
+                    "chop_step": 0.02,
+                },
+                description="High-accuracy camera projection — slower but maximally precise HLR",
+            ),
+            Preset(
+                name="Camera Fast Preview",
+                params={
+                    "slice_axis": "Z",
+                    "num_slices": 25,
+                    "view_mode": "Camera",
+                    "hlr_enabled": True,
+                    "hlr_quality": "Fast",
+                    "chop_step": 0.1,
+                },
+                description="Quick camera-view preview with fast coarse hidden-line removal",
+            ),
         ]
