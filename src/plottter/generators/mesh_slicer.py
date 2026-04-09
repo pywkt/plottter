@@ -623,6 +623,76 @@ class MeshSlicerGenerator(Generator):
         if cancelled_callback and cancelled_callback():
             return []
 
+        camera_mode = view_mode == "Camera"
+
+        if camera_mode:
+            # B) Read the camera dict and build a Camera object
+            from plottter.scene3d import Scene, Camera
+            cam_dict = params.get("_camera", {})
+            aspect = canvas.width_mm / canvas.height_mm if canvas.height_mm > 0 else 1.0
+            camera = Camera(
+                projection=cam_dict.get("projection", "perspective"),
+                fov_deg=float(cam_dict.get("fov", 45.0)),
+                aspect=aspect,
+            )
+            camera.set_orbit(
+                azimuth_deg=float(cam_dict.get("azimuth", 30.0)),
+                elevation_deg=float(cam_dict.get("elevation", 20.0)),
+                distance=float(cam_dict.get("distance", 8.0)),
+                center=[
+                    float(cam_dict.get("look_at_x", 0.0)),
+                    float(cam_dict.get("look_at_y", 0.0)),
+                    float(cam_dict.get("look_at_z", 0.0)),
+                ],
+            )
+
+            # C) Build a Mesh shape from the loaded (and rotated) vertices and faces
+            from plottter.scene3d.shapes.mesh import Mesh as MeshShape
+            occluder = MeshShape(vertices=vertices, faces=faces, draw_all_edges=False)
+
+            # D) Slice the mesh in 3D using _slice_mesh_multi_3d
+            plane_normal, all_slices_3d = _slice_mesh_multi_3d(
+                vertices, faces, axis=slice_axis, num_slices=num_slices,
+                z_min=z_min, z_max=z_max,
+            )
+
+            if progress_callback:
+                progress_callback(30)
+            if cancelled_callback and cancelled_callback():
+                return []
+
+            # E) Convert 3D contours to Path3D objects
+            from plottter.scene3d.path3d import Path3D
+            slice_paths: list[Path3D] = []
+            for contours_3d in all_slices_3d:
+                for contour in contours_3d:
+                    if len(contour) < 2:
+                        continue
+                    pts = [np.asarray(pt, dtype=np.float64) for pt in contour]
+                    slice_paths.append(Path3D(pts, face_normal=plane_normal))
+
+            # F) Build the scene with the mesh as occluder, compile, and render
+            hlr_enabled = bool(params.get("hlr_enabled", True))
+            chop_step = float(params.get("chop_step", 0.05))
+            hlr_quality = str(params.get("hlr_quality", "Normal"))
+            scene = Scene(hlr_enabled=hlr_enabled, chop_step=chop_step)
+            scene.add(occluder)
+            scene.compile()
+
+            result = scene.render(
+                camera, canvas.width_mm, canvas.height_mm,
+                render_shapes=[],
+                extra_render_paths=slice_paths,
+                progress_callback=lambda p: progress_callback(int(30 + p * 60)) if progress_callback else None,
+                cancelled_callback=cancelled_callback,
+                hlr_quality=hlr_quality,
+            )
+
+            # G) Return result directly (already in mm canvas coordinates)
+            if progress_callback:
+                progress_callback(100)
+            return result
+
         # Generate multi-plane slices
         all_slices = _slice_mesh_multi(
             vertices, faces,
