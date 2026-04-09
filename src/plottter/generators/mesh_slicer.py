@@ -492,7 +492,8 @@ class MeshSlicerGenerator(Generator):
                 max=100.0,
                 step=0.1,
                 default=10.0,
-                description="Scale factor for the mesh",
+                visible_when={"view_mode": ["Stacked", "Plan View"]},
+                description="Scale factor for the mesh (2D display multiplier)",
             ),
             FloatParam(
                 name="rot_x",
@@ -626,6 +627,14 @@ class MeshSlicerGenerator(Generator):
         camera_mode = view_mode == "Camera"
 
         if camera_mode:
+            # A) Center vertices at origin so the camera's default look_at (0,0,0)
+            # is at the mesh centroid.  Done after rotation, before slicing.
+            cent = vertices.mean(axis=0)
+            vertices = vertices - cent
+            # Recompute bounds for the now-centred vertices
+            z_min = float(vertices[:, axis_idx].min())
+            z_max = float(vertices[:, axis_idx].max())
+
             # B) Read the camera dict and build a Camera object
             from plottter.scene3d import Scene, Camera
             cam_dict = params.get("_camera", {})
