@@ -6,6 +6,7 @@ Provides:
 - _project_to_2d:    Drop the dominant normal axis to get 2D contours.
 - slice_mesh:        All-in-one public function.
 - _slice_mesh_multi: Slice along num_slices evenly-spaced planes → list of lists of 2D polylines.
+- _slice_mesh_multi_3d: Like _slice_mesh_multi but returns 3D contours + shared plane normal.
 - MeshSlicerGenerator: Generator class for multi-plane mesh slicing.
 """
 
@@ -366,6 +367,57 @@ def _slice_mesh_multi(
         result.append(contours_2d)
 
     return result
+
+
+def _slice_mesh_multi_3d(
+    vertices: NDArray[np.float64],
+    faces: NDArray[np.int32],
+    axis: str,
+    num_slices: int,
+    z_min: float,
+    z_max: float,
+    tol: float = 1e-6,
+) -> tuple[NDArray[np.float64], list[list[list[NDArray[np.float64]]]]]:
+    """Like ``_slice_mesh_multi`` but returns 3D contours and the plane normal.
+
+    Used by the Camera view to obtain 3D slice contours for Hidden-Line Removal.
+
+    Parameters
+    ----------
+    vertices:   (N, 3) float64 vertex positions.
+    faces:      (M, 3) int32 vertex indices.
+    axis:       Slicing axis — one of "X", "Y", "Z".
+    num_slices: Number of evenly-spaced cutting planes.
+    z_min:      Lower bound along ``axis``.
+    z_max:      Upper bound along ``axis``.
+    tol:        Endpoint-matching tolerance for segment chaining.
+
+    Returns
+    -------
+    A tuple ``(plane_normal, per_slice_contours)`` where:
+
+    - ``plane_normal`` is a (3,) float64 unit vector aligned with ``axis``.
+    - ``per_slice_contours`` is a list of length ``num_slices``.  Each element
+      is a list of 3D polylines (``list[list[NDArray[np.float64]]]``).  Each
+      point in a polyline is a (3,) numpy array lying on the corresponding
+      cutting plane.
+    """
+    axis_idx = _AXIS_MAP.get(axis.upper(), 2)
+    normal = np.zeros(3, dtype=np.float64)
+    normal[axis_idx] = 1.0
+
+    positions: NDArray[np.float64] = np.linspace(z_min, z_max, num_slices + 2)[1:-1]
+
+    per_slice: list[list[list[NDArray[np.float64]]]] = []
+    for pos in positions:
+        origin = np.zeros(3, dtype=np.float64)
+        origin[axis_idx] = float(pos)
+        contours_3d: list[list[NDArray[np.float64]]] = slice_mesh(  # type: ignore[assignment]
+            vertices, faces, origin, normal, tol=tol, project=False
+        )
+        per_slice.append(contours_3d)
+
+    return normal.copy(), per_slice
 
 
 # ---------------------------------------------------------------------------

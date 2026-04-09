@@ -850,3 +850,122 @@ class TestPresets:
         centroids_y = [sum(pt[1] for pt in poly) / len(poly) for poly in result]
         for i in range(1, len(centroids_y)):
             assert centroids_y[i] > centroids_y[i - 1]
+
+
+# ---------------------------------------------------------------------------
+# (j) _slice_mesh_multi_3d (task 98.1)
+# ---------------------------------------------------------------------------
+
+class TestSliceMeshMulti3D:
+    """Tests for the _slice_mesh_multi_3d helper (returns 3D contours + normal)."""
+
+    def test_returns_tuple(self):
+        """_slice_mesh_multi_3d returns a tuple (normal, per_slice_contours)."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi_3d
+        vertices, faces = _unit_cube_vf()
+        result = _slice_mesh_multi_3d(vertices, faces, axis="Z", num_slices=5,
+                                      z_min=0.0, z_max=1.0)
+        assert isinstance(result, tuple) and len(result) == 2
+
+    def test_normal_z_axis(self):
+        """Normal vector for axis='Z' should be (0, 0, 1)."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi_3d
+        vertices, faces = _unit_cube_vf()
+        normal, _ = _slice_mesh_multi_3d(vertices, faces, axis="Z", num_slices=5,
+                                         z_min=0.0, z_max=1.0)
+        assert normal.shape == (3,)
+        assert np.allclose(normal, [0.0, 0.0, 1.0]), (
+            f"Z-axis normal should be (0,0,1), got {normal}"
+        )
+
+    def test_normal_x_axis(self):
+        """Normal vector for axis='X' should be (1, 0, 0)."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi_3d
+        vertices, faces = _unit_cube_vf()
+        normal, _ = _slice_mesh_multi_3d(vertices, faces, axis="X", num_slices=3,
+                                         z_min=0.0, z_max=1.0)
+        assert np.allclose(normal, [1.0, 0.0, 0.0]), (
+            f"X-axis normal should be (1,0,0), got {normal}"
+        )
+
+    def test_normal_y_axis(self):
+        """Normal vector for axis='Y' should be (0, 1, 0)."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi_3d
+        vertices, faces = _unit_cube_vf()
+        normal, _ = _slice_mesh_multi_3d(vertices, faces, axis="Y", num_slices=3,
+                                         z_min=0.0, z_max=1.0)
+        assert np.allclose(normal, [0.0, 1.0, 0.0]), (
+            f"Y-axis normal should be (0,1,0), got {normal}"
+        )
+
+    def test_returns_correct_number_of_slices(self):
+        """_slice_mesh_multi_3d returns exactly num_slices lists."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi_3d
+        vertices, faces = _unit_cube_vf()
+        _, per_slice = _slice_mesh_multi_3d(vertices, faces, axis="Z", num_slices=5,
+                                            z_min=0.0, z_max=1.0)
+        assert len(per_slice) == 5, f"Expected 5 slices, got {len(per_slice)}"
+
+    def test_cube_each_slice_has_one_contour(self):
+        """For a convex cube, each interior slice has exactly 1 contour."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi_3d
+        vertices, faces = _unit_cube_vf()
+        _, per_slice = _slice_mesh_multi_3d(vertices, faces, axis="Z", num_slices=5,
+                                            z_min=0.0, z_max=1.0)
+        for i, contours in enumerate(per_slice):
+            assert len(contours) == 1, (
+                f"Slice {i}: expected 1 contour for cube, got {len(contours)}"
+            )
+
+    def test_contour_points_are_3d_arrays(self):
+        """Each point in the 3D contours is a numpy array with shape (3,)."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi_3d
+        vertices, faces = _unit_cube_vf()
+        _, per_slice = _slice_mesh_multi_3d(vertices, faces, axis="Z", num_slices=5,
+                                            z_min=0.0, z_max=1.0)
+        for contours in per_slice:
+            for contour in contours:
+                for pt in contour:
+                    assert isinstance(pt, np.ndarray), (
+                        f"Expected np.ndarray, got {type(pt)}"
+                    )
+                    assert pt.shape == (3,), (
+                        f"Expected shape (3,), got {pt.shape}"
+                    )
+
+    def test_contour_points_lie_on_plane(self):
+        """All 3D contour points should have their Z coordinate at the slice plane."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi_3d
+        vertices, faces = _unit_cube_vf()
+        num_slices = 5
+        z_min, z_max = 0.0, 1.0
+        _, per_slice = _slice_mesh_multi_3d(vertices, faces, axis="Z",
+                                            num_slices=num_slices,
+                                            z_min=z_min, z_max=z_max)
+        # Compute expected Z positions
+        expected_zs = np.linspace(z_min, z_max, num_slices + 2)[1:-1]
+        for i, (contours, expected_z) in enumerate(zip(per_slice, expected_zs)):
+            for contour in contours:
+                for pt in contour:
+                    assert abs(pt[2] - expected_z) < 1e-5, (
+                        f"Slice {i}: point z={pt[2]:.6f} should be {expected_z:.6f}"
+                    )
+
+    def test_3d_contours_differ_from_2d(self):
+        """3D contours have shape-(3,) points; 2D contours have len-2 tuples."""
+        from plottter.generators.mesh_slicer import _slice_mesh_multi, _slice_mesh_multi_3d
+        vertices, faces = _unit_cube_vf()
+        result_2d = _slice_mesh_multi(vertices, faces, axis="Z", num_slices=3,
+                                      z_min=0.0, z_max=1.0)
+        _, result_3d = _slice_mesh_multi_3d(vertices, faces, axis="Z", num_slices=3,
+                                            z_min=0.0, z_max=1.0)
+        # 2D: each point is a 2-tuple
+        for contours in result_2d:
+            for contour in contours:
+                for pt in contour:
+                    assert len(pt) == 2
+        # 3D: each point is a (3,) array
+        for contours in result_3d:
+            for contour in contours:
+                for pt in contour:
+                    assert len(pt) == 3
