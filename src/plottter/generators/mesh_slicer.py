@@ -32,6 +32,41 @@ from plottter.models import Canvas, Polyline
 
 
 # ---------------------------------------------------------------------------
+# Lightweight Shape wrapper for slice Path3D objects
+# ---------------------------------------------------------------------------
+
+class _SlicePathsShape:
+    """Wraps a list of Path3D objects as a renderable Shape for the Scene pipeline.
+
+    This shape provides paths for rendering but has no intersection geometry —
+    the actual mesh handles occlusion.  By routing slice paths through the main
+    render pipeline (instead of extra_render_paths), they benefit from
+    coarse-to-fine optimization, face-normal offsets, and progress reporting.
+    """
+
+    def __init__(self, paths: list) -> None:
+        self._paths = paths
+
+    def paths(self):  # type: ignore[no-untyped-def]
+        return self._paths
+
+    def intersect(self, ray):  # type: ignore[no-untyped-def]
+        return None
+
+    def intersect_any(self, ray, t_max: float) -> bool:  # type: ignore[no-untyped-def]
+        return False
+
+    def bbox(self):  # type: ignore[no-untyped-def]
+        from plottter.scene3d.bbox import BBox
+        from plottter.scene3d.vector3 import vec3
+        # Return an empty bbox so the BVH skips this shape during ray traversal
+        return BBox(
+            vec3(float("inf"), float("inf"), float("inf")),
+            vec3(float("-inf"), float("-inf"), float("-inf")),
+        )
+
+
+# ---------------------------------------------------------------------------
 # Core intersection
 # ---------------------------------------------------------------------------
 
@@ -488,12 +523,11 @@ class MeshSlicerGenerator(Generator):
             FloatParam(
                 name="scale",
                 label="Scale",
-                min=0.1,
+                min=0.001,
                 max=100.0,
-                step=0.1,
+                step=0.01,
                 default=10.0,
-                visible_when={"view_mode": ["Stacked", "Plan View"]},
-                description="Scale factor for the mesh (2D display multiplier)",
+                description="Scale factor for the mesh",
             ),
             FloatParam(
                 name="rot_x",
@@ -627,7 +661,9 @@ class MeshSlicerGenerator(Generator):
         camera_mode = view_mode == "Camera"
 
         if camera_mode:
-            # A) Center vertices at origin so the camera's default look_at (0,0,0)
+            # Apply scale in 3D so the mesh size is controllable in the scene
+            vertices = vertices * scale
+            # Center vertices at origin so the camera's default look_at (0,0,0)
             # is at the mesh centroid.  Done after rotation, before slicing.
             cent = vertices.mean(axis=0)
             vertices = vertices - cent
@@ -680,21 +716,39 @@ class MeshSlicerGenerator(Generator):
                     pts = [np.asarray(pt, dtype=np.float64) for pt in contour]
                     slice_paths.append(Path3D(pts, face_normal=plane_normal))
 
-            # F) Build the scene with the mesh as occluder, compile, and render
+            # F) Build the scene with the mesh as occluder, compile, and render.
+            #
+            # We wrap slice Path3D objects in a lightweight _SlicePathsShape
+            # so they go through the *main* render pipeline (which has
+            # coarse-to-fine optimization, face-normal offsets, and progress
+            # reporting).  Using extra_render_paths would bypass all three.
             hlr_enabled = bool(params.get("hlr_enabled", True))
             chop_step = float(params.get("chop_step", 0.05))
             hlr_quality = str(params.get("hlr_quality", "Normal"))
+
+            # Scale chop_step relative to mesh size so a large mesh doesn't
+            # produce millions of micro-segments.  Keep at least the user's
+            # explicit value, but bump it up if the mesh is much larger.
+            mesh_extent = float(np.linalg.norm(
+                vertices.max(axis=0) - vertices.min(axis=0)
+            ))
+            chop_step = max(chop_step, mesh_extent * 0.005)
+
             scene = Scene(hlr_enabled=hlr_enabled, chop_step=chop_step)
             # Add sibling shapes for occlusion (not rendered, just block rays)
             for sibling in params.get("_sibling_3d_shapes", []):
                 scene.add(sibling)
             scene.add(occluder)
+
+            # Wrap slice paths as a renderable shape so they flow through the
+            # optimized main HLR pipeline instead of the slower extra_render_paths path.
+            slice_shape = _SlicePathsShape(slice_paths)
+            scene.add(slice_shape)
             scene.compile()
 
             result = scene.render(
                 camera, canvas.width_mm, canvas.height_mm,
-                render_shapes=[],
-                extra_render_paths=slice_paths,
+                render_shapes=[slice_shape],  # Render only slice paths, not mesh edges
                 progress_callback=lambda p: progress_callback(int(30 + p * 60)) if progress_callback else None,
                 cancelled_callback=cancelled_callback,
                 hlr_quality=hlr_quality,
