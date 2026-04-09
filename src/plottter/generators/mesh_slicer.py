@@ -464,11 +464,12 @@ class MeshSlicerGenerator(Generator):
             ChoiceParam(
                 name="view_mode",
                 label="View Mode",
-                choices=["Stacked", "Plan View"],
+                choices=["Stacked", "Plan View", "Camera"],
                 default="Stacked",
                 description=(
                     "Stacked: slices are offset vertically for a side-profile look. "
-                    "Plan View: all contours overlaid at the same position (topographic map)."
+                    "Plan View: all contours overlaid at the same position (topographic map). "
+                    "Camera: render slice contours from the canvas camera viewpoint with hidden-line removal."
                 ),
             ),
             FloatParam(
@@ -525,6 +526,30 @@ class MeshSlicerGenerator(Generator):
                 label="Flip Vertical",
                 default=False,
                 description="Flip the output vertically — useful when the mesh appears upside down",
+            ),
+            # ── HLR / render quality (Camera mode) ───────────────────
+            BoolParam(
+                name="hlr_enabled", label="Hidden Line Removal", default=True,
+                visible_when={"view_mode": ["Camera"]},
+                description="Remove lines occluded by the mesh surface in Camera view mode",
+            ),
+            FloatParam(
+                name="chop_step", label="HLR Accuracy", min=0.005, max=0.5, step=0.005, default=0.05,
+                visible_when={"view_mode": ["Camera"]},
+                description="Path segment length for HLR ray casting — smaller = more accurate but slower",
+            ),
+            ChoiceParam(
+                name="hlr_quality",
+                label="HLR Quality",
+                choices=["Fast", "Normal", "Fine"],
+                default="Normal",
+                visible_when={"view_mode": ["Camera"]},
+                description=(
+                    "HLR ray-cast quality. "
+                    "Fine: test every segment (slowest, most accurate). "
+                    "Normal: coarse pre-pass every 4 segments, fine-test at transitions. "
+                    "Fast: coarse pre-pass every 8 segments, fine-test at transitions."
+                ),
             ),
         ]
 
