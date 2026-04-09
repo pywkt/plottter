@@ -245,11 +245,11 @@ class _WireframeWorker(QThread):
         try:
             from plottter.scene3d import Scene, Camera
             from plottter.generators.scene3d_generator import Scene3DGenerator
+            from plottter.generators.mesh_slicer import MeshSlicerGenerator
 
             if self._cancelled:
                 return
 
-            gen = Scene3DGenerator()
             cam_dict = self._camera_dict
             aspect = self._canvas_w_mm / max(self._canvas_h_mm, 1e-6)
 
@@ -272,28 +272,50 @@ class _WireframeWorker(QThread):
             if self._cancelled:
                 return
 
-            scene = Scene(hlr_enabled=False)
+            # Separate mesh-slicer layers (identified by "mesh_file" key) from
+            # Scene3DGenerator shape layers.
+            scene3d_params: list[dict] = []
+            mesh_slicer_params: list[dict] = []
             for params in self._layer_params_list:
+                if "mesh_file" in params:
+                    mesh_slicer_params.append(params)
+                else:
+                    scene3d_params.append(params)
+
+            all_polylines: list = []
+
+            # --- Scene3DGenerator layers (shapes: sphere, cube, …) ---
+            if scene3d_params:
+                gen = Scene3DGenerator()
+                scene = Scene(hlr_enabled=False)
+                for params in scene3d_params:
+                    if self._cancelled:
+                        return
+                    shape = gen.build_transformed_shape(params)
+                    if shape is not None:
+                        scene.add(shape)
+
+                if scene.shapes:
+                    if self._cancelled:
+                        return
+                    polylines = scene.render(
+                        camera,
+                        canvas_w_mm=self._canvas_w_mm,
+                        canvas_h_mm=self._canvas_h_mm,
+                    )
+                    all_polylines.extend(polylines)
+
+            # --- MeshSlicerGenerator layers (fast non-HLR slice projection) ---
+            for params in mesh_slicer_params:
                 if self._cancelled:
                     return
-                shape = gen.build_transformed_shape(params)
-                if shape is not None:
-                    scene.add(shape)
+                polylines = MeshSlicerGenerator.preview_wireframe(
+                    params, camera, self._canvas_w_mm, self._canvas_h_mm,
+                )
+                all_polylines.extend(polylines)
 
-            if not scene.shapes:
-                self.result_ready.emit([])
-                return
-
-            if self._cancelled:
-                return
-
-            polylines = scene.render(
-                camera,
-                canvas_w_mm=self._canvas_w_mm,
-                canvas_h_mm=self._canvas_h_mm,
-            )
             if not self._cancelled:
-                self.result_ready.emit(polylines)
+                self.result_ready.emit(all_polylines)
         except Exception as exc:  # noqa: BLE001
             if not self._cancelled:
                 self.render_error.emit(str(exc))

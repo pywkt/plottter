@@ -763,6 +763,110 @@ class MeshSlicerGenerator(Generator):
 
         return polylines
 
+    @staticmethod
+    def preview_wireframe(
+        params: dict,
+        camera: Any,
+        canvas_w_mm: float,
+        canvas_h_mm: float,
+    ) -> list[Polyline]:
+        """Fast non-HLR wireframe preview of mesh slices from the camera's POV.
+
+        Loads the mesh, applies rotations, centers it, slices in 3D, and projects
+        the resulting contours through the camera's view-projection matrix.
+        No hidden-line removal is performed, so this is very fast.
+
+        Parameters
+        ----------
+        params:       Generator params dict (mesh_file, slice_axis, num_slices, rot_*).
+        camera:       A ``plottter.scene3d.Camera`` instance already configured.
+        canvas_w_mm:  Canvas width in millimetres.
+        canvas_h_mm:  Canvas height in millimetres.
+
+        Returns
+        -------
+        list[Polyline] — projected 2-D polylines in mm canvas coordinates,
+        or an empty list if no mesh file is set or no slices were produced.
+        """
+        import math
+        import os
+
+        from plottter.scene3d.loaders import load_obj, load_stl
+        from plottter.scene3d.path3d import Path3D
+
+        mesh_file = params.get("mesh_file", "").strip()
+        if not mesh_file or not os.path.isfile(mesh_file):
+            return []
+
+        ext = os.path.splitext(mesh_file)[1].lower()
+        if ext == ".stl":
+            vertices, faces = load_stl(mesh_file)
+        elif ext == ".obj":
+            vertices, faces = load_obj(mesh_file)
+        else:
+            return []
+
+        if len(faces) == 0:
+            return []
+
+        vertices = np.asarray(vertices, dtype=np.float64)
+
+        # Apply rotations (X → Y → Z, same order as generate())
+        rot_x = float(params.get("rot_x", 0.0))
+        rot_y = float(params.get("rot_y", 0.0))
+        rot_z = float(params.get("rot_z", 0.0))
+        if rot_x != 0.0:
+            a = math.radians(rot_x)
+            c, s = math.cos(a), math.sin(a)
+            rx = np.array([[1, 0, 0], [0, c, -s], [0, s, c]], dtype=np.float64)
+            vertices = vertices @ rx.T
+        if rot_y != 0.0:
+            a = math.radians(rot_y)
+            c, s = math.cos(a), math.sin(a)
+            ry = np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]], dtype=np.float64)
+            vertices = vertices @ ry.T
+        if rot_z != 0.0:
+            a = math.radians(rot_z)
+            c, s = math.cos(a), math.sin(a)
+            rz = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]], dtype=np.float64)
+            vertices = vertices @ rz.T
+
+        # Center at origin (same as camera mode in generate())
+        vertices = vertices - vertices.mean(axis=0)
+
+        slice_axis = str(params.get("slice_axis", "Z"))
+        num_slices = max(1, int(params.get("num_slices", 40)))
+        axis_idx = _AXIS_MAP.get(slice_axis.upper(), 2)
+        z_min = float(vertices[:, axis_idx].min())
+        z_max = float(vertices[:, axis_idx].max())
+
+        if z_max <= z_min:
+            return []
+
+        plane_normal, all_slices_3d = _slice_mesh_multi_3d(
+            vertices, faces, axis=slice_axis, num_slices=num_slices,
+            z_min=z_min, z_max=z_max,
+        )
+
+        slice_paths: list[Path3D] = []
+        for contours_3d in all_slices_3d:
+            for contour in contours_3d:
+                if len(contour) < 2:
+                    continue
+                pts = [np.asarray(pt, dtype=np.float64) for pt in contour]
+                slice_paths.append(Path3D(pts, face_normal=plane_normal))
+
+        if not slice_paths:
+            return []
+
+        vp_matrix = camera.view_proj_matrix()
+        result: list[Polyline] = []
+        for path in slice_paths:
+            for polyline in path.project_segments(vp_matrix, canvas_w_mm, canvas_h_mm, (0.0, 0.0)):
+                if len(polyline) >= 2:
+                    result.append(polyline)
+        return result
+
     def get_presets(self) -> list[Preset]:
         return [
             Preset(
