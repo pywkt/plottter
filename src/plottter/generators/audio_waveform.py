@@ -182,6 +182,58 @@ class AudioWaveformGenerator(Generator):
                 default=True,
                 visible_when={"mode": ["Circular"]},
             ),
+            # --- Spiral-specific parameters ---
+            IntParam(
+                name="spiral_turns",
+                label="Turns",
+                min=1,
+                max=30,
+                step=1,
+                default=8,
+                visible_when={"mode": ["Spiral"]},
+            ),
+            FloatParam(
+                name="spiral_amplitude",
+                label="Amplitude",
+                min=0.01,
+                max=0.3,
+                step=0.01,
+                default=0.05,
+                description="Waveform amplitude relative to spiral gap",
+                visible_when={"mode": ["Spiral"]},
+            ),
+            IntParam(
+                name="spiral_points",
+                label="Points",
+                min=1000,
+                max=20000,
+                step=1000,
+                default=7200,
+                visible_when={"mode": ["Spiral"]},
+            ),
+            FloatParam(
+                name="spiral_smoothing",
+                label="Smoothing",
+                min=0.0,
+                max=20.0,
+                step=1.0,
+                default=8.0,
+                visible_when={"mode": ["Spiral"]},
+            ),
+            ChoiceParam(
+                name="spiral_source",
+                label="Source",
+                choices=["Waveform", "Envelope"],
+                default="Waveform",
+                visible_when={"mode": ["Spiral"]},
+            ),
+            ChoiceParam(
+                name="spiral_direction",
+                label="Direction",
+                choices=["Outward", "Inward"],
+                default="Outward",
+                visible_when={"mode": ["Spiral"]},
+            ),
         ]
 
     def generate(
@@ -205,6 +257,9 @@ class AudioWaveformGenerator(Generator):
 
         if mode == "Circular":
             return self._generate_circular(params, canvas, _progress, _cancelled)
+
+        if mode == "Spiral":
+            return self._generate_spiral(params, canvas, _progress, _cancelled)
 
         # Other modes not yet implemented
         return []
@@ -401,6 +456,89 @@ class AudioWaveformGenerator(Generator):
         progress(100)
         return [polyline]
 
+    def _generate_spiral(
+        self,
+        params: dict[str, Any],
+        canvas: Canvas,
+        progress: Any,
+        cancelled: Any,
+    ) -> list[Polyline]:
+        audio_file = params.get("audio_file", "")
+        if not audio_file or not Path(audio_file).is_file():
+            return []
+
+        start_sec = float(params.get("start_sec", 0.0))
+        duration_sec = float(params.get("duration_sec", 10.0))
+        spiral_turns = int(params.get("spiral_turns", 8))
+        spiral_amplitude = float(params.get("spiral_amplitude", 0.05))
+        spiral_points = int(params.get("spiral_points", 7200))
+        spiral_smoothing = float(params.get("spiral_smoothing", 8.0))
+        spiral_source = params.get("spiral_source", "Waveform")
+        spiral_direction = params.get("spiral_direction", "Outward")
+
+        # Load mono audio
+        _sample_rate, data = load_audio(audio_file, start_sec, duration_sec, mono=True)
+        progress(20)
+
+        if cancelled():
+            return []
+
+        # Build signal based on source type
+        n = len(data)
+        out_idx = np.linspace(0, n - 1, spiral_points)
+        in_idx = np.arange(n)
+
+        if spiral_source == "Envelope":
+            envelope = compute_envelope(data)
+            signal = np.interp(out_idx, in_idx, envelope)
+        else:  # Waveform
+            signal = np.interp(out_idx, in_idx, data)
+
+        progress(50)
+
+        if cancelled():
+            return []
+
+        # Smooth
+        if spiral_smoothing > 0:
+            signal = scipy.ndimage.gaussian_filter1d(signal, sigma=spiral_smoothing)
+
+        # Normalise to [-1, 1]
+        peak = max(np.abs(signal).max(), 1e-10)
+        signal = signal / peak
+
+        # Canvas geometry
+        left, top, right, bottom = canvas.drawing_area()
+        draw_width = right - left
+        draw_height = bottom - top
+        center_x = left + draw_width / 2.0
+        center_y = top + draw_height / 2.0
+
+        r_outer = min(draw_width, draw_height) / 2.0 - 5.0
+        r_inner = r_outer * 0.1
+
+        if r_outer <= r_inner:
+            return []
+
+        gap = (r_outer - r_inner) / spiral_turns
+        effective_amplitude = min(spiral_amplitude * r_outer, gap * 0.4)
+
+        # Build spiral
+        theta = np.linspace(0, 2 * np.pi * spiral_turns, spiral_points)
+        r_base = np.linspace(r_inner, r_outer, spiral_points)
+
+        if spiral_direction == "Inward":
+            r_base = r_base[::-1]
+
+        r = r_base + effective_amplitude * signal
+        x = r * np.cos(theta) + center_x
+        y = r * np.sin(theta) + center_y
+
+        polyline: Polyline = [(float(x[i]), float(y[i])) for i in range(spiral_points)]
+
+        progress(100)
+        return [polyline]
+
     def get_presets(self) -> list[Preset]:
         return [
             Preset(
@@ -473,6 +611,28 @@ class AudioWaveformGenerator(Generator):
                     "circle_points": 1800,
                     "circle_amplitude": 0.25,
                     "circle_smoothing": 3.0,
+                },
+            ),
+            Preset(
+                "Vinyl Spiral",
+                params={
+                    "mode": "Spiral",
+                    "spiral_turns": 12,
+                    "spiral_direction": "Outward",
+                    "spiral_source": "Envelope",
+                    "spiral_amplitude": 0.04,
+                    "spiral_smoothing": 10.0,
+                },
+            ),
+            Preset(
+                "Tight Spiral",
+                params={
+                    "mode": "Spiral",
+                    "spiral_turns": 20,
+                    "spiral_direction": "Outward",
+                    "spiral_source": "Waveform",
+                    "spiral_amplitude": 0.03,
+                    "spiral_smoothing": 6.0,
                 },
             ),
         ]

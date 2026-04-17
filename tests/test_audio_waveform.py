@@ -347,3 +347,119 @@ def test_circular_presets_produce_output(generator, canvas, sine_wav):
         p.setdefault("duration_sec", 2.0)
         result = generator.generate(p, canvas)
         assert len(result) > 0, f"Circular preset '{preset.name}' produced no output"
+
+
+# ---------------------------------------------------------------------------
+# Spiral mode tests
+# ---------------------------------------------------------------------------
+
+# (a) Spiral mode produces a single polyline with approximately spiral_points points
+
+def test_spiral_produces_single_polyline(generator, canvas, sine_wav):
+    spiral_points = 2000
+    result = generator.generate(
+        {
+            "mode": "Spiral",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "spiral_points": spiral_points,
+        },
+        canvas,
+    )
+    assert len(result) == 1
+    assert len(result[0]) == spiral_points
+
+
+# (b) Outward direction: radius generally increases (first 10% vs last 10%)
+
+def test_spiral_outward_radius_increases(generator, canvas, sine_wav):
+    spiral_points = 2000
+    result = generator.generate(
+        {
+            "mode": "Spiral",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "spiral_points": spiral_points,
+            "spiral_direction": "Outward",
+            "spiral_smoothing": 0.0,
+        },
+        canvas,
+    )
+    assert len(result) == 1
+    poly = result[0]
+    left, top, right, bottom = canvas.drawing_area()
+    cx = (left + right) / 2.0
+    cy = (top + bottom) / 2.0
+
+    n = len(poly)
+    seg = n // 10
+    first_radii = [((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 for x, y in poly[:seg]]
+    last_radii = [((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 for x, y in poly[-seg:]]
+    assert np.mean(last_radii) > np.mean(first_radii), (
+        f"Outward: mean radius should increase; first={np.mean(first_radii):.2f}, last={np.mean(last_radii):.2f}"
+    )
+
+
+# (c) Inward direction: radius generally decreases
+
+def test_spiral_inward_radius_decreases(generator, canvas, sine_wav):
+    spiral_points = 2000
+    result = generator.generate(
+        {
+            "mode": "Spiral",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "spiral_points": spiral_points,
+            "spiral_direction": "Inward",
+            "spiral_smoothing": 0.0,
+        },
+        canvas,
+    )
+    assert len(result) == 1
+    poly = result[0]
+    left, top, right, bottom = canvas.drawing_area()
+    cx = (left + right) / 2.0
+    cy = (top + bottom) / 2.0
+
+    n = len(poly)
+    seg = n // 10
+    first_radii = [((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 for x, y in poly[:seg]]
+    last_radii = [((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 for x, y in poly[-seg:]]
+    assert np.mean(last_radii) < np.mean(first_radii), (
+        f"Inward: mean radius should decrease; first={np.mean(first_radii):.2f}, last={np.mean(last_radii):.2f}"
+    )
+
+
+# (d) Spiral output within canvas bounds
+
+def test_spiral_output_within_canvas_bounds(generator, canvas, sine_wav):
+    result = generator.generate(
+        {
+            "mode": "Spiral",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "spiral_points": 1000,
+        },
+        canvas,
+    )
+    assert len(result) > 0
+    left, top, right, bottom = canvas.drawing_area()
+    tol = 1.0  # 1 mm tolerance
+    for pl in result:
+        for x, y in pl:
+            assert left - tol <= x <= right + tol, f"x={x} out of bounds [{left}, {right}]"
+            assert top - tol <= y <= bottom + tol, f"y={y} out of bounds [{top}, {bottom}]"
+
+
+# (e) All Spiral presets produce non-empty output
+
+def test_spiral_presets_produce_output(generator, canvas, sine_wav):
+    presets = generator.get_presets()
+    spiral_presets = [p for p in presets if p.params.get("mode") == "Spiral"]
+    assert len(spiral_presets) >= 2, "Expected at least 2 Spiral presets"
+    for preset in spiral_presets:
+        p = dict(preset.params)
+        p["audio_file"] = sine_wav
+        p.setdefault("duration_sec", 2.0)
+        result = generator.generate(p, canvas)
+        assert len(result) > 0, f"Spiral preset '{preset.name}' produced no output"
