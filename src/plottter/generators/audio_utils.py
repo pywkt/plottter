@@ -243,6 +243,58 @@ def get_audio_duration(filepath: str | os.PathLike) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Segment selection
+# ---------------------------------------------------------------------------
+
+def find_interesting_segment(
+    data: np.ndarray,
+    sample_rate: int,
+    segment_duration: float,
+    num_candidates: int = 20,
+) -> tuple[int, int]:
+    """Find the most energetic segment in audio data.
+
+    Parameters
+    ----------
+    data:
+        Audio data. Shape (N,) for mono or (N, 2) for stereo.
+    sample_rate:
+        Sample rate in Hz.
+    segment_duration:
+        Duration of the segment in seconds.
+    num_candidates:
+        Number of evenly-spaced candidate positions to evaluate.
+
+    Returns
+    -------
+    (start_sample, end_sample) of the most energetic segment.
+    """
+    len_data = data.shape[0]
+    seg_len = int(segment_duration * sample_rate)
+    seg_len = max(1, min(seg_len, len_data))
+
+    candidates = np.linspace(0, max(0, len_data - seg_len), num_candidates, dtype=int)
+
+    best_start = int(candidates[0])
+    best_energy = -1.0
+
+    for start in candidates:
+        start = int(start)
+        end = start + seg_len
+        segment = data[start:end]
+        if data.ndim == 2:
+            # Sum energy across both channels
+            energy = float(np.sum(segment ** 2))
+        else:
+            energy = float(np.sum(segment ** 2))
+        if energy > best_energy:
+            best_energy = energy
+            best_start = start
+
+    return best_start, best_start + seg_len
+
+
+# ---------------------------------------------------------------------------
 # Ridgeline hidden-line-removal
 # ---------------------------------------------------------------------------
 

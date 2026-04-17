@@ -13,7 +13,7 @@ import pytest
 import scipy.ndimage
 
 from plottter.generators import GENERATORS
-from plottter.generators.audio_utils import extract_contours
+from plottter.generators.audio_utils import extract_contours, find_interesting_segment
 from plottter.generators.audio_waveform import AudioWaveformGenerator
 from plottter.models.canvas import Canvas
 
@@ -34,12 +34,75 @@ def _make_sine_wav(path: str, duration_sec: float = 2.0, freq: float = 440.0, sa
         wf.writeframes(signal.tobytes())
 
 
+def _make_stereo_sine_wav(
+    path: str,
+    duration_sec: float = 2.0,
+    freq_left: float = 440.0,
+    freq_right: float = 660.0,
+    sample_rate: int = 44100,
+) -> None:
+    """Write a stereo 16-bit WAV with different sine frequencies per channel."""
+    n_samples = int(sample_rate * duration_sec)
+    t = np.linspace(0, duration_sec, n_samples, endpoint=False)
+    left = (np.sin(2 * np.pi * freq_left * t) * 32767).astype(np.int16)
+    right = (np.sin(2 * np.pi * freq_right * t) * 32767).astype(np.int16)
+    interleaved = np.empty(n_samples * 2, dtype=np.int16)
+    interleaved[0::2] = left
+    interleaved[1::2] = right
+    with wave.open(path, "w") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(interleaved.tobytes())
+
+
+def _make_varying_stereo_wav(path: str, sample_rate: int = 44100) -> None:
+    """Stereo WAV where the left/right frequency ratio changes mid-file.
+
+    First half:  left=440 Hz, right=440 Hz  → Lissajous is a line (1:1)
+    Second half: left=440 Hz, right=880 Hz  → Lissajous is a figure-8 (1:2)
+    """
+    duration = 2.0
+    n = int(sample_rate * duration)
+    t = np.linspace(0, duration, n, endpoint=False)
+    left_f = np.sin(2 * np.pi * 440.0 * t)
+    right_f = np.where(t < 1.0, np.sin(2 * np.pi * 440.0 * t), np.sin(2 * np.pi * 880.0 * t))
+    left = (left_f * 32767).astype(np.int16)
+    right = (right_f * 32767).astype(np.int16)
+    interleaved = np.empty(n * 2, dtype=np.int16)
+    interleaved[0::2] = left
+    interleaved[1::2] = right
+    with wave.open(path, "w") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(interleaved.tobytes())
+
+
 @pytest.fixture(scope="module")
 def sine_wav(tmp_path_factory):
     """Provide a temporary 2-second 440 Hz mono sine WAV file."""
     tmp = tmp_path_factory.mktemp("audio")
     wav_path = str(tmp / "sine.wav")
     _make_sine_wav(wav_path)
+    return wav_path
+
+
+@pytest.fixture(scope="module")
+def stereo_wav(tmp_path_factory):
+    """Provide a temporary 2-second stereo WAV file (440 Hz left, 660 Hz right)."""
+    tmp = tmp_path_factory.mktemp("audio_stereo")
+    wav_path = str(tmp / "stereo.wav")
+    _make_stereo_sine_wav(wav_path)
+    return wav_path
+
+
+@pytest.fixture(scope="module")
+def varying_stereo_wav(tmp_path_factory):
+    """Stereo WAV where freq ratio changes at 1s (1:1 → 1:2), giving different Lissajous shapes."""
+    tmp = tmp_path_factory.mktemp("audio_varying")
+    wav_path = str(tmp / "varying.wav")
+    _make_varying_stereo_wav(wav_path)
     return wav_path
 
 
@@ -668,3 +731,156 @@ def test_frequency_bands_presets_produce_output(generator, canvas, sine_wav):
         p.setdefault("band_points", 500)
         result = generator.generate(p, canvas)
         assert len(result) > 0, f"Frequency Bands preset '{preset.name}' produced no output"
+
+
+# ---------------------------------------------------------------------------
+# find_interesting_segment unit tests
+# ---------------------------------------------------------------------------
+
+# (a) find_interesting_segment returns (start, end) with 0 <= start < end <= len(data)
+
+def test_find_interesting_segment_bounds():
+    sample_rate = 44100
+    data = np.random.randn(sample_rate * 2, 2).astype(np.float64)  # 2s stereo
+    start, end = find_interesting_segment(data, sample_rate, segment_duration=0.1)
+    assert 0 <= start
+    assert start < end
+    assert end <= len(data)
+
+
+# (b) find_interesting_segment selects the loudest segment
+
+def test_find_interesting_segment_picks_loudest():
+    sample_rate = 44100
+    # 3 seconds mostly silent, loud burst at 2.0–2.1 s
+    total = sample_rate * 3
+    data = np.zeros((total, 2), dtype=np.float64)
+    burst_start = int(2.0 * sample_rate)
+    burst_end = int(2.1 * sample_rate)
+    data[burst_start:burst_end, :] = 1.0  # loud burst
+
+    start, end = find_interesting_segment(data, sample_rate, segment_duration=0.1, num_candidates=30)
+    # The selected segment should overlap the burst region substantially
+    assert end > burst_start and start < burst_end, (
+        f"Expected segment [{start}, {end}] to overlap burst [{burst_start}, {burst_end}]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Lissajous mode integration tests
+# ---------------------------------------------------------------------------
+
+# (c) Lissajous mode with stereo WAV produces a single polyline
+
+def test_lissajous_stereo_produces_single_polyline(generator, canvas, stereo_wav):
+    result = generator.generate(
+        {
+            "mode": "Lissajous",
+            "audio_file": stereo_wav,
+            "duration_sec": 2.0,
+            "liss_segment_sec": 0.05,
+            "liss_points": 1000,
+            "liss_smoothing": 2.0,
+            "liss_auto_segment": True,
+        },
+        canvas,
+    )
+    assert len(result) == 1
+    assert len(result[0]) == 1000
+    for pt in result[0]:
+        assert len(pt) == 2
+
+
+# (d) Lissajous mode with mono WAV still produces output (phase-offset fallback)
+
+def test_lissajous_mono_fallback_produces_output(generator, canvas, sine_wav):
+    result = generator.generate(
+        {
+            "mode": "Lissajous",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "liss_segment_sec": 0.05,
+            "liss_points": 1000,
+            "liss_smoothing": 2.0,
+            "liss_auto_segment": True,
+        },
+        canvas,
+    )
+    assert len(result) == 1
+    assert len(result[0]) > 0
+
+
+# (e) liss_auto_segment=False with liss_segment_start produces output at a different position
+#     Use a time-varying signal where the first half (1:1 ratio) and second half (1:2 ratio)
+#     produce genuinely different Lissajous figures.
+
+def test_lissajous_manual_segment_differs_from_auto(generator, canvas, varying_stereo_wav):
+    # Manual start at 0.0s → first half (1:1 ratio, line-shaped Lissajous)
+    params_early = {
+        "mode": "Lissajous",
+        "audio_file": varying_stereo_wav,
+        "duration_sec": 2.0,
+        "liss_segment_sec": 0.05,
+        "liss_points": 500,
+        "liss_smoothing": 0.0,
+        "liss_auto_segment": False,
+        "liss_segment_start": 0.0,
+    }
+    # Manual start at 1.1s → second half (1:2 ratio, figure-8 Lissajous)
+    params_late = {
+        **params_early,
+        "liss_segment_start": 1.1,
+    }
+
+    result_early = generator.generate(params_early, canvas)
+    result_late = generator.generate(params_late, canvas)
+
+    assert len(result_early) == 1
+    assert len(result_late) == 1
+
+    # The two polylines should differ (different Lissajous shapes from different freq ratios)
+    pts_early = result_early[0]
+    pts_late = result_late[0]
+    diffs = [
+        abs(pts_early[i][0] - pts_late[i][0]) + abs(pts_early[i][1] - pts_late[i][1])
+        for i in range(min(len(pts_early), len(pts_late)))
+    ]
+    assert max(diffs) > 0.0, "Early and late segments produced identical Lissajous output"
+
+
+# (f) Lissajous output within canvas bounds
+
+def test_lissajous_output_within_canvas_bounds(generator, canvas, stereo_wav):
+    result = generator.generate(
+        {
+            "mode": "Lissajous",
+            "audio_file": stereo_wav,
+            "duration_sec": 2.0,
+            "liss_segment_sec": 0.05,
+            "liss_points": 500,
+            "liss_smoothing": 2.0,
+            "liss_auto_segment": True,
+        },
+        canvas,
+    )
+    assert len(result) > 0
+    left, top, right, bottom = canvas.drawing_area()
+    tol = 1.0  # 1 mm tolerance
+    for pl in result:
+        for x, y in pl:
+            assert left - tol <= x <= right + tol, f"x={x} out of bounds [{left}, {right}]"
+            assert top - tol <= y <= bottom + tol, f"y={y} out of bounds [{top}, {bottom}]"
+
+
+# (g) All Lissajous presets produce non-empty output with stereo input
+
+def test_lissajous_presets_produce_output(generator, canvas, stereo_wav):
+    presets = generator.get_presets()
+    liss_presets = [p for p in presets if p.params.get("mode") == "Lissajous"]
+    assert len(liss_presets) >= 3, "Expected at least 3 Lissajous presets"
+    for preset in liss_presets:
+        p = dict(preset.params)
+        p["audio_file"] = stereo_wav
+        p.setdefault("duration_sec", 2.0)
+        result = generator.generate(p, canvas)
+        assert len(result) > 0, f"Lissajous preset '{preset.name}' produced no output"

@@ -15,6 +15,7 @@ from plottter.generators.audio_utils import (
     compute_envelope,
     compute_spectrogram,
     extract_contours,
+    find_interesting_segment,
     load_audio,
     ridgeline_hlr,
     ridgeline_no_hlr,
@@ -325,6 +326,51 @@ class AudioWaveformGenerator(Generator):
                 default=3000,
                 visible_when={"mode": ["Frequency Bands"]},
             ),
+            # --- Lissajous-specific parameters ---
+            FloatParam(
+                name="liss_segment_sec",
+                label="Segment Duration (s)",
+                min=0.005,
+                max=2.0,
+                step=0.005,
+                default=0.05,
+                description="Shorter = cleaner curves, longer = denser fill",
+                visible_when={"mode": ["Lissajous"]},
+            ),
+            IntParam(
+                name="liss_points",
+                label="Points",
+                min=500,
+                max=20000,
+                step=500,
+                default=5000,
+                visible_when={"mode": ["Lissajous"]},
+            ),
+            FloatParam(
+                name="liss_smoothing",
+                label="Smoothing",
+                min=0.0,
+                max=10.0,
+                step=0.5,
+                default=3.0,
+                visible_when={"mode": ["Lissajous"]},
+            ),
+            BoolParam(
+                name="liss_auto_segment",
+                label="Auto-select Segment",
+                default=True,
+                description="Find the most energetic segment automatically",
+                visible_when={"mode": ["Lissajous"]},
+            ),
+            FloatParam(
+                name="liss_segment_start",
+                label="Segment Start (s)",
+                min=0.0,
+                max=3600.0,
+                step=0.01,
+                default=0.0,
+                visible_when={"mode": ["Lissajous"], "liss_auto_segment": [False]},
+            ),
         ]
 
     def generate(
@@ -358,7 +404,9 @@ class AudioWaveformGenerator(Generator):
         if mode == "Frequency Bands":
             return self._generate_frequency_bands(params, canvas, _progress, _cancelled)
 
-        # Other modes not yet implemented
+        if mode == "Lissajous":
+            return self._generate_lissajous(params, canvas, _progress, _cancelled)
+
         return []
 
     def _generate_ridgeline(
@@ -896,6 +944,93 @@ class AudioWaveformGenerator(Generator):
         progress(100)
         return result
 
+    def _generate_lissajous(
+        self,
+        params: dict[str, Any],
+        canvas: Canvas,
+        progress: Any,
+        cancelled: Any,
+    ) -> list[Polyline]:
+        audio_file = params.get("audio_file", "")
+        if not audio_file or not Path(audio_file).is_file():
+            return []
+
+        start_sec = float(params.get("start_sec", 0.0))
+        duration_sec = float(params.get("duration_sec", 10.0))
+        liss_segment_sec = float(params.get("liss_segment_sec", 0.05))
+        liss_points = int(params.get("liss_points", 5000))
+        liss_smoothing = float(params.get("liss_smoothing", 3.0))
+        liss_auto_segment = bool(params.get("liss_auto_segment", True))
+        liss_segment_start = float(params.get("liss_segment_start", 0.0))
+
+        # Load stereo audio
+        sample_rate, data = load_audio(audio_file, start_sec, duration_sec, mono=False)
+        progress(20)
+
+        if cancelled():
+            return []
+
+        # Handle mono (1D): create fake stereo with quarter-cycle phase shift
+        if data.ndim == 1:
+            shift = len(data) // 4
+            channel2 = np.roll(data, shift)
+            data = np.stack([data, channel2], axis=1)
+
+        # Find or select segment
+        if liss_auto_segment:
+            start, end = find_interesting_segment(data, sample_rate, liss_segment_sec)
+        else:
+            start = int(liss_segment_start * sample_rate)
+            seg_len = int(liss_segment_sec * sample_rate)
+            end = start + seg_len
+
+        # Clamp to data bounds
+        end = min(end, len(data))
+        start = min(start, max(0, end - 1))
+
+        segment = data[start:end]
+        if len(segment) < 2:
+            return []
+
+        left_ch = segment[:, 0].astype(np.float64)
+        right_ch = segment[:, 1].astype(np.float64)
+
+        # Downsample to liss_points
+        n = len(left_ch)
+        out_idx = np.linspace(0, n - 1, liss_points)
+        in_idx = np.arange(n)
+        left_ds = np.interp(out_idx, in_idx, left_ch)
+        right_ds = np.interp(out_idx, in_idx, right_ch)
+
+        # Smooth
+        if liss_smoothing > 0:
+            left_ds = scipy.ndimage.gaussian_filter1d(left_ds, sigma=liss_smoothing)
+            right_ds = scipy.ndimage.gaussian_filter1d(right_ds, sigma=liss_smoothing)
+
+        # Normalize
+        max_val = max(float(np.abs(left_ds).max()), float(np.abs(right_ds).max()), 1e-10)
+        left_ds = left_ds / max_val
+        right_ds = right_ds / max_val
+
+        # Map to canvas (square aspect ratio)
+        left_c, top_c, right_c, bottom_c = canvas.drawing_area()
+        draw_width = right_c - left_c
+        draw_height = bottom_c - top_c
+        center_x = left_c + draw_width / 2.0
+        center_y = top_c + draw_height / 2.0
+        half_size = min(draw_width, draw_height) / 2.0 - 5.0
+
+        if half_size <= 0:
+            return []
+
+        x = left_ds * half_size + center_x
+        y = right_ds * half_size + center_y
+
+        polyline: Polyline = [(float(x[i]), float(y[i])) for i in range(liss_points)]
+
+        progress(100)
+        return [polyline]
+
     def get_presets(self) -> list[Preset]:
         return [
             Preset(
@@ -1045,6 +1180,36 @@ class AudioWaveformGenerator(Generator):
                     "band_count": "3 (Bass/Mid/Treble)",
                     "band_style": "Side by Side",
                     "band_amplitude": 2.0,
+                },
+            ),
+            Preset(
+                "Lissajous Clean",
+                params={
+                    "mode": "Lissajous",
+                    "liss_segment_sec": 0.03,
+                    "liss_points": 5000,
+                    "liss_smoothing": 4.0,
+                    "liss_auto_segment": True,
+                },
+            ),
+            Preset(
+                "Lissajous Dense",
+                params={
+                    "mode": "Lissajous",
+                    "liss_segment_sec": 0.2,
+                    "liss_points": 10000,
+                    "liss_smoothing": 2.0,
+                    "liss_auto_segment": True,
+                },
+            ),
+            Preset(
+                "Lissajous Minimal",
+                params={
+                    "mode": "Lissajous",
+                    "liss_segment_sec": 0.01,
+                    "liss_points": 3000,
+                    "liss_smoothing": 5.0,
+                    "liss_auto_segment": True,
                 },
             ),
         ]
