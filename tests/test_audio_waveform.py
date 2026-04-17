@@ -213,3 +213,137 @@ def test_cancellation_returns_empty(generator, canvas, sine_wav):
         cancelled_callback=lambda: True,
     )
     assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Circular mode tests
+# ---------------------------------------------------------------------------
+
+# (a) Circular mode produces a single polyline with ~circle_points (+1 if closed) points
+
+def test_circular_produces_single_polyline(generator, canvas, sine_wav):
+    circle_points = 720
+    result = generator.generate(
+        {
+            "mode": "Circular",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "circle_points": circle_points,
+            "circle_closed": True,
+        },
+        canvas,
+    )
+    assert len(result) == 1
+    # closed: circle_points + 1 points
+    assert len(result[0]) == circle_points + 1
+
+
+def test_circular_open_produces_exact_points(generator, canvas, sine_wav):
+    circle_points = 720
+    result = generator.generate(
+        {
+            "mode": "Circular",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "circle_points": circle_points,
+            "circle_closed": False,
+        },
+        canvas,
+    )
+    assert len(result) == 1
+    assert len(result[0]) == circle_points
+
+
+# (b) Each circle_source option produces output
+
+@pytest.mark.parametrize("source", ["Waveform", "Envelope", "Spectrum"])
+def test_circular_all_sources_produce_output(generator, canvas, sine_wav, source):
+    result = generator.generate(
+        {
+            "mode": "Circular",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "circle_source": source,
+            "circle_points": 360,
+        },
+        canvas,
+    )
+    assert len(result) == 1
+    assert len(result[0]) > 0
+
+
+# (c) circle_closed=True: first and last point within 0.01mm
+
+def test_circular_closed_endpoints_match(generator, canvas, sine_wav):
+    result = generator.generate(
+        {
+            "mode": "Circular",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "circle_points": 360,
+            "circle_closed": True,
+        },
+        canvas,
+    )
+    assert len(result) == 1
+    poly = result[0]
+    x0, y0 = poly[0]
+    xn, yn = poly[-1]
+    dist = ((x0 - xn) ** 2 + (y0 - yn) ** 2) ** 0.5
+    assert dist < 0.01, f"First/last points not close enough: dist={dist}"
+
+
+# (d) circle_closed=False: first and last point differ
+
+def test_circular_open_endpoints_differ(generator, canvas, sine_wav):
+    result = generator.generate(
+        {
+            "mode": "Circular",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "circle_points": 360,
+            "circle_closed": False,
+        },
+        canvas,
+    )
+    assert len(result) == 1
+    poly = result[0]
+    x0, y0 = poly[0]
+    xn, yn = poly[-1]
+    dist = ((x0 - xn) ** 2 + (y0 - yn) ** 2) ** 0.5
+    assert dist > 0.01, f"Open loop: first/last points should differ: dist={dist}"
+
+
+# (e) Circular output is within canvas bounds
+
+def test_circular_output_within_canvas_bounds(generator, canvas, sine_wav):
+    result = generator.generate(
+        {
+            "mode": "Circular",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "circle_points": 360,
+        },
+        canvas,
+    )
+    assert len(result) > 0
+    left, top, right, bottom = canvas.drawing_area()
+    tol = 1.0  # 1 mm tolerance
+    for pl in result:
+        for x, y in pl:
+            assert left - tol <= x <= right + tol, f"x={x} out of bounds [{left}, {right}]"
+            assert top - tol <= y <= bottom + tol, f"y={y} out of bounds [{top}, {bottom}]"
+
+
+# (f) All Circular presets produce non-empty output
+
+def test_circular_presets_produce_output(generator, canvas, sine_wav):
+    presets = generator.get_presets()
+    circular_presets = [p for p in presets if p.params.get("mode") == "Circular"]
+    assert len(circular_presets) >= 3, "Expected at least 3 Circular presets"
+    for preset in circular_presets:
+        p = dict(preset.params)
+        p["audio_file"] = sine_wav
+        p.setdefault("duration_sec", 2.0)
+        result = generator.generate(p, canvas)
+        assert len(result) > 0, f"Circular preset '{preset.name}' produced no output"

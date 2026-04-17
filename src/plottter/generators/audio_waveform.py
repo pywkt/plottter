@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import scipy.ndimage
 
 from plottter.generators import register_generator
 from plottter.generators.audio_utils import (
+    compute_envelope,
     compute_spectrogram,
     load_audio,
     ridgeline_hlr,
@@ -137,6 +139,49 @@ class AudioWaveformGenerator(Generator):
                 default=True,
                 visible_when={"mode": ["Ridgeline"]},
             ),
+            # --- Circular-specific parameters ---
+            FloatParam(
+                name="circle_amplitude",
+                label="Amplitude",
+                min=0.01,
+                max=0.5,
+                step=0.01,
+                default=0.2,
+                description="Waveform amplitude relative to radius",
+                visible_when={"mode": ["Circular"]},
+            ),
+            IntParam(
+                name="circle_points",
+                label="Points",
+                min=360,
+                max=7200,
+                step=360,
+                default=3600,
+                visible_when={"mode": ["Circular"]},
+            ),
+            FloatParam(
+                name="circle_smoothing",
+                label="Smoothing",
+                min=0.0,
+                max=20.0,
+                step=1.0,
+                default=5.0,
+                visible_when={"mode": ["Circular"]},
+            ),
+            ChoiceParam(
+                name="circle_source",
+                label="Source",
+                choices=["Waveform", "Envelope", "Spectrum"],
+                default="Waveform",
+                description="Waveform=raw audio, Envelope=amplitude envelope, Spectrum=frequency magnitudes",
+                visible_when={"mode": ["Circular"]},
+            ),
+            BoolParam(
+                name="circle_closed",
+                label="Close Loop",
+                default=True,
+                visible_when={"mode": ["Circular"]},
+            ),
         ]
 
     def generate(
@@ -157,6 +202,9 @@ class AudioWaveformGenerator(Generator):
 
         if mode == "Ridgeline":
             return self._generate_ridgeline(params, canvas, _progress, _cancelled)
+
+        if mode == "Circular":
+            return self._generate_circular(params, canvas, _progress, _cancelled)
 
         # Other modes not yet implemented
         return []
@@ -271,6 +319,88 @@ class AudioWaveformGenerator(Generator):
         progress(100)
         return scaled_polylines
 
+    def _generate_circular(
+        self,
+        params: dict[str, Any],
+        canvas: Canvas,
+        progress: Any,
+        cancelled: Any,
+    ) -> list[Polyline]:
+        audio_file = params.get("audio_file", "")
+        if not audio_file or not Path(audio_file).is_file():
+            return []
+
+        start_sec = float(params.get("start_sec", 0.0))
+        duration_sec = float(params.get("duration_sec", 10.0))
+        circle_amplitude = float(params.get("circle_amplitude", 0.2))
+        circle_points = int(params.get("circle_points", 3600))
+        circle_smoothing = float(params.get("circle_smoothing", 5.0))
+        circle_source = params.get("circle_source", "Waveform")
+        circle_closed = bool(params.get("circle_closed", True))
+
+        # Load mono audio
+        _sample_rate, data = load_audio(audio_file, start_sec, duration_sec, mono=True)
+        progress(20)
+
+        if cancelled():
+            return []
+
+        # Build signal based on source type
+        n = len(data)
+        out_idx = np.linspace(0, n - 1, circle_points)
+        in_idx = np.arange(n)
+
+        if circle_source == "Waveform":
+            signal = np.interp(out_idx, in_idx, data)
+        elif circle_source == "Envelope":
+            envelope = compute_envelope(data)
+            signal = np.interp(out_idx, in_idx, envelope)
+        else:  # Spectrum
+            spectrum = np.abs(np.fft.rfft(data))
+            spec_idx = np.linspace(0, len(spectrum) - 1, circle_points)
+            signal = np.interp(spec_idx, np.arange(len(spectrum)), spectrum)
+
+        progress(50)
+
+        if cancelled():
+            return []
+
+        # Smooth
+        if circle_smoothing > 0:
+            signal = scipy.ndimage.gaussian_filter1d(signal, sigma=circle_smoothing)
+
+        # Normalise to [-1, 1]
+        peak = max(np.abs(signal).max(), 1e-10)
+        signal = signal / peak
+
+        # Canvas geometry
+        left, top, right, bottom = canvas.drawing_area()
+        draw_width = right - left
+        draw_height = bottom - top
+        center_x = left + draw_width / 2.0
+        center_y = top + draw_height / 2.0
+        # Shrink base_radius so that even at maximum amplitude the waveform
+        # stays within the 5mm padding.
+        max_radial_extent = min(draw_width, draw_height) / 2.0 - 5.0
+        base_radius = max_radial_extent / (1.0 + circle_amplitude)
+
+        if base_radius <= 0:
+            return []
+
+        # Map to circle
+        theta = np.linspace(0, 2 * np.pi, circle_points, endpoint=False)
+        r = base_radius + circle_amplitude * base_radius * signal
+        x = r * np.cos(theta) + center_x
+        y = r * np.sin(theta) + center_y
+
+        polyline: Polyline = [(float(x[i]), float(y[i])) for i in range(circle_points)]
+
+        if circle_closed:
+            polyline.append(polyline[0])
+
+        progress(100)
+        return [polyline]
+
     def get_presets(self) -> list[Preset]:
         return [
             Preset(
@@ -313,6 +443,36 @@ class AudioWaveformGenerator(Generator):
                     "num_rows": 60,
                     "mirror": True,
                     "amplitude": 1.5,
+                },
+            ),
+            Preset(
+                "Circular Waveform",
+                params={
+                    "mode": "Circular",
+                    "circle_source": "Waveform",
+                    "circle_points": 3600,
+                    "circle_amplitude": 0.2,
+                    "circle_smoothing": 5.0,
+                },
+            ),
+            Preset(
+                "Circular Envelope",
+                params={
+                    "mode": "Circular",
+                    "circle_source": "Envelope",
+                    "circle_points": 3600,
+                    "circle_amplitude": 0.3,
+                    "circle_smoothing": 8.0,
+                },
+            ),
+            Preset(
+                "Circular Spectrum",
+                params={
+                    "mode": "Circular",
+                    "circle_source": "Spectrum",
+                    "circle_points": 1800,
+                    "circle_amplitude": 0.25,
+                    "circle_smoothing": 3.0,
                 },
             ),
         ]
