@@ -238,7 +238,19 @@ def get_audio_duration(filepath: str | os.PathLike) -> float:
                 f"pydub is required for .{ext} files. "
                 "Install with: pip install pydub (also requires ffmpeg)"
             )
-        audio = AudioSegment.from_file(str(filepath))
+        try:
+            audio = AudioSegment.from_file(str(filepath))
+        except FileNotFoundError:
+            raise RuntimeError(
+                f"ffmpeg is required to decode .{ext} files but was not found. "
+                "Install with: sudo apt install ffmpeg (Linux), "
+                "brew install ffmpeg (macOS), or download from https://ffmpeg.org"
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to decode .{ext} file: {exc}. "
+                "Ensure ffmpeg is installed and the file is a valid audio file."
+            )
         return len(audio) / 1000.0
 
 
@@ -657,7 +669,19 @@ def _load_via_pydub(
             "Install with: pip install pydub (also requires ffmpeg)"
         )
 
-    audio = AudioSegment.from_file(str(filepath))
+    try:
+        audio = AudioSegment.from_file(str(filepath))
+    except FileNotFoundError:
+        raise RuntimeError(
+            f"ffmpeg is required to decode .{ext} files but was not found. "
+            "Install with: sudo apt install ffmpeg (Linux), "
+            "brew install ffmpeg (macOS), or download from https://ffmpeg.org"
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to decode .{ext} file: {exc}. "
+            "Ensure ffmpeg is installed and the file is a valid audio file."
+        )
 
     # Slice by milliseconds
     start_ms = int(start_sec * 1000)

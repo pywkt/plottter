@@ -6,11 +6,12 @@ A free, open-source desktop application for generating pen-plotter-ready vector 
 
 ## Features
 
-**32 generators** across math art, image-to-lines, and 3D:
+**33 generators** across math art, image-to-lines, 3D, and audio:
 
 - **Math Art** — Parametric curves, polar curves, modular multiplication, Perlin noise flow fields (with quantized and rectilinear modes), superformula fields, L-system fractals, grid patterns, concentric rings, dot grids, geometric grids, Voronoi/Delaunay tessellation, Penrose aperiodic tiling, and text rendering
 - **Image to Lines** — Edge detection (Canny), hatching (with oscillation mode), flow field/squiggle, Voronoi stippling (with TSP single-line mode), contour lines, XDoG, FDoG (coherent lines), hedcut portraits, scanline halftone, circular scribble, LIC, TAM, dot grid halftone, spiral portraits, sketch (iterative darkest-trace-erase with hybrid marks), mosaic hatching (triangles/Voronoi/rectangles/hexagons/quadtree/superpixels), and ASCII art
 - **3D Scene** — Wireframe, hatched/shaded, and perspective-hatched rendering with hidden line removal, 10+ primitive shapes, OBJ/STL mesh import and slicing, camera controls, and shadow effects
+- **Audio** — Import WAV, MP3, FLAC, or OGG files and generate plotter-ready visualizations: Joy Division-style ridgeline spectrograms with hidden line removal, circular and spiral waveforms, spectrogram contour maps, frequency band separation, and stereo Lissajous figures
 
 **Multi-layer system** with per-layer pen colors and opacity, drag reorder, visibility/lock controls, and color separation (K-Means, Luminance, RGB, CMYK).
 
@@ -45,6 +46,7 @@ pip install -e .
 
 ```bash
 pip install -e ".[fmm]"    # Fast Marching Method for topographic contours
+pip install -e ".[audio]"  # MP3/FLAC/OGG audio import (requires ffmpeg)
 pip install pyaxidraw       # Direct AxiDraw USB control
 ```
 

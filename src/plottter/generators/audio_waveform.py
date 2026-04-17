@@ -90,9 +90,9 @@ class AudioWaveformGenerator(Generator):
                 name="amplitude",
                 label="Amplitude",
                 min=0.1,
-                max=5.0,
+                max=20.0,
                 step=0.1,
-                default=1.5,
+                default=2.0,
                 visible_when={"mode": ["Ridgeline"]},
             ),
             FloatParam(
@@ -101,7 +101,7 @@ class AudioWaveformGenerator(Generator):
                 min=0.5,
                 max=5.0,
                 step=0.1,
-                default=1.5,
+                default=1.2,
                 visible_when={"mode": ["Ridgeline"]},
             ),
             FloatParam(
@@ -200,10 +200,17 @@ class AudioWaveformGenerator(Generator):
                 name="spiral_amplitude",
                 label="Amplitude",
                 min=0.01,
-                max=0.3,
+                max=1.0,
                 step=0.01,
-                default=0.05,
+                default=0.15,
                 description="Waveform amplitude relative to spiral gap",
+                visible_when={"mode": ["Spiral"]},
+            ),
+            BoolParam(
+                name="spiral_hlr",
+                label="Hidden Line Removal",
+                default=True,
+                description="Hide inner turn segments occluded by outer turns",
                 visible_when={"mode": ["Spiral"]},
             ),
             IntParam(
@@ -484,6 +491,14 @@ class AudioWaveformGenerator(Generator):
         if not polylines:
             return []
 
+        # Flip y-axis so row 0 (front) appears at the bottom of the canvas
+        # with peaks pointing upward — matching the Unknown Pleasures look.
+        # The HLR was computed correctly in raw y-up coords; this flip
+        # converts to canvas y-down while preserving occlusion relationships.
+        all_y_vals = [pt[1] for pl in polylines for pt in pl]
+        max_y_raw = max(all_y_vals)
+        polylines = [[(x, max_y_raw - y) for x, y in pl] for pl in polylines]
+
         # Scale and center output on canvas with 5mm padding
         padding = 5.0
         avail_w = draw_width - 2 * padding
@@ -620,6 +635,7 @@ class AudioWaveformGenerator(Generator):
         spiral_smoothing = float(params.get("spiral_smoothing", 8.0))
         spiral_source = params.get("spiral_source", "Waveform")
         spiral_direction = params.get("spiral_direction", "Outward")
+        spiral_hlr = bool(params.get("spiral_hlr", True))
 
         # Load mono audio
         _sample_rate, data = load_audio(audio_file, start_sec, duration_sec, mono=True)
@@ -666,7 +682,7 @@ class AudioWaveformGenerator(Generator):
             return []
 
         gap = (r_outer - r_inner) / spiral_turns
-        effective_amplitude = min(spiral_amplitude * r_outer, gap * 0.4)
+        effective_amplitude = spiral_amplitude * r_outer
 
         # Build spiral
         theta = np.linspace(0, 2 * np.pi * spiral_turns, spiral_points)
@@ -676,13 +692,84 @@ class AudioWaveformGenerator(Generator):
             r_base = r_base[::-1]
 
         r = r_base + effective_amplitude * signal
+
+        if not spiral_hlr or spiral_turns < 2:
+            # No HLR — return as single polyline
+            x = r * np.cos(theta) + center_x
+            y = r * np.sin(theta) + center_y
+            polyline: Polyline = [
+                (float(x[i]), float(y[i])) for i in range(spiral_points)
+            ]
+            progress(100)
+            return [polyline]
+
+        # --- Spiral HLR ---
+        # At each angular position, process turns from outermost to innermost.
+        # An inner turn is hidden where its radius extends outward past an
+        # outer turn's radius (the outer turn is "in front").
+        points_per_turn = spiral_points / spiral_turns
+        visible = np.ones(spiral_points, dtype=bool)
+
+        for offset in range(int(np.ceil(points_per_turn))):
+            # Collect indices for all turns at this angular position
+            indices = []
+            k = 0
+            while True:
+                idx = int(round(offset + k * points_per_turn))
+                if idx >= spiral_points:
+                    break
+                indices.append(idx)
+                k += 1
+
+            if len(indices) < 2:
+                continue
+
+            # For "Outward" direction, r_base increases with index,
+            # so the last index is the outermost (front) turn.
+            # For "Inward", r_base decreases, so the first index is outermost.
+            if spiral_direction == "Inward":
+                # First index has largest r_base — outermost
+                process_order = indices  # already outer-to-inner
+            else:
+                # Last index has largest r_base — outermost
+                process_order = list(reversed(indices))
+
+            # Process outer-to-inner, tracking minimum radius seen
+            horizon_r = np.inf
+            for idx in process_order:
+                if r[idx] >= horizon_r:
+                    visible[idx] = False
+                horizon_r = min(horizon_r, r[idx])
+
+        progress(80)
+
+        # Convert to cartesian
         x = r * np.cos(theta) + center_x
         y = r * np.sin(theta) + center_y
 
-        polyline: Polyline = [(float(x[i]), float(y[i])) for i in range(spiral_points)]
+        # Split into visible segments
+        polylines: list[Polyline] = []
+        seg_start: int | None = None
+
+        for i in range(spiral_points):
+            if visible[i]:
+                if seg_start is None:
+                    seg_start = i
+            else:
+                if seg_start is not None and i - seg_start >= 2:
+                    polylines.append(
+                        [(float(x[j]), float(y[j])) for j in range(seg_start, i)]
+                    )
+                seg_start = None
+
+        # Flush final segment
+        if seg_start is not None and spiral_points - seg_start >= 2:
+            polylines.append(
+                [(float(x[j]), float(y[j])) for j in range(seg_start, spiral_points)]
+            )
 
         progress(100)
-        return [polyline]
+        return polylines
 
     def _generate_contour(
         self,
@@ -1112,8 +1199,9 @@ class AudioWaveformGenerator(Generator):
                     "spiral_turns": 12,
                     "spiral_direction": "Outward",
                     "spiral_source": "Envelope",
-                    "spiral_amplitude": 0.04,
+                    "spiral_amplitude": 0.15,
                     "spiral_smoothing": 10.0,
+                    "spiral_hlr": True,
                 },
             ),
             Preset(
@@ -1123,8 +1211,9 @@ class AudioWaveformGenerator(Generator):
                     "spiral_turns": 20,
                     "spiral_direction": "Outward",
                     "spiral_source": "Waveform",
-                    "spiral_amplitude": 0.03,
+                    "spiral_amplitude": 0.1,
                     "spiral_smoothing": 6.0,
+                    "spiral_hlr": True,
                 },
             ),
             Preset(

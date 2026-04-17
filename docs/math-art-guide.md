@@ -1,8 +1,8 @@
 # Math Art Guide
 
 Math Art mode generates vector paths purely from mathematical equations and algorithms —
-no image input required. There are **12 math generators** covering parametric and polar
-curves, tilings, flow fields, fractals, and more. All generators produce output in
+no image input required. There are **13 math generators** covering parametric and polar
+curves, tilings, flow fields, fractals, audio visualization, and more. All generators produce output in
 millimeter coordinates that automatically scale to fit the canvas drawing area.
 
 ---
@@ -672,6 +672,130 @@ Load OBJ and STL files for custom geometry. The renderer supports:
 - Use **Orthographic** projection for a technical/architectural look
 - Use **Shadow Only** render mode to plot shadows in a different pen color
 - Start with low-detail primitives to iterate quickly, then increase detail for final plots
+
+---
+
+## Audio Waveform
+
+**Generator:** Audio Waveform
+
+Import an audio file and produce plotter-ready visualizations. Supports WAV natively; MP3, FLAC, OGG, and M4A require the optional `pydub` package and ffmpeg (`pip install -e ".[audio]"`). Six visualization modes are available, selected via the **Visualization** dropdown.
+
+### Common Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `audio_file` | Path to the audio file |
+| `start_sec` | Start time in the audio (0–3600 s) |
+| `duration_sec` | Duration of audio to visualize (0.1–60 s, default 10) |
+
+### Ridgeline (Joy Division)
+
+Computes a spectrogram and draws each frequency row as a displaced horizontal line, stacked vertically. With **Hidden Line Removal** enabled, front-row peaks create opaque fills that occlude rows behind — the iconic Unknown Pleasures effect.
+
+| Parameter | Description |
+|-----------|-------------|
+| `num_rows` | Number of horizontal lines (10–200, default 60) |
+| `amplitude` | Vertical displacement scale (0.1–20, default 2.0) — higher values create taller peaks and more dramatic occlusion |
+| `row_spacing` | Vertical gap between line baselines (0.5–5.0, default 1.2) |
+| `smoothing` | Gaussian smoothing per line (0–10, default 2.0) — higher = smoother peaks |
+| `freq_max` | Maximum frequency in Hz (500–20000, default 8000) |
+| `fft_size` | FFT window size (512–8192, default 2048) — larger = smoother frequency resolution |
+| `mirror` | Mirror the waveform symmetrically around each baseline |
+| `hlr_enabled` | Enable Joy Division-style hidden line removal |
+
+**Presets:** Joy Division, Dense Ridgeline, Wide Ridgeline, Mirror Ridgeline
+
+**Tips:**
+- For strong occlusion, keep `amplitude` notably larger than `row_spacing` (e.g., 2.0 amplitude with 1.2 spacing)
+- Increase `smoothing` for cleaner, more organic peaks — lower values show more spectral detail
+- Lower `freq_max` (3000–5000) focuses on bass/mid content, which often has more dramatic peaks
+
+### Circular Waveform
+
+Maps audio data onto a circle, modulating the radius with the signal. Three source modes: raw **Waveform** (oscillates above and below), **Envelope** (smooth amplitude bumps), or **Spectrum** (frequency domain magnitudes).
+
+| Parameter | Description |
+|-----------|-------------|
+| `circle_amplitude` | Amplitude relative to radius (0.01–0.5, default 0.2) |
+| `circle_points` | Number of points around the circle (360–7200, default 3600) |
+| `circle_smoothing` | Gaussian smoothing (0–20, default 5.0) |
+| `circle_source` | Waveform, Envelope, or Spectrum |
+| `circle_closed` | Connect end back to start |
+
+**Presets:** Circular Waveform, Circular Envelope, Circular Spectrum
+
+### Spiral Waveform
+
+Audio mapped onto an Archimedean spiral, like reading a vinyl record. Supports hidden line removal for when the amplitude causes adjacent turns to overlap.
+
+| Parameter | Description |
+|-----------|-------------|
+| `spiral_turns` | Number of revolutions (1–30, default 8) |
+| `spiral_amplitude` | Amplitude relative to spiral gap (0.01–1.0, default 0.15) |
+| `spiral_points` | Total points (1000–20000, default 7200) |
+| `spiral_smoothing` | Gaussian smoothing (0–20, default 8.0) |
+| `spiral_source` | Waveform or Envelope |
+| `spiral_direction` | Outward (center to edge) or Inward (edge to center) |
+| `spiral_hlr` | Hidden line removal — hides inner turn segments occluded by outer turns |
+
+**Presets:** Vinyl Spiral, Tight Spiral
+
+**Tips:**
+- Increase `spiral_amplitude` for more dramatic displacement — HLR handles overlapping turns cleanly
+- **Envelope** source produces smoother, more organic spirals; **Waveform** shows raw oscillation detail
+- **Inward** direction reads time from edge to center, like a record playing in reverse
+
+### Spectrogram Contours
+
+Treats the spectrogram as a 2D heightmap and extracts topographic contour lines at evenly spaced intensity levels. Produces a terrain-map-like visualization of the sound.
+
+| Parameter | Description |
+|-----------|-------------|
+| `contour_levels` | Number of contour levels (3–30, default 10) |
+| `contour_smoothing` | Gaussian smoothing on the spectrogram before contouring (0–5, default 1.5) |
+| `contour_freq_max` | Maximum frequency in Hz (500–20000, default 8000) |
+| `contour_fft_size` | FFT window size (512–8192, default 2048) |
+| `contour_min_length` | Minimum contour length in mm — removes tiny fragments (0–20, default 2.0) |
+
+**Presets:** Topographic Audio, Detailed Contours, Smooth Contours
+
+### Frequency Bands
+
+Splits audio into frequency bands using Butterworth bandpass filters and draws each band as a separate waveform. Useful for multi-pen plotting — plot each band with a different pen color.
+
+| Parameter | Description |
+|-----------|-------------|
+| `band_count` | 3 (Bass/Mid/Treble), 4, or 5 bands |
+| `band_style` | Stacked Waveforms, Stacked Envelopes, or Side by Side |
+| `band_amplitude` | Vertical scale (0.1–5.0, default 1.5) |
+| `band_smoothing` | Gaussian smoothing (0–10, default 3.0) |
+| `band_points` | Points per band (500–10000, default 3000) |
+
+**Presets:** Bass/Mid/Treble, Five Band Envelope, Side by Side
+
+**Tips:**
+- Use **Side by Side** for a clear comparison of frequency content across bands
+- **Stacked Envelopes** produces a smoother, more abstract look than raw waveforms
+
+### Lissajous / Stereo Phase
+
+For stereo audio, plots the left channel as X and right channel as Y, revealing the spatial character of the mix. Mono files are handled by creating a phase-shifted copy.
+
+| Parameter | Description |
+|-----------|-------------|
+| `liss_segment_sec` | Duration of audio segment (0.005–2.0 s, default 0.05) — shorter = cleaner curves |
+| `liss_points` | Number of points (500–20000, default 5000) |
+| `liss_smoothing` | Gaussian smoothing (0–10, default 3.0) |
+| `liss_auto_segment` | Automatically find the most energetic segment |
+| `liss_segment_start` | Manual segment start (visible when auto-select is off) |
+
+**Presets:** Lissajous Clean, Lissajous Dense, Lissajous Minimal
+
+**Tips:**
+- Short segments (0.01–0.05 s) produce clean elliptical figures; longer segments (0.2+ s) create dense, textured fills
+- Stereo music with wide panning produces the most interesting patterns
+- Try different segments of the same song — verse, chorus, and bridge often produce very different figures
 
 ---
 
