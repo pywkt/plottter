@@ -884,3 +884,158 @@ def test_lissajous_presets_produce_output(generator, canvas, stereo_wav):
         p.setdefault("duration_sec", 2.0)
         result = generator.generate(p, canvas)
         assert len(result) > 0, f"Lissajous preset '{preset.name}' produced no output"
+
+
+# ---------------------------------------------------------------------------
+# Helper: chord stereo WAV (220 + 440 + 880 Hz, different amplitudes per channel)
+# ---------------------------------------------------------------------------
+
+def _make_chord_stereo_wav(path: str, duration_sec: float = 3.0, sample_rate: int = 44100) -> None:
+    """Stereo WAV with a chord (220+440+880 Hz) mixed at different amplitudes per channel."""
+    n = int(sample_rate * duration_sec)
+    t = np.linspace(0, duration_sec, n, endpoint=False)
+    # Left channel: emphasise low and high
+    left_f = 0.6 * np.sin(2 * np.pi * 220.0 * t) + 0.2 * np.sin(2 * np.pi * 440.0 * t) + 0.5 * np.sin(2 * np.pi * 880.0 * t)
+    # Right channel: emphasise mid
+    right_f = 0.2 * np.sin(2 * np.pi * 220.0 * t) + 0.8 * np.sin(2 * np.pi * 440.0 * t) + 0.3 * np.sin(2 * np.pi * 880.0 * t)
+    # Normalise to int16
+    left = (left_f / np.abs(left_f).max() * 32767).astype(np.int16)
+    right = (right_f / np.abs(right_f).max() * 32767).astype(np.int16)
+    interleaved = np.empty(n * 2, dtype=np.int16)
+    interleaved[0::2] = left
+    interleaved[1::2] = right
+    with wave.open(path, "w") as wf:
+        wf.setnchannels(2)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(interleaved.tobytes())
+
+
+@pytest.fixture(scope="module")
+def chord_stereo_wav(tmp_path_factory):
+    """3-second stereo chord WAV (220+440+880 Hz) for end-to-end integration tests."""
+    tmp = tmp_path_factory.mktemp("audio_chord")
+    wav_path = str(tmp / "chord.wav")
+    _make_chord_stereo_wav(wav_path)
+    return wav_path
+
+
+# ---------------------------------------------------------------------------
+# (B) TestAllModesEndToEnd
+# ---------------------------------------------------------------------------
+
+ALL_MODES = ["Ridgeline", "Circular", "Spiral", "Contour", "Frequency Bands", "Lissajous"]
+
+_DEFAULT_MODE_PARAMS: dict[str, dict] = {
+    "Ridgeline": {"mode": "Ridgeline", "duration_sec": 3.0},
+    "Circular": {"mode": "Circular", "duration_sec": 3.0, "circle_points": 360},
+    "Spiral": {"mode": "Spiral", "duration_sec": 3.0, "spiral_points": 1000},
+    "Contour": {"mode": "Contour", "duration_sec": 3.0, "contour_min_length": 0.0},
+    "Frequency Bands": {"mode": "Frequency Bands", "duration_sec": 3.0, "band_points": 300},
+    "Lissajous": {"mode": "Lissajous", "duration_sec": 3.0, "liss_points": 500, "liss_auto_segment": True},
+}
+
+
+class TestAllModesEndToEnd:
+    """Integration tests: all 6 modes produce non-empty output with a chord stereo WAV."""
+
+    def test_all_modes_produce_output(self, generator, canvas, chord_stereo_wav):
+        for mode in ALL_MODES:
+            params = dict(_DEFAULT_MODE_PARAMS[mode])
+            params["audio_file"] = chord_stereo_wav
+            result = generator.generate(params, canvas)
+            assert len(result) > 0, f"Mode '{mode}' produced no output"
+
+    def test_all_presets_produce_output(self, generator, canvas, chord_stereo_wav):
+        presets = generator.get_presets()
+        assert len(presets) > 0, "get_presets() returned no presets"
+        for preset in presets:
+            p = dict(preset.params)
+            p["audio_file"] = chord_stereo_wav
+            p.setdefault("duration_sec", 3.0)
+            # Ensure min-length filter does not silently discard everything
+            p.setdefault("contour_min_length", 0.0)
+            result = generator.generate(p, canvas)
+            assert len(result) > 0, f"Preset '{preset.name}' produced no output"
+
+
+# ---------------------------------------------------------------------------
+# (C) Progress callback tests
+# ---------------------------------------------------------------------------
+
+class TestProgressCallback:
+    """Verify progress_callback is invoked correctly for at least 2 modes."""
+
+    def _collect_progress(self, generator, canvas, mode_params, wav_path):
+        values = []
+        generator.generate(
+            {**mode_params, "audio_file": wav_path},
+            canvas,
+            progress_callback=values.append,
+        )
+        return values
+
+    def test_ridgeline_progress_callback(self, generator, canvas, sine_wav):
+        values = self._collect_progress(
+            generator, canvas, {"mode": "Ridgeline", "duration_sec": 2.0}, sine_wav
+        )
+        assert len(values) >= 3, f"Expected >= 3 progress calls, got {len(values)}"
+        for v in values:
+            assert 0 <= v <= 100, f"Progress value {v} out of [0, 100]"
+        for a, b in zip(values, values[1:]):
+            assert a <= b, f"Progress values not non-decreasing: {a} > {b}"
+
+    def test_circular_progress_callback(self, generator, canvas, sine_wav):
+        values = self._collect_progress(
+            generator, canvas,
+            {"mode": "Circular", "duration_sec": 2.0, "circle_points": 360},
+            sine_wav,
+        )
+        assert len(values) >= 3, f"Expected >= 3 progress calls, got {len(values)}"
+        for v in values:
+            assert 0 <= v <= 100, f"Progress value {v} out of [0, 100]"
+        for a, b in zip(values, values[1:]):
+            assert a <= b, f"Progress values not non-decreasing: {a} > {b}"
+
+
+# ---------------------------------------------------------------------------
+# (D) Cancellation tests for each mode
+# ---------------------------------------------------------------------------
+
+class TestCancellation:
+    """Verify that cancelled_callback=lambda: True returns [] for every mode."""
+
+    @pytest.mark.parametrize("mode", ALL_MODES)
+    def test_cancel_returns_empty(self, generator, canvas, chord_stereo_wav, mode):
+        params = dict(_DEFAULT_MODE_PARAMS[mode])
+        params["audio_file"] = chord_stereo_wav
+        result = generator.generate(params, canvas, cancelled_callback=lambda: True)
+        assert result == [], f"Mode '{mode}' did not return [] when cancelled"
+
+
+# ---------------------------------------------------------------------------
+# (E) Generator metadata verification
+# ---------------------------------------------------------------------------
+
+class TestGeneratorMetadata:
+    """Verify registry, category, and visible_when parameter references."""
+
+    def test_registry_maps_to_correct_class(self):
+        assert GENERATORS["Audio Waveform"] is AudioWaveformGenerator
+
+    def test_category_is_math(self):
+        assert AudioWaveformGenerator.category == "math"
+
+    def test_visible_when_keys_reference_valid_params(self):
+        gen = AudioWaveformGenerator()
+        params = gen.get_parameters()
+        param_names = {p.name for p in params}
+        for p in params:
+            vw = getattr(p, "visible_when", None)
+            if vw is None:
+                continue
+            for key in vw:
+                assert key in param_names, (
+                    f"Parameter '{p.name}' has visible_when key '{key}' "
+                    f"which is not in the parameter list {param_names}"
+                )

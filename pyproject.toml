@@ -33,6 +33,9 @@ image = [
 3d = [
     "numba>=0.59",
 ]
+audio = [
+    "pydub>=0.25",
+]
 
 [project.scripts]
 plottter = "plottter.__main__:main"
