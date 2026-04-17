@@ -18,6 +18,7 @@ from plottter.generators.audio_utils import (
     load_audio,
     ridgeline_hlr,
     ridgeline_no_hlr,
+    split_frequency_bands,
 )
 from plottter.generators.base import (
     BoolParam,
@@ -282,6 +283,48 @@ class AudioWaveformGenerator(Generator):
                 default=2.0,
                 visible_when={"mode": ["Contour"]},
             ),
+            # --- Frequency Bands-specific parameters ---
+            ChoiceParam(
+                name="band_count",
+                label="Bands",
+                choices=["3 (Bass/Mid/Treble)", "4", "5"],
+                default="3 (Bass/Mid/Treble)",
+                visible_when={"mode": ["Frequency Bands"]},
+            ),
+            ChoiceParam(
+                name="band_style",
+                label="Style",
+                choices=["Stacked Waveforms", "Stacked Envelopes", "Side by Side"],
+                default="Stacked Waveforms",
+                visible_when={"mode": ["Frequency Bands"]},
+            ),
+            FloatParam(
+                name="band_amplitude",
+                label="Amplitude",
+                min=0.1,
+                max=5.0,
+                step=0.1,
+                default=1.5,
+                visible_when={"mode": ["Frequency Bands"]},
+            ),
+            FloatParam(
+                name="band_smoothing",
+                label="Smoothing",
+                min=0.0,
+                max=10.0,
+                step=0.5,
+                default=3.0,
+                visible_when={"mode": ["Frequency Bands"]},
+            ),
+            IntParam(
+                name="band_points",
+                label="Points per Band",
+                min=500,
+                max=10000,
+                step=500,
+                default=3000,
+                visible_when={"mode": ["Frequency Bands"]},
+            ),
         ]
 
     def generate(
@@ -311,6 +354,9 @@ class AudioWaveformGenerator(Generator):
 
         if mode == "Contour":
             return self._generate_contour(params, canvas, _progress, _cancelled)
+
+        if mode == "Frequency Bands":
+            return self._generate_frequency_bands(params, canvas, _progress, _cancelled)
 
         # Other modes not yet implemented
         return []
@@ -718,6 +764,138 @@ class AudioWaveformGenerator(Generator):
         progress(100)
         return result
 
+    def _generate_frequency_bands(
+        self,
+        params: dict[str, Any],
+        canvas: Canvas,
+        progress: Any,
+        cancelled: Any,
+    ) -> list[Polyline]:
+        audio_file = params.get("audio_file", "")
+        if not audio_file or not Path(audio_file).is_file():
+            return []
+
+        start_sec = float(params.get("start_sec", 0.0))
+        duration_sec = float(params.get("duration_sec", 10.0))
+        band_count = params.get("band_count", "3 (Bass/Mid/Treble)")
+        band_style = params.get("band_style", "Stacked Waveforms")
+        band_amplitude = float(params.get("band_amplitude", 1.5))
+        band_smoothing = float(params.get("band_smoothing", 3.0))
+        band_points = int(params.get("band_points", 3000))
+
+        # Parse band edges from choice label
+        band_edge_map = {
+            "3 (Bass/Mid/Treble)": [250, 4000],
+            "4": [150, 500, 4000],
+            "5": [100, 300, 1000, 4000],
+        }
+        band_edges = band_edge_map.get(band_count, [250, 4000])
+
+        # Load audio (mono)
+        sample_rate, data = load_audio(audio_file, start_sec, duration_sec, mono=True)
+        progress(10)
+
+        if cancelled():
+            return []
+
+        # Split into frequency bands
+        bands = split_frequency_bands(data, sample_rate, band_edges)
+        num_bands = len(bands)
+        progress(30)
+
+        if cancelled():
+            return []
+
+        # Downsample and smooth each band
+        n = len(data)
+        in_idx = np.arange(n)
+        out_idx = np.linspace(0, n - 1, band_points)
+
+        processed: list[np.ndarray] = []
+        for band in bands:
+            band_ds = np.interp(out_idx, in_idx, band)
+            if band_smoothing > 0:
+                band_ds = scipy.ndimage.gaussian_filter1d(band_ds, sigma=band_smoothing)
+            processed.append(band_ds)
+
+        progress(50)
+
+        if cancelled():
+            return []
+
+        # Apply envelope for Stacked Envelopes style
+        if band_style == "Stacked Envelopes":
+            final_bands = [compute_envelope(b) for b in processed]
+        else:
+            final_bands = processed
+
+        left, top, right, bottom = canvas.drawing_area()
+        draw_width = right - left
+        draw_height = bottom - top
+
+        polylines: list[Polyline] = []
+
+        if band_style in ("Stacked Waveforms", "Stacked Envelopes"):
+            spacing = draw_height / num_bands
+            for i, band_signal in enumerate(final_bands):
+                peak = max(float(np.abs(band_signal).max()), 1e-10)
+                band_norm = band_signal / peak
+                baseline = (i + 0.5) * spacing
+                y_scale = (spacing * 0.45) * band_amplitude
+                xs = np.linspace(0.0, draw_width, band_points)
+                ys = baseline + band_norm * y_scale
+                polylines.append([(float(xs[j]), float(ys[j])) for j in range(band_points)])
+
+        elif band_style == "Side by Side":
+            section_width = draw_width / num_bands
+            center_y = draw_height / 2.0
+            y_scale = (draw_height * 0.45) * band_amplitude
+            for i, band_signal in enumerate(final_bands):
+                peak = max(float(np.abs(band_signal).max()), 1e-10)
+                band_norm = band_signal / peak
+                x_start = i * section_width
+                x_end = (i + 1) * section_width
+                xs = np.linspace(x_start, x_end, band_points)
+                ys = center_y + band_norm * y_scale
+                polylines.append([(float(xs[j]), float(ys[j])) for j in range(band_points)])
+
+        progress(80)
+
+        if cancelled():
+            return []
+
+        if not polylines:
+            return []
+
+        # Scale and center all polylines to fit within canvas drawing area
+        all_pts = [pt for pl in polylines for pt in pl]
+        xs_all = [p[0] for p in all_pts]
+        ys_all = [p[1] for p in all_pts]
+        min_x, max_x = min(xs_all), max(xs_all)
+        min_y, max_y = min(ys_all), max(ys_all)
+        bbox_w = max_x - min_x
+        bbox_h = max_y - min_y
+
+        if bbox_w <= 0 or bbox_h <= 0:
+            return []
+
+        padding = 5.0
+        avail_w = draw_width - 2 * padding
+        avail_h = draw_height - 2 * padding
+        scale = min(avail_w / bbox_w, avail_h / bbox_h)
+        scaled_w = bbox_w * scale
+        scaled_h = bbox_h * scale
+        offset_x = left + padding + (avail_w - scaled_w) / 2.0 - min_x * scale
+        offset_y = top + padding + (avail_h - scaled_h) / 2.0 - min_y * scale
+
+        result: list[Polyline] = [
+            [(x * scale + offset_x, y * scale + offset_y) for x, y in pl]
+            for pl in polylines
+        ]
+
+        progress(100)
+        return result
+
     def get_presets(self) -> list[Preset]:
         return [
             Preset(
@@ -839,6 +1017,34 @@ class AudioWaveformGenerator(Generator):
                     "contour_levels": 8,
                     "contour_smoothing": 3.0,
                     "contour_freq_max": 5000,
+                },
+            ),
+            Preset(
+                "Bass/Mid/Treble",
+                params={
+                    "mode": "Frequency Bands",
+                    "band_count": "3 (Bass/Mid/Treble)",
+                    "band_style": "Stacked Waveforms",
+                    "band_amplitude": 1.5,
+                },
+            ),
+            Preset(
+                "Five Band Envelope",
+                params={
+                    "mode": "Frequency Bands",
+                    "band_count": "5",
+                    "band_style": "Stacked Envelopes",
+                    "band_amplitude": 1.2,
+                    "band_smoothing": 5.0,
+                },
+            ),
+            Preset(
+                "Side by Side",
+                params={
+                    "mode": "Frequency Bands",
+                    "band_count": "3 (Bass/Mid/Treble)",
+                    "band_style": "Side by Side",
+                    "band_amplitude": 2.0,
                 },
             ),
         ]

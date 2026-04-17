@@ -572,3 +572,99 @@ def test_contour_presets_produce_output(generator, canvas, sine_wav):
         p.setdefault("contour_min_length", 0.0)
         result = generator.generate(p, canvas)
         assert len(result) > 0, f"Contour preset '{preset.name}' produced no output"
+
+
+# ---------------------------------------------------------------------------
+# Frequency Bands mode tests
+# ---------------------------------------------------------------------------
+
+# (a) Frequency Bands with 3 bands produces >= 3 polylines
+
+def test_frequency_bands_3_bands_produces_output(generator, canvas, sine_wav):
+    result = generator.generate(
+        {
+            "mode": "Frequency Bands",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "band_count": "3 (Bass/Mid/Treble)",
+            "band_style": "Stacked Waveforms",
+            "band_points": 500,
+        },
+        canvas,
+    )
+    assert len(result) >= 3, f"Expected >= 3 polylines for 3-band mode, got {len(result)}"
+
+
+# (b) Frequency Bands with 5 bands produces >= 5 polylines
+
+def test_frequency_bands_5_bands_produces_output(generator, canvas, sine_wav):
+    result = generator.generate(
+        {
+            "mode": "Frequency Bands",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "band_count": "5",
+            "band_style": "Stacked Waveforms",
+            "band_points": 500,
+        },
+        canvas,
+    )
+    assert len(result) >= 5, f"Expected >= 5 polylines for 5-band mode, got {len(result)}"
+
+
+# (c) Each band_style option produces output
+
+@pytest.mark.parametrize("style", ["Stacked Waveforms", "Stacked Envelopes", "Side by Side"])
+def test_frequency_bands_all_styles_produce_output(generator, canvas, sine_wav, style):
+    result = generator.generate(
+        {
+            "mode": "Frequency Bands",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "band_count": "3 (Bass/Mid/Treble)",
+            "band_style": style,
+            "band_points": 500,
+        },
+        canvas,
+    )
+    assert len(result) > 0, f"Style '{style}' produced no output"
+    for pl in result:
+        assert len(pl) >= 2
+
+
+# (d) Frequency Bands output within canvas bounds
+
+def test_frequency_bands_output_within_canvas_bounds(generator, canvas, sine_wav):
+    result = generator.generate(
+        {
+            "mode": "Frequency Bands",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "band_count": "3 (Bass/Mid/Treble)",
+            "band_style": "Stacked Waveforms",
+            "band_points": 500,
+        },
+        canvas,
+    )
+    assert len(result) > 0
+    left, top, right, bottom = canvas.drawing_area()
+    tol = 1.0  # 1 mm tolerance
+    for pl in result:
+        for x, y in pl:
+            assert left - tol <= x <= right + tol, f"x={x} out of bounds [{left}, {right}]"
+            assert top - tol <= y <= bottom + tol, f"y={y} out of bounds [{top}, {bottom}]"
+
+
+# (e) All Frequency Bands presets produce non-empty output
+
+def test_frequency_bands_presets_produce_output(generator, canvas, sine_wav):
+    presets = generator.get_presets()
+    fb_presets = [p for p in presets if p.params.get("mode") == "Frequency Bands"]
+    assert len(fb_presets) >= 3, "Expected at least 3 Frequency Bands presets"
+    for preset in fb_presets:
+        p = dict(preset.params)
+        p["audio_file"] = sine_wav
+        p.setdefault("duration_sec", 2.0)
+        p.setdefault("band_points", 500)
+        result = generator.generate(p, canvas)
+        assert len(result) > 0, f"Frequency Bands preset '{preset.name}' produced no output"
