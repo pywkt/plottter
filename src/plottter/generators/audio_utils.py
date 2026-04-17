@@ -426,6 +426,129 @@ def ridgeline_no_hlr(
 
 
 # ---------------------------------------------------------------------------
+# Spectrogram contour extraction
+# ---------------------------------------------------------------------------
+
+def extract_contours(
+    data_2d: np.ndarray,
+    num_levels: int = 10,
+    smoothing_sigma: float = 1.5,
+) -> list[list[tuple[float, float]]]:
+    """Extract contour polylines from a 2D array.
+
+    Parameters
+    ----------
+    data_2d:
+        2D array to extract contours from.
+    num_levels:
+        Number of contour levels.
+    smoothing_sigma:
+        Gaussian smoothing sigma applied before extraction (0 = no smoothing).
+
+    Returns
+    -------
+    List of polylines, each a list of (x, y) tuples in (column, row) space.
+    """
+    smoothed = scipy.ndimage.gaussian_filter(data_2d, sigma=smoothing_sigma)
+
+    # If the array is uniform there is nothing to contour
+    if smoothed.max() <= smoothed.min():
+        return []
+
+    levels = np.linspace(smoothed.min(), smoothed.max(), num_levels + 2)[1:-1]
+
+    polylines: list[list[tuple[float, float]]] = []
+
+    try:
+        from skimage.measure import find_contours as _sk_find_contours  # type: ignore[import]
+
+        for level in levels:
+            for contour in _sk_find_contours(smoothed, level):
+                # skimage returns (row, col); swap to (col, row) = (x, y)
+                pts = [(float(c[1]), float(c[0])) for c in contour]
+                if len(pts) >= 2:
+                    polylines.append(pts)
+
+    except ImportError:
+        # Fallback: boundary-extraction + nearest-neighbour ordering
+        for level in levels:
+            mask = smoothed >= level
+            if not np.any(mask) or np.all(mask):
+                continue
+            eroded = scipy.ndimage.binary_erosion(mask)
+            boundary = mask ^ eroded  # XOR → boundary pixels only
+            coords = np.argwhere(boundary)  # shape (N, 2), each row is [row, col]
+            if len(coords) < 2:
+                continue
+            polylines.extend(_chain_boundary_points(coords))
+
+    return polylines
+
+
+def _chain_boundary_points(
+    coords: np.ndarray,
+) -> list[list[tuple[float, float]]]:
+    """Order boundary pixels into polylines via greedy nearest-neighbour traversal.
+
+    Parameters
+    ----------
+    coords:
+        Array of shape (N, 2) containing (row, col) coordinates.
+
+    Returns
+    -------
+    List of polylines in (col, row) = (x, y) coordinates.
+    """
+    from scipy.spatial import cKDTree  # local import to keep top-level clean
+
+    n = len(coords)
+    if n < 2:
+        return []
+
+    visited = np.zeros(n, dtype=bool)
+    polylines: list[list[tuple[float, float]]] = []
+    tree = cKDTree(coords)
+
+    # Maximum step: slightly above sqrt(2) so 8-connected pixels are linked
+    max_step = 2.0
+    k = min(10, n)
+
+    while True:
+        unvisited = np.where(~visited)[0]
+        if len(unvisited) == 0:
+            break
+
+        current = int(unvisited[0])
+        chain: list[tuple[float, float]] = []
+
+        while not visited[current]:
+            visited[current] = True
+            row, col = coords[current]
+            chain.append((float(col), float(row)))  # x=col, y=row
+
+            dists, idxs = tree.query(coords[current], k=k)
+
+            next_idx = -1
+            for d, idx in zip(dists, idxs):
+                idx = int(idx)
+                if visited[idx]:
+                    continue
+                if d > max_step:
+                    break  # results are distance-sorted; no need to continue
+                next_idx = idx
+                break
+
+            if next_idx < 0:
+                break
+            current = next_idx
+
+        if len(chain) >= 2:
+            polylines.append(chain)
+
+    return polylines
+
+
+# ---------------------------------------------------------------------------
 # Private helpers
 # ---------------------------------------------------------------------------
 

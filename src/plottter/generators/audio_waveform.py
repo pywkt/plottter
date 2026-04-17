@@ -8,11 +8,13 @@ from typing import Any
 
 import numpy as np
 import scipy.ndimage
+import scipy.signal
 
 from plottter.generators import register_generator
 from plottter.generators.audio_utils import (
     compute_envelope,
     compute_spectrogram,
+    extract_contours,
     load_audio,
     ridgeline_hlr,
     ridgeline_no_hlr,
@@ -234,6 +236,52 @@ class AudioWaveformGenerator(Generator):
                 default="Outward",
                 visible_when={"mode": ["Spiral"]},
             ),
+            # --- Contour-specific parameters ---
+            IntParam(
+                name="contour_levels",
+                label="Contour Levels",
+                min=3,
+                max=30,
+                step=1,
+                default=10,
+                visible_when={"mode": ["Contour"]},
+            ),
+            FloatParam(
+                name="contour_smoothing",
+                label="Smoothing",
+                min=0.0,
+                max=5.0,
+                step=0.5,
+                default=1.5,
+                visible_when={"mode": ["Contour"]},
+            ),
+            IntParam(
+                name="contour_freq_max",
+                label="Max Frequency (Hz)",
+                min=500,
+                max=20000,
+                step=100,
+                default=8000,
+                visible_when={"mode": ["Contour"]},
+            ),
+            IntParam(
+                name="contour_fft_size",
+                label="FFT Size",
+                min=512,
+                max=8192,
+                step=512,
+                default=2048,
+                visible_when={"mode": ["Contour"]},
+            ),
+            FloatParam(
+                name="contour_min_length",
+                label="Min Contour Length (mm)",
+                min=0.0,
+                max=20.0,
+                step=0.5,
+                default=2.0,
+                visible_when={"mode": ["Contour"]},
+            ),
         ]
 
     def generate(
@@ -260,6 +308,9 @@ class AudioWaveformGenerator(Generator):
 
         if mode == "Spiral":
             return self._generate_spiral(params, canvas, _progress, _cancelled)
+
+        if mode == "Contour":
+            return self._generate_contour(params, canvas, _progress, _cancelled)
 
         # Other modes not yet implemented
         return []
@@ -539,6 +590,134 @@ class AudioWaveformGenerator(Generator):
         progress(100)
         return [polyline]
 
+    def _generate_contour(
+        self,
+        params: dict[str, Any],
+        canvas: Canvas,
+        progress: Any,
+        cancelled: Any,
+    ) -> list[Polyline]:
+        audio_file = params.get("audio_file", "")
+        if not audio_file or not Path(audio_file).is_file():
+            return []
+
+        start_sec = float(params.get("start_sec", 0.0))
+        duration_sec = float(params.get("duration_sec", 10.0))
+        contour_levels = int(params.get("contour_levels", 10))
+        contour_smoothing = float(params.get("contour_smoothing", 1.5))
+        contour_freq_max = int(params.get("contour_freq_max", 8000))
+        contour_fft_size = int(params.get("contour_fft_size", 2048))
+        contour_min_length = float(params.get("contour_min_length", 2.0))
+
+        # Load audio (mono)
+        sample_rate, data = load_audio(audio_file, start_sec, duration_sec, mono=True)
+        progress(10)
+
+        if cancelled():
+            return []
+
+        # Compute spectrogram at full frequency resolution (no row downsampling)
+        noverlap = int(contour_fft_size * 0.75)
+        freqs, _times, Sxx_raw = scipy.signal.spectrogram(
+            data,
+            fs=sample_rate,
+            window="hann",
+            nperseg=contour_fft_size,
+            noverlap=noverlap,
+        )
+
+        # Crop to [0, contour_freq_max]
+        freq_mask = freqs <= contour_freq_max
+        Sxx_crop = Sxx_raw[freq_mask, :]
+
+        # Convert to dB and normalise to [0, 1]
+        Sxx_db = 10.0 * np.log10(Sxx_crop + 1e-10)
+        smin, smax = Sxx_db.min(), Sxx_db.max()
+        if smax <= smin:
+            return []
+        Sxx_norm = (Sxx_db - smin) / (smax - smin)
+
+        progress(30)
+
+        if cancelled():
+            return []
+
+        # Extract contours in (column, row) space
+        raw_contours = extract_contours(Sxx_norm, contour_levels, contour_smoothing)
+
+        progress(60)
+
+        if cancelled():
+            return []
+
+        if not raw_contours:
+            return []
+
+        # Map contour coordinates to drawing-area mm
+        left, top, right, bottom = canvas.drawing_area()
+        draw_width = right - left
+        draw_height = bottom - top
+        n_rows, n_cols = Sxx_norm.shape
+        col_scale = draw_width / max(n_cols - 1, 1)
+        row_scale = draw_height / max(n_rows - 1, 1)
+
+        mapped: list[Polyline] = []
+        for contour in raw_contours:
+            pl: Polyline = [
+                (cx * col_scale, cy * row_scale)
+                for cx, cy in contour  # cx=col(time), cy=row(freq)
+            ]
+            mapped.append(pl)
+
+        # Filter polylines shorter than contour_min_length mm
+        if contour_min_length > 0.0:
+            filtered: list[Polyline] = []
+            for pl in mapped:
+                arc = sum(
+                    ((pl[i + 1][0] - pl[i][0]) ** 2 + (pl[i + 1][1] - pl[i][1]) ** 2) ** 0.5
+                    for i in range(len(pl) - 1)
+                )
+                if arc >= contour_min_length:
+                    filtered.append(pl)
+            mapped = filtered
+
+        if not mapped:
+            return []
+
+        progress(80)
+
+        if cancelled():
+            return []
+
+        # Scale and center on canvas
+        all_pts = [pt for pl in mapped for pt in pl]
+        xs = [p[0] for p in all_pts]
+        ys = [p[1] for p in all_pts]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        bbox_w = max_x - min_x
+        bbox_h = max_y - min_y
+
+        if bbox_w <= 0 or bbox_h <= 0:
+            return []
+
+        padding = 5.0
+        avail_w = draw_width - 2 * padding
+        avail_h = draw_height - 2 * padding
+        scale = min(avail_w / bbox_w, avail_h / bbox_h)
+        scaled_w = bbox_w * scale
+        scaled_h = bbox_h * scale
+        offset_x = left + padding + (avail_w - scaled_w) / 2.0 - min_x * scale
+        offset_y = top + padding + (avail_h - scaled_h) / 2.0 - min_y * scale
+
+        result: list[Polyline] = [
+            [(x * scale + offset_x, y * scale + offset_y) for x, y in pl]
+            for pl in mapped
+        ]
+
+        progress(100)
+        return result
+
     def get_presets(self) -> list[Preset]:
         return [
             Preset(
@@ -633,6 +812,33 @@ class AudioWaveformGenerator(Generator):
                     "spiral_source": "Waveform",
                     "spiral_amplitude": 0.03,
                     "spiral_smoothing": 6.0,
+                },
+            ),
+            Preset(
+                "Topographic Audio",
+                params={
+                    "mode": "Contour",
+                    "contour_levels": 12,
+                    "contour_smoothing": 2.0,
+                    "contour_freq_max": 6000,
+                },
+            ),
+            Preset(
+                "Detailed Contours",
+                params={
+                    "mode": "Contour",
+                    "contour_levels": 20,
+                    "contour_smoothing": 1.0,
+                    "contour_freq_max": 10000,
+                },
+            ),
+            Preset(
+                "Smooth Contours",
+                params={
+                    "mode": "Contour",
+                    "contour_levels": 8,
+                    "contour_smoothing": 3.0,
+                    "contour_freq_max": 5000,
                 },
             ),
         ]

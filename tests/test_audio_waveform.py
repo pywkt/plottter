@@ -10,8 +10,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+import scipy.ndimage
 
 from plottter.generators import GENERATORS
+from plottter.generators.audio_utils import extract_contours
 from plottter.generators.audio_waveform import AudioWaveformGenerator
 from plottter.models.canvas import Canvas
 
@@ -463,3 +465,110 @@ def test_spiral_presets_produce_output(generator, canvas, sine_wav):
         p.setdefault("duration_sec", 2.0)
         result = generator.generate(p, canvas)
         assert len(result) > 0, f"Spiral preset '{preset.name}' produced no output"
+
+
+# ---------------------------------------------------------------------------
+# Contour mode — unit tests for extract_contours
+# ---------------------------------------------------------------------------
+
+# (a) Gaussian bump array produces multiple polylines
+
+def test_extract_contours_gaussian_bump():
+    data = np.zeros((100, 100))
+    data[50, 50] = 1.0
+    data = scipy.ndimage.gaussian_filter(data, sigma=10.0)
+    contours = extract_contours(data, num_levels=5, smoothing_sigma=0.0)
+    assert len(contours) > 0
+    for pl in contours:
+        assert len(pl) >= 2
+        for pt in pl:
+            assert len(pt) == 2
+
+
+# (b) Uniform array produces no contours
+
+def test_extract_contours_uniform_returns_empty():
+    data = np.ones((50, 50))
+    contours = extract_contours(data, num_levels=5, smoothing_sigma=0.0)
+    assert len(contours) == 0
+
+
+# ---------------------------------------------------------------------------
+# Contour mode — integration tests
+# ---------------------------------------------------------------------------
+
+# (c) Contour mode with test WAV produces multiple polylines
+
+def test_contour_mode_produces_multiple_polylines(generator, canvas, sine_wav):
+    result = generator.generate(
+        {
+            "mode": "Contour",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "contour_levels": 8,
+            "contour_smoothing": 1.5,
+            "contour_min_length": 0.0,
+        },
+        canvas,
+    )
+    assert len(result) > 1
+    for pl in result:
+        assert len(pl) >= 2
+
+
+# (d) contour_min_length filtering: with large min_length, fewer paths than with 0
+
+def test_contour_min_length_filters_short_polylines(generator, canvas, sine_wav):
+    params_base = {
+        "mode": "Contour",
+        "audio_file": sine_wav,
+        "duration_sec": 2.0,
+        "contour_levels": 10,
+        "contour_smoothing": 1.0,
+    }
+
+    result_no_filter = generator.generate({**params_base, "contour_min_length": 0.0}, canvas)
+    result_filtered = generator.generate({**params_base, "contour_min_length": 50.0}, canvas)
+
+    assert len(result_filtered) < len(result_no_filter), (
+        f"Expected fewer polylines with min_length=50mm ({len(result_filtered)}) "
+        f"than with min_length=0 ({len(result_no_filter)})"
+    )
+
+
+# (e) Contour output is within canvas bounds
+
+def test_contour_output_within_canvas_bounds(generator, canvas, sine_wav):
+    result = generator.generate(
+        {
+            "mode": "Contour",
+            "audio_file": sine_wav,
+            "duration_sec": 2.0,
+            "contour_levels": 6,
+            "contour_smoothing": 1.5,
+            "contour_min_length": 0.0,
+        },
+        canvas,
+    )
+    assert len(result) > 0
+    left, top, right, bottom = canvas.drawing_area()
+    tol = 1.0  # 1 mm tolerance
+    for pl in result:
+        for x, y in pl:
+            assert left - tol <= x <= right + tol, f"x={x} out of bounds [{left}, {right}]"
+            assert top - tol <= y <= bottom + tol, f"y={y} out of bounds [{top}, {bottom}]"
+
+
+# (f) All Contour presets produce non-empty output
+
+def test_contour_presets_produce_output(generator, canvas, sine_wav):
+    presets = generator.get_presets()
+    contour_presets = [p for p in presets if p.params.get("mode") == "Contour"]
+    assert len(contour_presets) >= 3, "Expected at least 3 Contour presets"
+    for preset in contour_presets:
+        p = dict(preset.params)
+        p["audio_file"] = sine_wav
+        p.setdefault("duration_sec", 2.0)
+        p.setdefault("contour_min_length", 0.0)
+        result = generator.generate(p, canvas)
+        assert len(result) > 0, f"Contour preset '{preset.name}' produced no output"
