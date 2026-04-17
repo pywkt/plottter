@@ -410,7 +410,7 @@ class _MenusMixin:
             "• Path optimization for pen travel minimization<br>"
             "• SVG, HPGL, and G-code export<br><br>"
             "<b>Credits:</b><br>"
-            "Inspired by DrawingBot V3 (open-source plotter art generator)<br>"
+            "Inspired by all the creators on r/PlotterArt.<br>"
             "Built with Python 3.12, PyQt6, NumPy, OpenCV, Shapely, SciPy, "
             "svgwrite, and Pillow.<br><br>"
             "License: MIT",
