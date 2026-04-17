@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import scipy.io.wavfile
+import scipy.ndimage
 import scipy.signal
 
 
@@ -239,6 +240,189 @@ def get_audio_duration(filepath: str | os.PathLike) -> float:
             )
         audio = AudioSegment.from_file(str(filepath))
         return len(audio) / 1000.0
+
+
+# ---------------------------------------------------------------------------
+# Ridgeline hidden-line-removal
+# ---------------------------------------------------------------------------
+
+def _extract_visible_segments(
+    x: np.ndarray,
+    y: np.ndarray,
+    visible_mask: np.ndarray,
+) -> list[list[tuple[float, float]]]:
+    """Extract contiguous visible runs as polylines.
+
+    Parameters
+    ----------
+    x, y:
+        1-D coordinate arrays of the same length.
+    visible_mask:
+        Boolean array; True where points are visible.
+
+    Returns
+    -------
+    List of polylines (each a list of (x, y) tuples) with >= 2 points.
+    """
+    segments: list[list[tuple[float, float]]] = []
+    if not np.any(visible_mask):
+        return segments
+
+    # Use diff to find run boundaries
+    mask_int = visible_mask.astype(int)
+    diff = np.diff(mask_int)
+
+    starts: list[int] = []
+    ends: list[int] = []
+
+    # Run starts at index where diff == 1 (False→True), shifted by 1
+    starts_arr = np.where(diff == 1)[0] + 1
+    # Run ends at index where diff == -1 (True→False)
+    ends_arr = np.where(diff == -1)[0]
+
+    # Handle edge: visible at the very start
+    if visible_mask[0]:
+        starts = [0] + list(starts_arr)
+    else:
+        starts = list(starts_arr)
+
+    # Handle edge: visible at the very end
+    if visible_mask[-1]:
+        ends = list(ends_arr) + [len(visible_mask) - 1]
+    else:
+        ends = list(ends_arr)
+
+    for s, e in zip(starts, ends):
+        if e - s + 1 >= 2:
+            pts = [(float(x[j]), float(y[j])) for j in range(s, e + 1)]
+            segments.append(pts)
+
+    return segments
+
+
+def ridgeline_hlr(
+    spectrogram_rows: np.ndarray,
+    width: float,
+    amplitude_scale: float = 1.0,
+    row_spacing: float = 1.0,
+    smoothing_sigma: float = 2.0,
+    mirror: bool = False,
+) -> list[list[tuple[float, float]]]:
+    """Ridgeline plot with hidden-line removal (Unknown Pleasures effect).
+
+    Parameters
+    ----------
+    spectrogram_rows:
+        2-D array of shape (num_rows, num_time_cols) with values in [0, 1].
+        Row 0 is the front (bottom), last row is the back (top).
+    width:
+        Horizontal extent of the plot in mm.
+    amplitude_scale:
+        Vertical scale factor applied to each row's values.
+    row_spacing:
+        Vertical distance between row baselines.
+    smoothing_sigma:
+        Sigma for Gaussian smoothing applied to each row (0 = no smoothing).
+    mirror:
+        If True, also draw downward-facing ridges, symmetric about each baseline.
+
+    Returns
+    -------
+    List of polylines (list of (x, y) tuples).
+    """
+    num_rows, num_cols = spectrogram_rows.shape
+    x = np.linspace(0.0, width, num_cols)
+
+    polylines: list[list[tuple[float, float]]] = []
+
+    # Upward horizon: tracks the highest y seen so far per column.
+    horizon = np.full(num_cols, -np.inf)
+
+    # Downward horizon (mirror mode)
+    horizon_down = np.full(num_cols, np.inf) if mirror else None
+
+    for i in range(num_rows):
+        baseline = float(i) * row_spacing
+        row = spectrogram_rows[i].astype(float)
+
+        if smoothing_sigma > 0:
+            smoothed = scipy.ndimage.gaussian_filter1d(row, sigma=smoothing_sigma)
+        else:
+            smoothed = row
+
+        y = baseline + smoothed * amplitude_scale
+
+        # Upward: visible where y > horizon
+        visible = y > horizon
+        segs = _extract_visible_segments(x, y, visible)
+        polylines.extend(segs)
+
+        # Update horizon: the curve itself plus the baseline fill
+        horizon = np.maximum(horizon, y)
+        horizon = np.maximum(horizon, baseline)
+
+        # Mirror (downward)
+        if mirror and horizon_down is not None:
+            y_down = baseline - smoothed * amplitude_scale
+            visible_down = y_down < horizon_down
+            segs_down = _extract_visible_segments(x, y_down, visible_down)
+            polylines.extend(segs_down)
+            horizon_down = np.minimum(horizon_down, y_down)
+            horizon_down = np.minimum(horizon_down, baseline)
+
+    return polylines
+
+
+def ridgeline_no_hlr(
+    spectrogram_rows: np.ndarray,
+    width: float,
+    amplitude_scale: float = 1.0,
+    row_spacing: float = 1.0,
+    smoothing_sigma: float = 2.0,
+    mirror: bool = False,
+) -> list[list[tuple[float, float]]]:
+    """Ridgeline plot without hidden-line removal (every row drawn in full).
+
+    Parameters
+    ----------
+    spectrogram_rows:
+        2-D array of shape (num_rows, num_time_cols) with values in [0, 1].
+    width:
+        Horizontal extent of the plot in mm.
+    amplitude_scale:
+        Vertical scale factor.
+    row_spacing:
+        Vertical distance between row baselines.
+    smoothing_sigma:
+        Sigma for Gaussian smoothing (0 = no smoothing).
+    mirror:
+        If True, also draw a downward-facing copy of each row.
+
+    Returns
+    -------
+    List of polylines; exactly one polyline per row (two when mirror=True).
+    """
+    num_rows, num_cols = spectrogram_rows.shape
+    x = np.linspace(0.0, width, num_cols)
+    polylines: list[list[tuple[float, float]]] = []
+
+    for i in range(num_rows):
+        baseline = float(i) * row_spacing
+        row = spectrogram_rows[i].astype(float)
+
+        if smoothing_sigma > 0:
+            smoothed = scipy.ndimage.gaussian_filter1d(row, sigma=smoothing_sigma)
+        else:
+            smoothed = row
+
+        y = baseline + smoothed * amplitude_scale
+        polylines.append([(float(x[j]), float(y[j])) for j in range(num_cols)])
+
+        if mirror:
+            y_down = baseline - smoothed * amplitude_scale
+            polylines.append([(float(x[j]), float(y_down[j])) for j in range(num_cols)])
+
+    return polylines
 
 
 # ---------------------------------------------------------------------------
