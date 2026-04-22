@@ -283,6 +283,38 @@ class _ProcessingOpsMixin:
         self._offset_worker = worker
         worker.start()
 
+    def _on_calibration_plot(self, plot_type: str) -> None:
+        """Generate a calibration plot layer for the given plot type."""
+        from plottter.calibration import (
+            generate_angle_test,
+            generate_circle_test,
+            generate_fill_density_test,
+            generate_line_spacing_test,
+            generate_paper_size_sheet,
+            generate_registration_test,
+        )
+        from plottter.models import Layer
+
+        _generators = {
+            "Line Spacing Test": generate_line_spacing_test,
+            "Circle & Arc Test": generate_circle_test,
+            "Angle Test": generate_angle_test,
+            "Fill Density Test": generate_fill_density_test,
+            "Registration Test": generate_registration_test,
+            "Paper Size Alignment": generate_paper_size_sheet,
+        }
+
+        gen_fn = _generators.get(plot_type)
+        if gen_fn is None:
+            return
+
+        canvas = self._controller.current_project.canvas
+        paths = gen_fn(canvas.width_mm, canvas.height_mm, canvas.margin_mm)
+
+        layer = Layer(name=plot_type, color="#000000")
+        self._controller.add_layer(layer)
+        self._controller.set_layer_paths(layer.id, paths, "Calibration Plot")
+
     def _on_plot_axidraw(self) -> None:
         """Open AxiDraw plot dialog for direct USB plotting."""
         project = self._controller.current_project

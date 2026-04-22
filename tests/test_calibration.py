@@ -16,6 +16,89 @@ from plottter.calibration import (
 from plottter.models.path import Polyline
 
 
+# ---------------------------------------------------------------------------
+# Task 100.7 — importability and basic validity checks
+# ---------------------------------------------------------------------------
+
+# (a) All 6 calibration functions are importable from plottter.calibration and
+#     produce non-empty, list-of-polylines output for a standard A4 canvas.
+def test_all_six_functions_importable_and_produce_output():
+    import plottter.calibration as cal
+    functions = [
+        cal.generate_line_spacing_test,
+        cal.generate_circle_test,
+        cal.generate_angle_test,
+        cal.generate_fill_density_test,
+        cal.generate_registration_test,
+        cal.generate_paper_size_sheet,
+    ]
+    for fn in functions:
+        result = fn(210.0, 297.0, 10.0)
+        assert isinstance(result, list), f"{fn.__name__} did not return a list"
+        assert len(result) > 0, f"{fn.__name__} returned empty list for A4"
+        for pl in result:
+            assert isinstance(pl, list), f"{fn.__name__} polyline is not a list"
+            for pt in pl:
+                assert len(pt) == 2, f"{fn.__name__} point has wrong arity: {pt}"
+
+
+# (b) The Tools > Calibration Plots submenu contains exactly 6 actions.
+def test_calibration_submenu_has_six_actions(qapp, qtbot):
+    from plottter.models import Canvas, Layer, Project
+    from plottter.gui.project_controller import ProjectController
+    from plottter.gui.main_window import MainWindow
+
+    canvas = Canvas.from_preset("A4", margin=10.0)
+    project = Project(name="Test", canvas=canvas)
+    project.add_layer(Layer(name="Layer 1", color="#000000"))
+    controller = ProjectController(project)
+    win = MainWindow(controller)
+    qtbot.addWidget(win)
+
+    # Find the Tools menu
+    tools_menu = win._tools_menu
+    assert tools_menu is not None
+
+    # Find the Calibration Plots submenu
+    calib_menu = None
+    for action in tools_menu.actions():
+        if action.menu() is not None and action.text() == "Calibration Plots":
+            calib_menu = action.menu()
+            break
+
+    assert calib_menu is not None, "Calibration Plots submenu not found in Tools menu"
+    # Count only real actions (not separators)
+    real_actions = [a for a in calib_menu.actions() if not a.isSeparator()]
+    assert len(real_actions) == 6, (
+        f"Expected 6 calibration actions, got {len(real_actions)}: "
+        f"{[a.text() for a in real_actions]}"
+    )
+
+
+# (c) Each calibration function produces non-empty output for multiple paper sizes.
+@pytest.mark.parametrize("width_mm,height_mm", [
+    (210.0, 297.0),   # A4 portrait
+    (297.0, 210.0),   # A4 landscape
+    (297.0, 420.0),   # A3 portrait
+    (420.0, 594.0),   # A2 portrait
+])
+def test_all_functions_produce_output_for_multiple_sizes(width_mm, height_mm):
+    import plottter.calibration as cal
+    functions = [
+        cal.generate_line_spacing_test,
+        cal.generate_circle_test,
+        cal.generate_angle_test,
+        cal.generate_fill_density_test,
+        cal.generate_registration_test,
+        cal.generate_paper_size_sheet,
+    ]
+    for fn in functions:
+        result = fn(width_mm, height_mm, 10.0)
+        assert len(result) > 0, (
+            f"{fn.__name__} returned empty output for {width_mm}x{height_mm}"
+        )
+
+
 # A4: 210 x 297 mm
 A4_W, A4_H = 210.0, 297.0
 # A3: 297 x 420 mm

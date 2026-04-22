@@ -266,6 +266,43 @@ class _MenusMixin:
 
         tools_menu.addSeparator()
 
+        # --- Calibration Plots submenu ---
+        calib_menu = tools_menu.addMenu("Calibration Plots")
+        calib_menu.setToolTipsVisible(True)
+        _calibration_actions = [
+            (
+                "Line Spacing Test",
+                "Test line spacing accuracy — draws parallel lines at 2.0, 1.5, 1.0, 0.75, 0.5, and 0.25 mm intervals",
+            ),
+            (
+                "Circle & Arc Test",
+                "Test circle and arc accuracy — concentric rings plus reference circles and quarter-arcs at standard diameters",
+            ),
+            (
+                "Angle Test",
+                "Test angle accuracy — radial lines at every 15° with labels, diagonal lines, and concentric squares",
+            ),
+            (
+                "Fill Density Test",
+                "Test fill density — 4×4 grid of hatched swatches at spacings 2.0, 1.0, 0.5, 0.25 mm and angles 0°, 45°, 90°, 135°",
+            ),
+            (
+                "Registration Test",
+                "Test registration accuracy — border, corner crosshairs, centre crosshair with circle, and edge tick marks",
+            ),
+            (
+                "Paper Size Alignment",
+                "Draw alignment crosshairs for standard paper sizes — use as a master sheet under your plotting paper",
+            ),
+        ]
+        for _plot_type, _tooltip in _calibration_actions:
+            _act = QAction(_plot_type, self)
+            _act.setToolTip(_tooltip)
+            _act.triggered.connect(
+                lambda checked, t=_plot_type: self._on_calibration_plot(t)
+            )
+            calib_menu.addAction(_act)
+
         self._act_plot_axidraw = QAction("Plot with AxiDraw…", self)
         self._act_plot_axidraw.setToolTip("Send the current project directly to an AxiDraw plotter via USB")
         self._act_plot_axidraw.triggered.connect(self._on_plot_axidraw)
