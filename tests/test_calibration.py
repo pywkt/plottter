@@ -4,7 +4,7 @@ import math
 
 import pytest
 
-from plottter.calibration import generate_circle_test, generate_line_spacing_test
+from plottter.calibration import generate_angle_test, generate_circle_test, generate_line_spacing_test
 from plottter.models.path import Polyline
 
 
@@ -127,6 +127,54 @@ def test_circle_test_canvas_sizes():
     for w, h in sizes:
         result = generate_circle_test(w, h, MARGIN)
         assert len(result) > 0, f"No output for {w}x{h}"
+        x_min = MARGIN - TOLERANCE
+        x_max = w - MARGIN + TOLERANCE
+        y_min = MARGIN - TOLERANCE
+        y_max = h - MARGIN + TOLERANCE
+        for x, y in _all_points(result):
+            assert x_min <= x <= x_max, f"{w}x{h}: x={x} outside [{x_min}, {x_max}]"
+            assert y_min <= y <= y_max, f"{w}x{h}: y={y} outside [{y_min}, {y_max}]"
+
+
+# ---------------------------------------------------------------------------
+# generate_angle_test
+# ---------------------------------------------------------------------------
+
+# (a) Returns a non-empty list of polylines.
+def test_angle_test_returns_nonempty():
+    result = generate_angle_test(A4_W, A4_H, MARGIN)
+    assert isinstance(result, list)
+    assert len(result) > 0
+
+
+# (b) All points are within the drawing area bounds (with 1 mm tolerance).
+def test_angle_test_points_within_bounds():
+    result = generate_angle_test(A4_W, A4_H, MARGIN)
+    x_min = MARGIN - TOLERANCE
+    x_max = A4_W - MARGIN + TOLERANCE
+    y_min = MARGIN - TOLERANCE
+    y_max = A4_H - MARGIN + TOLERANCE
+    for x, y in _all_points(result):
+        assert x_min <= x <= x_max, f"x={x} outside [{x_min}, {x_max}]"
+        assert y_min <= y <= y_max, f"y={y} outside [{y_min}, {y_max}]"
+
+
+# (c) Produces at least 24 polylines (one radial line per 15° increment).
+def test_angle_test_at_least_24_polylines():
+    result = generate_angle_test(A4_W, A4_H, MARGIN)
+    assert len(result) >= 24
+
+
+# (d) Works with square, portrait, and landscape canvases.
+def test_angle_test_canvas_sizes():
+    sizes = [
+        (200.0, 200.0),   # square
+        (A4_W, A4_H),     # portrait A4
+        (A4_H, A4_W),     # landscape A4
+    ]
+    for w, h in sizes:
+        result = generate_angle_test(w, h, MARGIN)
+        assert len(result) >= 24, f"Expected >=24 polylines for {w}x{h}"
         x_min = MARGIN - TOLERANCE
         x_max = w - MARGIN + TOLERANCE
         y_min = MARGIN - TOLERANCE

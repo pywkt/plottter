@@ -111,6 +111,135 @@ def generate_line_spacing_test(
     return result
 
 
+def generate_angle_test(
+    width_mm: float,
+    height_mm: float,
+    margin_mm: float,
+) -> list[Polyline]:
+    """Generate an angle calibration test page.
+
+    Draws 24 radial lines from the centre at every 15° increment, labelled at
+    their outer ends, diagonal corner-to-corner lines, 5 concentric squares,
+    a title ("ANGLE TEST"), and a border rectangle.
+
+    All output coordinates are in mm with (0, 0) at the top-left of the page.
+
+    Parameters
+    ----------
+    width_mm:   Page width in mm.
+    height_mm:  Page height in mm.
+    margin_mm:  Margin from each page edge to the drawing area.
+    """
+    x0 = margin_mm
+    y0 = margin_mm
+    x1 = width_mm - margin_mm
+    y1 = height_mm - margin_mm
+    draw_width = x1 - x0
+    draw_height = y1 - y0
+
+    result: list[Polyline] = []
+
+    # -- Border: 4 line segments connecting the corners ----------------------
+    result.append([(x0, y0), (x1, y0)])  # top
+    result.append([(x1, y0), (x1, y1)])  # right
+    result.append([(x1, y1), (x0, y1)])  # bottom
+    result.append([(x0, y1), (x0, y0)])  # left
+
+    # -- Title ---------------------------------------------------------------
+    title_text = "ANGLE TEST"
+    title_size = 3.0
+    title_polys, title_w, title_h = _render_hershey_text(
+        title_text,
+        "Simplex",
+        title_size,
+        letter_spacing_mm=0.0,
+        line_spacing=1.2,
+        text_align="Center",
+        stroke_repeat=1,
+    )
+    title_cx = (x0 + x1) / 2.0
+    title_cy = y0 + title_h / 2.0
+    for pl in title_polys:
+        result.append([(px + title_cx, py + title_cy) for px, py in pl])
+
+    # -- Centre of drawing area ----------------------------------------------
+    cx = (x0 + x1) / 2.0
+    cy = (y0 + y1) / 2.0
+
+    # -- Diagonal lines (corner to corner) -----------------------------------
+    result.append([(x0, y0), (x1, y1)])
+    result.append([(x1, y0), (x0, y1)])
+
+    # -- Concentric squares --------------------------------------------------
+    num_squares = 5
+    min_dim = min(draw_width, draw_height)
+    max_side = min_dim * 0.4
+    min_side = 10.0
+    for i in range(num_squares):
+        t = i / (num_squares - 1) if num_squares > 1 else 1.0
+        side = min_side + (max_side - min_side) * t
+        half = side / 2.0
+        sx0 = max(cx - half, x0)
+        sy0 = max(cy - half, y0)
+        sx1 = min(cx + half, x1)
+        sy1 = min(cy + half, y1)
+        result.append([(sx0, sy0), (sx1, sy0), (sx1, sy1), (sx0, sy1), (sx0, sy0)])
+
+    # -- Radial lines at 15° increments with labels --------------------------
+    # Labels are centered on a point 10 mm inward from the boundary endpoint.
+    label_inset = 10.0  # mm
+
+    for deg in range(0, 360, 15):
+        angle_rad = math.radians(deg)
+        dx = math.cos(angle_rad)
+        dy = math.sin(angle_rad)
+
+        # Ray-rectangle intersection: find smallest positive t so that
+        # (cx + t*dx, cy + t*dy) lies on the boundary of [x0,x1]×[y0,y1].
+        t_best = float("inf")
+        for t_cand in [
+            (x0 - cx) / dx if abs(dx) > 1e-12 else float("inf"),
+            (x1 - cx) / dx if abs(dx) > 1e-12 else float("inf"),
+            (y0 - cy) / dy if abs(dy) > 1e-12 else float("inf"),
+            (y1 - cy) / dy if abs(dy) > 1e-12 else float("inf"),
+        ]:
+            if t_cand <= 1e-9:
+                continue
+            px_c = cx + t_cand * dx
+            py_c = cy + t_cand * dy
+            if (x0 - 1e-9 <= px_c <= x1 + 1e-9) and (y0 - 1e-9 <= py_c <= y1 + 1e-9):
+                if t_cand < t_best:
+                    t_best = t_cand
+
+        if t_best == float("inf"):
+            continue
+
+        ex = max(x0, min(x1, cx + t_best * dx))
+        ey = max(y0, min(y1, cy + t_best * dy))
+
+        result.append([(cx, cy), (ex, ey)])
+
+        # Label: rendered centered on the inset point (10 mm inside boundary).
+        lx = ex - dx * label_inset
+        ly = ey - dy * label_inset
+
+        label_text = f"{deg}d"  # "d" for degrees (Hershey lacks the degree glyph)
+        label_polys, _lw, _lh = _render_hershey_text(
+            label_text,
+            "Simplex",
+            2.5,
+            letter_spacing_mm=0.0,
+            line_spacing=1.2,
+            text_align="Center",
+            stroke_repeat=1,
+        )
+        # label_polys are centred at origin; shift to (lx, ly).
+        for pl in label_polys:
+            result.append([(ppx + lx, ppy + ly) for ppx, ppy in pl])
+
+    return result
+
+
 def generate_circle_test(
     width_mm: float,
     height_mm: float,
