@@ -10,6 +10,7 @@ from plottter.calibration import (
     generate_circle_test,
     generate_fill_density_test,
     generate_line_spacing_test,
+    generate_registration_test,
 )
 from plottter.models.path import Polyline
 
@@ -250,3 +251,106 @@ def test_fill_density_spacing_variation():
         f"Expected more lines at 0.25mm spacing ({len(lines_fine)}) "
         f"than at 2.0mm spacing ({len(lines_coarse)})"
     )
+
+
+# ---------------------------------------------------------------------------
+# generate_registration_test
+# ---------------------------------------------------------------------------
+
+# (a) Returns non-empty polylines.
+def test_registration_test_returns_nonempty():
+    result = generate_registration_test(A4_W, A4_H, MARGIN)
+    assert isinstance(result, list)
+    assert len(result) > 0
+
+
+# (b) All points are within the drawing area bounds (with 1 mm tolerance).
+def test_registration_test_points_within_bounds():
+    result = generate_registration_test(A4_W, A4_H, MARGIN)
+    x_min = MARGIN - TOLERANCE
+    x_max = A4_W - MARGIN + TOLERANCE
+    y_min = MARGIN - TOLERANCE
+    y_max = A4_H - MARGIN + TOLERANCE
+    for x, y in _all_points(result):
+        assert x_min <= x <= x_max, f"x={x} outside [{x_min}, {x_max}]"
+        assert y_min <= y <= y_max, f"y={y} outside [{y_min}, {y_max}]"
+
+
+# (c) Corner crosshairs are positioned at the drawing area corners.
+def test_registration_test_corner_crosshairs():
+    result = generate_registration_test(A4_W, A4_H, MARGIN)
+    x0, y0 = MARGIN, MARGIN
+    x1, y1 = A4_W - MARGIN, A4_H - MARGIN
+    expected_corners = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)]
+
+    for corner in expected_corners:
+        cx, cy = corner
+        # Find a 2-point line whose first point is at this corner.
+        found = any(
+            len(pl) == 2
+            and abs(pl[0][0] - cx) < 1e-6
+            and abs(pl[0][1] - cy) < 1e-6
+            for pl in result
+        )
+        assert found, f"No crosshair line starting at corner {corner}"
+
+
+# (d) Tick marks are present along all 4 edges.
+def test_registration_test_tick_marks():
+    result = generate_registration_test(A4_W, A4_H, MARGIN)
+    x0, y0 = MARGIN, MARGIN
+    x1, y1 = A4_W - MARGIN, A4_H - MARGIN
+    TICK_LEN = 3.0
+
+    # Top edge: vertical 2-point lines at y=y0 going to y0+TICK_LEN.
+    top_ticks = [
+        pl for pl in result
+        if len(pl) == 2
+        and abs(pl[0][1] - y0) < 1e-6
+        and abs(pl[1][1] - (y0 + TICK_LEN)) < 1e-6
+        and abs(pl[0][0] - pl[1][0]) < 1e-6
+    ]
+    # Bottom edge: vertical 2-point lines at y=y1 going to y1-TICK_LEN.
+    bottom_ticks = [
+        pl for pl in result
+        if len(pl) == 2
+        and abs(pl[0][1] - y1) < 1e-6
+        and abs(pl[1][1] - (y1 - TICK_LEN)) < 1e-6
+        and abs(pl[0][0] - pl[1][0]) < 1e-6
+    ]
+    # Left edge: horizontal 2-point lines at x=x0 going to x0+TICK_LEN.
+    left_ticks = [
+        pl for pl in result
+        if len(pl) == 2
+        and abs(pl[0][0] - x0) < 1e-6
+        and abs(pl[1][0] - (x0 + TICK_LEN)) < 1e-6
+        and abs(pl[0][1] - pl[1][1]) < 1e-6
+    ]
+    # Right edge: horizontal 2-point lines at x=x1 going to x1-TICK_LEN.
+    right_ticks = [
+        pl for pl in result
+        if len(pl) == 2
+        and abs(pl[0][0] - x1) < 1e-6
+        and abs(pl[1][0] - (x1 - TICK_LEN)) < 1e-6
+        and abs(pl[0][1] - pl[1][1]) < 1e-6
+    ]
+
+    assert len(top_ticks) > 5, f"Too few top edge ticks: {len(top_ticks)}"
+    assert len(bottom_ticks) > 5, f"Too few bottom edge ticks: {len(bottom_ticks)}"
+    assert len(left_ticks) > 5, f"Too few left edge ticks: {len(left_ticks)}"
+    assert len(right_ticks) > 5, f"Too few right edge ticks: {len(right_ticks)}"
+
+
+# (e) Works with different paper sizes, all points within respective bounds.
+def test_registration_test_different_sizes():
+    sizes = [(A4_W, A4_H), (A3_W, A3_H), (A4_H, A4_W)]
+    for w, h in sizes:
+        result = generate_registration_test(w, h, MARGIN)
+        assert len(result) > 0, f"No output for {w}x{h}"
+        x_min = MARGIN - TOLERANCE
+        x_max = w - MARGIN + TOLERANCE
+        y_min = MARGIN - TOLERANCE
+        y_max = h - MARGIN + TOLERANCE
+        for x, y in _all_points(result):
+            assert x_min <= x <= x_max, f"{w}x{h}: x={x} outside [{x_min}, {x_max}]"
+            assert y_min <= y <= y_max, f"{w}x{h}: y={y} outside [{y_min}, {y_max}]"

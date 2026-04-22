@@ -420,6 +420,169 @@ def generate_fill_density_test(
     return result
 
 
+def generate_registration_test(
+    width_mm: float,
+    height_mm: float,
+    margin_mm: float,
+) -> list[Polyline]:
+    """Generate a registration calibration test page.
+
+    Draws a full border, corner crosshairs, a centre crosshair with circle,
+    edge tick marks at 10 mm intervals, coordinate labels at each corner,
+    a "CENTER" label, a page-dimensions label, and a title.
+
+    All output coordinates are in mm with (0, 0) at the top-left of the page.
+
+    Parameters
+    ----------
+    width_mm:   Page width in mm.
+    height_mm:  Page height in mm.
+    margin_mm:  Margin from each page edge to the drawing area.
+    """
+    x0 = margin_mm
+    y0 = margin_mm
+    x1 = width_mm - margin_mm
+    y1 = height_mm - margin_mm
+    page_cx = (x0 + x1) / 2.0
+    page_cy = (y0 + y1) / 2.0
+
+    result: list[Polyline] = []
+
+    # -- Border ------------------------------------------------------------------
+    result.append([(x0, y0), (x1, y0)])
+    result.append([(x1, y0), (x1, y1)])
+    result.append([(x1, y1), (x0, y1)])
+    result.append([(x0, y1), (x0, y0)])
+
+    # -- Title "REGISTRATION TEST" at top centre --------------------------------
+    title_polys, _tw, title_h = _render_hershey_text(
+        "REGISTRATION TEST",
+        "Simplex",
+        3.0,
+        letter_spacing_mm=0.0,
+        line_spacing=1.2,
+        text_align="Center",
+        stroke_repeat=1,
+    )
+    for pl in title_polys:
+        result.append([(px + page_cx, py + y0 + title_h / 2.0) for px, py in pl])
+
+    # -- Corner crosshairs (10 mm arms extending inward) -----------------------
+    # (xc, yc, hdir, vdir): hdir/vdir = +1 → arm points right/down (inward)
+    CORNER_ARM = 10.0
+    corner_defs = [
+        (x0, y0, +1, +1),  # top-left
+        (x1, y0, -1, +1),  # top-right
+        (x0, y1, +1, -1),  # bottom-left
+        (x1, y1, -1, -1),  # bottom-right
+    ]
+    for xc, yc, hdir, vdir in corner_defs:
+        result.append([(xc, yc), (xc + hdir * CORNER_ARM, yc)])
+        result.append([(xc, yc), (xc, yc + vdir * CORNER_ARM)])
+
+    # -- Corner coordinate labels ----------------------------------------------
+    label_size = 2.5
+    label_gap = 1.5
+    corner_label_defs = [
+        (x0, y0, +1, +1, f"{int(round(x0))}, {int(round(y0))}"),
+        (x1, y0, -1, +1, f"{int(round(x1))}, {int(round(y0))}"),
+        (x0, y1, +1, -1, f"{int(round(x0))}, {int(round(y1))}"),
+        (x1, y1, -1, -1, f"{int(round(x1))}, {int(round(y1))}"),
+    ]
+    for xc, yc, hdir, vdir, text in corner_label_defs:
+        lpolys, lw, lh = _render_hershey_text(
+            text,
+            "Simplex",
+            label_size,
+            letter_spacing_mm=0.0,
+            line_spacing=1.2,
+            text_align="Center",
+            stroke_repeat=1,
+        )
+        # Centre the label inward from the corner crosshair, just past the arm end.
+        if hdir > 0:
+            label_cx = xc + lw / 2.0 + label_gap
+        else:
+            label_cx = xc - lw / 2.0 - label_gap
+        if vdir > 0:
+            label_cy = yc + CORNER_ARM + label_gap + lh / 2.0
+        else:
+            label_cy = yc - CORNER_ARM - label_gap - lh / 2.0
+        for pl in lpolys:
+            result.append([(px + label_cx, py + label_cy) for px, py in pl])
+
+    # -- Centre crosshair (20 mm arms) -----------------------------------------
+    CENTER_ARM = 10.0  # half of 20 mm
+    result.append([(page_cx - CENTER_ARM, page_cy), (page_cx + CENTER_ARM, page_cy)])
+    result.append([(page_cx, page_cy - CENTER_ARM), (page_cx, page_cy + CENTER_ARM)])
+
+    # -- Centre circle (5 mm radius) -------------------------------------------
+    circle_angles = [math.radians(deg) for deg in range(0, 361, 5)]
+    r = 5.0
+    result.append(
+        [(page_cx + r * math.cos(a), page_cy + r * math.sin(a)) for a in circle_angles]
+    )
+
+    # -- "CENTER" label below the centre crosshair -----------------------------
+    ctr_polys, _cw, ctr_h = _render_hershey_text(
+        "CENTER",
+        "Simplex",
+        3.0,
+        letter_spacing_mm=0.0,
+        line_spacing=1.2,
+        text_align="Center",
+        stroke_repeat=1,
+    )
+    ctr_label_cy = page_cy + CENTER_ARM + label_gap + ctr_h / 2.0
+    for pl in ctr_polys:
+        result.append([(px + page_cx, py + ctr_label_cy) for px, py in pl])
+
+    # -- Edge tick marks at every 10 mm ----------------------------------------
+    TICK_LEN = 3.0
+    TICK_STEP = 10.0
+
+    # Top edge (y = y0): ticks extend downward
+    x = x0
+    while x <= x1 + 1e-9:
+        result.append([(x, y0), (x, y0 + TICK_LEN)])
+        x += TICK_STEP
+
+    # Bottom edge (y = y1): ticks extend upward
+    x = x0
+    while x <= x1 + 1e-9:
+        result.append([(x, y1), (x, y1 - TICK_LEN)])
+        x += TICK_STEP
+
+    # Left edge (x = x0): ticks extend rightward
+    y = y0
+    while y <= y1 + 1e-9:
+        result.append([(x0, y), (x0 + TICK_LEN, y)])
+        y += TICK_STEP
+
+    # Right edge (x = x1): ticks extend leftward
+    y = y0
+    while y <= y1 + 1e-9:
+        result.append([(x1, y), (x1 - TICK_LEN, y)])
+        y += TICK_STEP
+
+    # -- Page dimensions label at bottom centre --------------------------------
+    dims_text = f"{int(round(width_mm))} x {int(round(height_mm))} mm"
+    dims_polys, _dw, dims_h = _render_hershey_text(
+        dims_text,
+        "Simplex",
+        2.5,
+        letter_spacing_mm=0.0,
+        line_spacing=1.2,
+        text_align="Center",
+        stroke_repeat=1,
+    )
+    dims_cy = y1 - label_gap - dims_h / 2.0
+    for pl in dims_polys:
+        result.append([(px + page_cx, py + dims_cy) for px, py in pl])
+
+    return result
+
+
 def generate_circle_test(
     width_mm: float,
     height_mm: float,
