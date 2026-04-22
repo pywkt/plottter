@@ -9,13 +9,70 @@ from plottter.models.path import Polyline
 from plottter.generators.text import _render_hershey_text
 
 
+def _title(text: str, center_x: float, top_y: float, size_mm: float = 3.0) -> list[Polyline]:
+    """Render a centred Hershey Simplex title at the given position.
+
+    The title is horizontally centred on *center_x* with its visual top edge
+    at *top_y*.  Uses the actual glyph bounding box for accurate placement.
+    """
+    polylines, _width, _height = _render_hershey_text(
+        text,
+        "Simplex",
+        size_mm,
+        letter_spacing_mm=0.0,
+        line_spacing=1.2,
+        text_align="Center",
+        stroke_repeat=1,
+    )
+    if not polylines:
+        return []
+    all_pts = [pt for pl in polylines for pt in pl]
+    min_x = min(p[0] for p in all_pts)
+    max_x = max(p[0] for p in all_pts)
+    min_y = min(p[1] for p in all_pts)
+    bbox_cx = (min_x + max_x) / 2.0
+    dx = center_x - bbox_cx
+    dy = top_y - min_y
+    return [[(px + dx, py + dy) for px, py in pl] for pl in polylines]
+
+
+def _title_height(text: str, size_mm: float = 3.0) -> float:
+    """Return the visual height of a rendered Hershey Simplex string."""
+    polylines, _w, _h = _render_hershey_text(
+        text, "Simplex", size_mm,
+        letter_spacing_mm=0.0, line_spacing=1.2,
+        text_align="Center", stroke_repeat=1,
+    )
+    if not polylines:
+        return size_mm
+    all_pts = [pt for pl in polylines for pt in pl]
+    return max(p[1] for p in all_pts) - min(p[1] for p in all_pts)
+
+
+def _label_centered(text: str, cx: float, cy: float, size_mm: float = 3.0) -> list[Polyline]:
+    """Render a Hershey Simplex label centred on the point (cx, cy)."""
+    polylines, _w, _h = _render_hershey_text(
+        text, "Simplex", size_mm,
+        letter_spacing_mm=0.0, line_spacing=1.2,
+        text_align="Center", stroke_repeat=1,
+    )
+    if not polylines:
+        return []
+    all_pts = [pt for pl in polylines for pt in pl]
+    bb_cx = (min(p[0] for p in all_pts) + max(p[0] for p in all_pts)) / 2.0
+    bb_cy = (min(p[1] for p in all_pts) + max(p[1] for p in all_pts)) / 2.0
+    dx = cx - bb_cx
+    dy = cy - bb_cy
+    return [[(px + dx, py + dy) for px, py in pl] for pl in polylines]
+
+
 def _label(text: str, x: float, y: float, size_mm: float = 3.0) -> list[Polyline]:
     """Render a Hershey Simplex text label with its top-left corner at (x, y).
 
-    Wraps ``_render_hershey_text`` and translates the centred output so that
-    the top-left of the text block lands at the given coordinates.
+    Wraps ``_render_hershey_text`` and translates so that the actual visual
+    top-left of the rendered glyphs lands at the given coordinates.
     """
-    polylines, width, height = _render_hershey_text(
+    polylines, _width, _height = _render_hershey_text(
         text,
         "Simplex",
         size_mm,
@@ -24,10 +81,16 @@ def _label(text: str, x: float, y: float, size_mm: float = 3.0) -> list[Polyline
         text_align="Left",
         stroke_repeat=1,
     )
-    # _render_hershey_text centres the block at the origin.
-    # Shift so the top-left corner is at (x, y).
-    dx = x + width / 2.0
-    dy = y + height / 2.0
+    if not polylines:
+        return []
+    # Compute the actual bounding box of the rendered glyph points,
+    # since Hershey left-bearings cause strokes to extend beyond
+    # the reported advance width.
+    all_pts = [pt for pl in polylines for pt in pl]
+    min_x = min(p[0] for p in all_pts)
+    min_y = min(p[1] for p in all_pts)
+    dx = x - min_x
+    dy = y - min_y
     return [[(px + dx, py + dy) for px, py in pl] for pl in polylines]
 
 
@@ -65,21 +128,8 @@ def generate_line_spacing_test(
 
     # -- Title ---------------------------------------------------------------
     title_text = "LINE SPACING TEST"
-    title_size = 3.0
-    title_polys, title_w, title_h = _render_hershey_text(
-        title_text,
-        "Simplex",
-        title_size,
-        letter_spacing_mm=0.0,
-        line_spacing=1.2,
-        text_align="Center",
-        stroke_repeat=1,
-    )
-    # Centre the title horizontally; position it just inside the top margin.
-    title_cx = (x0 + x1) / 2.0
-    title_cy = y0 + title_h / 2.0
-    for pl in title_polys:
-        result.append([(px + title_cx, py + title_cy) for px, py in pl])
+    title_h = _title_height(title_text)
+    result.extend(_title(title_text, (x0 + x1) / 2.0, y0))
 
     # -- Columns -------------------------------------------------------------
     spacings = [2.0, 1.5, 1.0, 0.75, 0.5, 0.25]
@@ -158,19 +208,9 @@ def generate_paper_size_sheet(
     result.append([(x0, y1), (x0, y0)])
 
     # -- Title at page centre --------------------------------------------------
-    title_polys, _tw, title_h = _render_hershey_text(
-        "PAPER SIZE ALIGNMENT",
-        "Simplex",
-        3.0,
-        letter_spacing_mm=0.0,
-        line_spacing=1.2,
-        text_align="Center",
-        stroke_repeat=1,
-    )
-    title_cx = width_mm / 2.0
-    title_cy = height_mm / 2.0
-    for pl in title_polys:
-        result.append([(px + title_cx, py + title_cy) for px, py in pl])
+    psa_title = "PAPER SIZE ALIGNMENT"
+    psa_title_h = _title_height(psa_title)
+    result.extend(_title(psa_title, width_mm / 2.0, height_mm / 2.0 - psa_title_h / 2.0))
 
     # -- Paper size crosshairs -------------------------------------------------
     ARM = 8.0                               # crosshair arm length in mm
@@ -283,21 +323,7 @@ def generate_angle_test(
     result.append([(x0, y1), (x0, y0)])  # left
 
     # -- Title ---------------------------------------------------------------
-    title_text = "ANGLE TEST"
-    title_size = 3.0
-    title_polys, title_w, title_h = _render_hershey_text(
-        title_text,
-        "Simplex",
-        title_size,
-        letter_spacing_mm=0.0,
-        line_spacing=1.2,
-        text_align="Center",
-        stroke_repeat=1,
-    )
-    title_cx = (x0 + x1) / 2.0
-    title_cy = y0 + title_h / 2.0
-    for pl in title_polys:
-        result.append([(px + title_cx, py + title_cy) for px, py in pl])
+    result.extend(_title("ANGLE TEST", (x0 + x1) / 2.0, y0))
 
     # -- Centre of drawing area ----------------------------------------------
     cx = (x0 + x1) / 2.0
@@ -361,18 +387,7 @@ def generate_angle_test(
         ly = ey - dy * label_inset
 
         label_text = f"{deg}d"  # "d" for degrees (Hershey lacks the degree glyph)
-        label_polys, _lw, _lh = _render_hershey_text(
-            label_text,
-            "Simplex",
-            2.5,
-            letter_spacing_mm=0.0,
-            line_spacing=1.2,
-            text_align="Center",
-            stroke_repeat=1,
-        )
-        # label_polys are centred at origin; shift to (lx, ly).
-        for pl in label_polys:
-            result.append([(ppx + lx, ppy + ly) for ppx, ppy in pl])
+        result.extend(_label_centered(label_text, lx, ly, size_mm=2.5))
 
     return result
 
@@ -489,20 +504,8 @@ def generate_fill_density_test(
 
     # -- Title ------------------------------------------------------------------
     title_text = "FILL DENSITY TEST"
-    title_size = 3.0
-    title_polys, _tw, title_h = _render_hershey_text(
-        title_text,
-        "Simplex",
-        title_size,
-        letter_spacing_mm=0.0,
-        line_spacing=1.2,
-        text_align="Center",
-        stroke_repeat=1,
-    )
-    title_cx = (x0 + x1) / 2.0
-    title_cy = y0 + title_h / 2.0
-    for pl in title_polys:
-        result.append([(px + title_cx, py + title_cy) for px, py in pl])
+    title_h = _title_height(title_text)
+    result.extend(_title(title_text, (x0 + x1) / 2.0, y0))
 
     title_area_h = title_h + 3.0  # 3 mm padding below title
 
@@ -592,17 +595,7 @@ def generate_registration_test(
     result.append([(x0, y1), (x0, y0)])
 
     # -- Title "REGISTRATION TEST" at top centre --------------------------------
-    title_polys, _tw, title_h = _render_hershey_text(
-        "REGISTRATION TEST",
-        "Simplex",
-        3.0,
-        letter_spacing_mm=0.0,
-        line_spacing=1.2,
-        text_align="Center",
-        stroke_repeat=1,
-    )
-    for pl in title_polys:
-        result.append([(px + page_cx, py + y0 + title_h / 2.0) for px, py in pl])
+    result.extend(_title("REGISTRATION TEST", page_cx, y0))
 
     # -- Corner crosshairs (10 mm arms extending inward) -----------------------
     # (xc, yc, hdir, vdir): hdir/vdir = +1 → arm points right/down (inward)
@@ -627,26 +620,16 @@ def generate_registration_test(
         (x1, y1, -1, -1, f"{int(round(x1))}, {int(round(y1))}"),
     ]
     for xc, yc, hdir, vdir, text in corner_label_defs:
-        lpolys, lw, lh = _render_hershey_text(
-            text,
-            "Simplex",
-            label_size,
-            letter_spacing_mm=0.0,
-            line_spacing=1.2,
-            text_align="Center",
-            stroke_repeat=1,
-        )
-        # Centre the label inward from the corner crosshair, just past the arm end.
+        # Position the label inward from the corner, past the crosshair arm.
         if hdir > 0:
-            label_cx = xc + lw / 2.0 + label_gap
+            lx = xc + label_gap
         else:
-            label_cx = xc - lw / 2.0 - label_gap
+            lx = xc - label_gap
         if vdir > 0:
-            label_cy = yc + CORNER_ARM + label_gap + lh / 2.0
+            ly = yc + CORNER_ARM + label_gap
         else:
-            label_cy = yc - CORNER_ARM - label_gap - lh / 2.0
-        for pl in lpolys:
-            result.append([(px + label_cx, py + label_cy) for px, py in pl])
+            ly = yc - CORNER_ARM - label_gap
+        result.extend(_label_centered(text, lx, ly, size_mm=label_size))
 
     # -- Centre crosshair (20 mm arms) -----------------------------------------
     CENTER_ARM = 10.0  # half of 20 mm
@@ -661,18 +644,8 @@ def generate_registration_test(
     )
 
     # -- "CENTER" label below the centre crosshair -----------------------------
-    ctr_polys, _cw, ctr_h = _render_hershey_text(
-        "CENTER",
-        "Simplex",
-        3.0,
-        letter_spacing_mm=0.0,
-        line_spacing=1.2,
-        text_align="Center",
-        stroke_repeat=1,
-    )
-    ctr_label_cy = page_cy + CENTER_ARM + label_gap + ctr_h / 2.0
-    for pl in ctr_polys:
-        result.append([(px + page_cx, py + ctr_label_cy) for px, py in pl])
+    ctr_label_cy = page_cy + CENTER_ARM + label_gap + 1.5  # approx half text height
+    result.extend(_label_centered("CENTER", page_cx, ctr_label_cy))
 
     # -- Edge tick marks at every 10 mm ----------------------------------------
     TICK_LEN = 3.0
@@ -704,18 +677,14 @@ def generate_registration_test(
 
     # -- Page dimensions label at bottom centre --------------------------------
     dims_text = f"{int(round(width_mm))} x {int(round(height_mm))} mm"
-    dims_polys, _dw, dims_h = _render_hershey_text(
-        dims_text,
-        "Simplex",
-        2.5,
-        letter_spacing_mm=0.0,
-        line_spacing=1.2,
-        text_align="Center",
-        stroke_repeat=1,
-    )
-    dims_cy = y1 - label_gap - dims_h / 2.0
-    for pl in dims_polys:
-        result.append([(px + page_cx, py + dims_cy) for px, py in pl])
+    dims_cy = y1 - label_gap - 1.5  # approx half text height
+    result.extend(_label_centered(dims_text, page_cx, dims_cy, size_mm=2.5))
+
+    # Clamp all points to the drawing area.
+    result = [
+        [(max(x0, min(x1, px)), max(y0, min(y1, py))) for px, py in pl]
+        for pl in result
+    ]
 
     return result
 
@@ -727,9 +696,12 @@ def generate_circle_test(
 ) -> list[Polyline]:
     """Generate a circle and arc calibration test page.
 
-    Draws concentric circles centred on the page, a row of reference circles
-    (diameters 1, 2, 3, 5, 8, 10 mm) in the bottom-left quadrant, matching
-    quarter-arcs (0°–90°) in the bottom-right quadrant, a title, and a border.
+    The page is split into two regions:
+    - Upper 70%: concentric circles centred in this region.
+    - Lower 30%: reference circles (bottom-left) and quarter-arcs (bottom-right).
+
+    A horizontal divider line separates the two regions.  Sub-headings label
+    each section.  Reference diameters are 1, 2, 3, 5, 8, 10 mm.
 
     All output coordinates are in mm with (0, 0) at the top-left of the page.
 
@@ -756,26 +728,34 @@ def generate_circle_test(
 
     # -- Title ---------------------------------------------------------------
     title_text = "CIRCLE & ARC TEST"
-    title_size = 3.0
-    title_polys, title_w, title_h = _render_hershey_text(
-        title_text,
-        "Simplex",
-        title_size,
-        letter_spacing_mm=0.0,
-        line_spacing=1.2,
-        text_align="Center",
-        stroke_repeat=1,
-    )
-    title_cx = (x0 + x1) / 2.0
-    title_cy = y0 + title_h / 2.0
-    for pl in title_polys:
-        result.append([(px + title_cx, py + title_cy) for px, py in pl])
+    title_h = _title_height(title_text)
+    result.extend(_title(title_text, (x0 + x1) / 2.0, y0))
 
-    # -- Concentric circles --------------------------------------------------
+    # -- Region split: upper 70% for concentric circles, lower 30% for ref --
+    y_divider = y0 + 0.7 * draw_height
     page_cx = (x0 + x1) / 2.0
-    page_cy = (y0 + y1) / 2.0
+
+    # -- Horizontal divider line between regions ----------------------------
+    result.append([(x0, y_divider), (x1, y_divider)])
+
+    # -- "Concentric Circles" sub-heading in upper region -------------------
+    conc_sub_text = "Concentric Circles"
+    conc_sub_h = _title_height(conc_sub_text, size_mm=2.5)
+    conc_sub_y = y0 + title_h + 2.0
+    result.extend(_label(conc_sub_text, x0 + 3.0, conc_sub_y, size_mm=2.5))
+
+    # -- Concentric circles: fill the upper region below the sub-heading ----
+    conc_content_y0 = conc_sub_y + conc_sub_h + 2.0
+    conc_content_y1 = y_divider - 2.0
+    # Guard against degenerate canvases.
+    if conc_content_y1 > conc_content_y0:
+        circ_cy = (conc_content_y0 + conc_content_y1) / 2.0
+        max_radius = min(draw_width / 2.0, (conc_content_y1 - conc_content_y0) / 2.0)
+    else:
+        circ_cy = (y0 + y_divider) / 2.0
+        max_radius = min(draw_width, draw_height * 0.7) / 4.0
+
     num_rings = 18
-    max_radius = min(draw_width, draw_height) / 2.0
     ring_spacing = max_radius / num_rings
 
     # 73 points: every 5° from 0° to 360° inclusive (closes the circle).
@@ -784,44 +764,61 @@ def generate_circle_test(
     for i in range(1, num_rings + 1):
         r = i * ring_spacing
         result.append(
-            [(page_cx + r * math.cos(a), page_cy + r * math.sin(a)) for a in circle_angles]
+            [(page_cx + r * math.cos(a), circ_cy + r * math.sin(a)) for a in circle_angles]
         )
 
-    # -- Reference sizes -----------------------------------------------------
+    # -- Bottom region: reference circles (left) and quarter-arcs (right) ---
     diameters = [1, 2, 3, 5, 8, 10]
     gap_mm = 5.0
+    arc_angles = [math.radians(deg) for deg in range(0, 91, 5)]
 
-    # Vertical centre for the reference rows: mid-point of the bottom half,
-    # shifted slightly upward to leave room for labels below.
-    ref_cy = (page_cy + y1) / 2.0 - 5.0
+    # Sub-headings for the two bottom sections.
+    ref_sub_text = "Reference Circles"
+    arc_sub_text = "Quarter Arcs"
+    ref_sub_h = _title_height(ref_sub_text, size_mm=2.5)
+    ref_sub_y = y_divider + 2.0
+    result.extend(_label(ref_sub_text, x0 + gap_mm, ref_sub_y, size_mm=2.5))
+    result.extend(_label(arc_sub_text, page_cx + gap_mm, ref_sub_y, size_mm=2.5))
+
+    # Row centre y for reference items: below sub-heading, centred on largest circle.
+    max_ref_r = max(d / 2.0 for d in diameters)  # = 5.0 mm
+    ref_row_cy = ref_sub_y + ref_sub_h + 3.0 + max_ref_r
+
+    # -- Compute effective gap so reference circles fit in the left half -----
+    total_d = sum(diameters)
+    n = len(diameters)
+    left_half_w = page_cx - x0
+    # Total space used = n * gap + total_d; last gap is a right margin.
+    max_total_gap = left_half_w - total_d - gap_mm
+    effective_gap_circles = min(gap_mm, max_total_gap / n) if n > 0 else gap_mm
+    effective_gap_circles = max(1.0, effective_gap_circles)
 
     # -- Bottom-left: full circles at reference diameters -------------------
-    x_cursor = x0 + gap_mm
+    x_cursor = x0 + effective_gap_circles
     for d in diameters:
         r = d / 2.0
         circ_cx = x_cursor + r
         result.append(
-            [(circ_cx + r * math.cos(a), ref_cy + r * math.sin(a)) for a in circle_angles]
+            [(circ_cx + r * math.cos(a), ref_row_cy + r * math.sin(a)) for a in circle_angles]
         )
-        label_x = circ_cx - r
-        label_y = ref_cy + r + 1.5
-        result.extend(_label(f"{d}mm", label_x, label_y, size_mm=2.5))
-        x_cursor = circ_cx + r + gap_mm
+        result.extend(_label(f"{d}mm", circ_cx - r, ref_row_cy + r + 1.5, size_mm=2.5))
+        x_cursor = circ_cx + r + effective_gap_circles
+
+    # -- Compute effective gap so quarter-arcs fit in the right half ---------
+    right_half_w = x1 - page_cx
+    max_total_gap_arc = right_half_w - total_d - gap_mm
+    effective_gap_arcs = min(gap_mm, max_total_gap_arc / n) if n > 0 else gap_mm
+    effective_gap_arcs = max(1.0, effective_gap_arcs)
 
     # -- Bottom-right: quarter-arcs (0°–90°) at reference diameters ---------
-    # 19 points: every 5° from 0° to 90° inclusive.
-    arc_angles = [math.radians(deg) for deg in range(0, 91, 5)]
-
-    x_cursor = page_cx + gap_mm
+    x_cursor = page_cx + effective_gap_arcs
     for d in diameters:
         r = d / 2.0
         arc_cx = x_cursor + r
         result.append(
-            [(arc_cx + r * math.cos(a), ref_cy + r * math.sin(a)) for a in arc_angles]
+            [(arc_cx + r * math.cos(a), ref_row_cy + r * math.sin(a)) for a in arc_angles]
         )
-        label_x = arc_cx - r
-        label_y = ref_cy + r + 1.5
-        result.extend(_label(f"{d}mm", label_x, label_y, size_mm=2.5))
-        x_cursor = arc_cx + r + gap_mm
+        result.extend(_label(f"{d}mm", arc_cx - r, ref_row_cy + r + 1.5, size_mm=2.5))
+        x_cursor = arc_cx + r + effective_gap_arcs
 
     return result

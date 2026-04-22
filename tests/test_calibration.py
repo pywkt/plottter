@@ -175,17 +175,16 @@ def test_circle_test_points_within_bounds():
         assert y_min <= y <= y_max, f"y={y} outside [{y_min}, {y_max}]"
 
 
-# (c) The largest concentric circle's radius is approximately
-#     min(draw_width, draw_height) / 2.
+# (c) The largest concentric circle fits within the upper 70% region and uses
+#     most of that space (not trivially small).
 def test_circle_test_largest_concentric_radius():
     result = generate_circle_test(A4_W, A4_H, MARGIN)
     x0, y0 = MARGIN, MARGIN
     x1, y1 = A4_W - MARGIN, A4_H - MARGIN
     page_cx = (x0 + x1) / 2.0
-    page_cy = (y0 + y1) / 2.0
     draw_width = x1 - x0
     draw_height = y1 - y0
-    expected = min(draw_width, draw_height) / 2.0
+    y_divider = y0 + 0.7 * draw_height
 
     max_r = 0.0
     for pl in result:
@@ -193,19 +192,53 @@ def test_circle_test_largest_concentric_radius():
         if len(pl) < 70:
             continue
         # Exclude the closing duplicate point before computing the centroid.
-        # Use epsilon comparison: sin(2π) ≈ -2.45e-16 so exact equality fails.
         closing_matches = (
             abs(pl[0][0] - pl[-1][0]) < 1e-9 and abs(pl[0][1] - pl[-1][1]) < 1e-9
         )
         pts = pl[:-1] if closing_matches else pl
         cx = sum(x for x, _ in pts) / len(pts)
         cy = sum(y for _, y in pts) / len(pts)
-        # Keep only circles centred near the page centre.
-        if abs(cx - page_cx) < 2.0 and abs(cy - page_cy) < 2.0:
+        # Keep only circles centred near the horizontal page centre.
+        if abs(cx - page_cx) < 2.0:
             r = math.sqrt((pts[0][0] - cx) ** 2 + (pts[0][1] - cy) ** 2)
             max_r = max(max_r, r)
+            # Verify this circle stays within the upper region.
+            max_y = max(p[1] for p in pts)
+            assert max_y <= y_divider + TOLERANCE, (
+                f"Concentric circle (r={r:.2f}) extends below divider: "
+                f"max_y={max_y:.2f} > y_divider={y_divider:.2f}"
+            )
 
-    assert abs(max_r - expected) < 1.0, f"max concentric radius {max_r:.2f} != expected {expected:.2f}"
+    assert max_r > 0.0, "No concentric circles found"
+    # Should use a reasonable fraction of the upper region.
+    upper_height = y_divider - y0
+    upper_max_r = min(draw_width / 2.0, upper_height / 2.0)
+    assert max_r >= upper_max_r * 0.5, (
+        f"max concentric radius {max_r:.2f} too small "
+        f"(< 50% of upper region max {upper_max_r:.2f})"
+    )
+
+
+# (d-extra) No polyline from the reference section has points in the upper 70% region.
+def test_circle_test_reference_items_in_bottom_region():
+    result = generate_circle_test(A4_W, A4_H, MARGIN)
+    x0, y0 = MARGIN, MARGIN
+    x1, y1 = A4_W - MARGIN, A4_H - MARGIN
+    draw_height = y1 - y0
+    y_divider = y0 + 0.7 * draw_height
+
+    # Any polyline whose centroid y is strictly below the divider belongs to
+    # the reference section; none of its points should be above the divider.
+    for pl in result:
+        if not pl:
+            continue
+        centroid_y = sum(p[1] for p in pl) / len(pl)
+        if centroid_y > y_divider:
+            for _x, y in pl:
+                assert y >= y_divider - TOLERANCE, (
+                    f"Reference-section polyline has point above divider: "
+                    f"y={y:.2f} < y_divider={y_divider:.2f}"
+                )
 
 
 # (d) Works with both landscape and portrait canvas sizes.

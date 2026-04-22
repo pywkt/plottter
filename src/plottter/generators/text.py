@@ -207,7 +207,10 @@ def _render_hershey_text(
                     continue
                 polyline: Polyline = []
                 for hx, hy in stroke:
-                    x_mm = pen_x + hx * scale
+                    # Offset by left bearing so the character's left edge
+                    # aligns with pen_x (Hershey coords are relative to
+                    # the glyph center, not its left edge).
+                    x_mm = pen_x + (hx - left) * scale
                     y_mm = baseline_y - hy * scale  # flip y (Hershey y is up)
                     polyline.append((x_mm, y_mm))
                 for _ in range(stroke_repeat):
