@@ -4,7 +4,13 @@ import math
 
 import pytest
 
-from plottter.calibration import generate_angle_test, generate_circle_test, generate_line_spacing_test
+from plottter.calibration import (
+    _hatch_rect,
+    generate_angle_test,
+    generate_circle_test,
+    generate_fill_density_test,
+    generate_line_spacing_test,
+)
 from plottter.models.path import Polyline
 
 
@@ -182,3 +188,65 @@ def test_angle_test_canvas_sizes():
         for x, y in _all_points(result):
             assert x_min <= x <= x_max, f"{w}x{h}: x={x} outside [{x_min}, {x_max}]"
             assert y_min <= y <= y_max, f"{w}x{h}: y={y} outside [{y_min}, {y_max}]"
+
+
+# ---------------------------------------------------------------------------
+# generate_fill_density_test
+# ---------------------------------------------------------------------------
+
+
+# (a) Returns a non-empty list of polylines.
+def test_fill_density_returns_nonempty():
+    result = generate_fill_density_test(A4_W, A4_H, MARGIN)
+    assert isinstance(result, list)
+    assert len(result) > 0
+
+
+# (b) All points are within the drawing area bounds (with 1 mm tolerance).
+def test_fill_density_points_within_bounds():
+    result = generate_fill_density_test(A4_W, A4_H, MARGIN)
+    x_min = MARGIN - TOLERANCE
+    x_max = A4_W - MARGIN + TOLERANCE
+    y_min = MARGIN - TOLERANCE
+    y_max = A4_H - MARGIN + TOLERANCE
+    for x, y in _all_points(result):
+        assert x_min <= x <= x_max, f"x={x} outside [{x_min}, {x_max}]"
+        assert y_min <= y <= y_max, f"y={y} outside [{y_min}, {y_max}]"
+
+
+# (c) Produces at least 16 closed swatch outline rectangles (4×4 grid).
+def test_fill_density_at_least_16_swatches():
+    result = generate_fill_density_test(A4_W, A4_H, MARGIN)
+    # Swatch outlines are 5-point closed polylines (first point == last point).
+    closed_rects = [
+        pl for pl in result
+        if len(pl) == 5 and abs(pl[0][0] - pl[-1][0]) < 1e-9 and abs(pl[0][1] - pl[-1][1]) < 1e-9
+    ]
+    assert len(closed_rects) >= 16, f"Found only {len(closed_rects)} swatch outlines"
+
+
+# (d) Hatching at 0° produces only horizontal lines (both endpoints share the same y).
+def test_fill_density_zero_degree_horizontal():
+    result = generate_fill_density_test(A4_W, A4_H, MARGIN)
+    # All 2-point hatch lines are horizontal when angle=0 (dy = sin(0°) = 0).
+    # Collect lines where both y-values are essentially identical.
+    horizontal = [pl for pl in result if len(pl) == 2 and abs(pl[0][1] - pl[1][1]) < 1e-6]
+    assert len(horizontal) > 0, "Expected horizontal hatch lines from 0° swatches"
+    # Verify _hatch_rect at 0° produces only truly flat lines.
+    lines_0deg = _hatch_rect(0.0, 0.0, 40.0, 50.0, 0, 1.0)
+    assert len(lines_0deg) > 0
+    for pl in lines_0deg:
+        assert len(pl) == 2
+        assert abs(pl[0][1] - pl[1][1]) < 1e-9, f"Non-horizontal line at 0°: {pl}"
+
+
+# (e) Smaller spacing → more hatch lines per swatch than larger spacing.
+def test_fill_density_spacing_variation():
+    # Use _hatch_rect directly on a representative swatch size.
+    swatch_w, swatch_h = 40.0, 50.0
+    lines_coarse = _hatch_rect(0.0, 0.0, swatch_w, swatch_h, 0, 2.0)
+    lines_fine = _hatch_rect(0.0, 0.0, swatch_w, swatch_h, 0, 0.25)
+    assert len(lines_fine) > len(lines_coarse), (
+        f"Expected more lines at 0.25mm spacing ({len(lines_fine)}) "
+        f"than at 2.0mm spacing ({len(lines_coarse)})"
+    )
