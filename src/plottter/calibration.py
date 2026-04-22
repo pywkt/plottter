@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 from plottter.models.path import Polyline
 from plottter.generators.text import _render_hershey_text
 
@@ -105,5 +107,112 @@ def generate_line_spacing_test(
         while y <= lines_y1 + 1e-9:
             result.append([(col_x0, y), (col_x1, y)])
             y += spacing
+
+    return result
+
+
+def generate_circle_test(
+    width_mm: float,
+    height_mm: float,
+    margin_mm: float,
+) -> list[Polyline]:
+    """Generate a circle and arc calibration test page.
+
+    Draws concentric circles centred on the page, a row of reference circles
+    (diameters 1, 2, 3, 5, 8, 10 mm) in the bottom-left quadrant, matching
+    quarter-arcs (0°–90°) in the bottom-right quadrant, a title, and a border.
+
+    All output coordinates are in mm with (0, 0) at the top-left of the page.
+
+    Parameters
+    ----------
+    width_mm:   Page width in mm.
+    height_mm:  Page height in mm.
+    margin_mm:  Margin from each page edge to the drawing area.
+    """
+    x0 = margin_mm
+    y0 = margin_mm
+    x1 = width_mm - margin_mm
+    y1 = height_mm - margin_mm
+    draw_width = x1 - x0
+    draw_height = y1 - y0
+
+    result: list[Polyline] = []
+
+    # -- Border: 4 line segments connecting the corners ----------------------
+    result.append([(x0, y0), (x1, y0)])  # top
+    result.append([(x1, y0), (x1, y1)])  # right
+    result.append([(x1, y1), (x0, y1)])  # bottom
+    result.append([(x0, y1), (x0, y0)])  # left
+
+    # -- Title ---------------------------------------------------------------
+    title_text = "CIRCLE & ARC TEST"
+    title_size = 3.0
+    title_polys, title_w, title_h = _render_hershey_text(
+        title_text,
+        "Simplex",
+        title_size,
+        letter_spacing_mm=0.0,
+        line_spacing=1.2,
+        text_align="Center",
+        stroke_repeat=1,
+    )
+    title_cx = (x0 + x1) / 2.0
+    title_cy = y0 + title_h / 2.0
+    for pl in title_polys:
+        result.append([(px + title_cx, py + title_cy) for px, py in pl])
+
+    # -- Concentric circles --------------------------------------------------
+    page_cx = (x0 + x1) / 2.0
+    page_cy = (y0 + y1) / 2.0
+    num_rings = 18
+    max_radius = min(draw_width, draw_height) / 2.0
+    ring_spacing = max_radius / num_rings
+
+    # 73 points: every 5° from 0° to 360° inclusive (closes the circle).
+    circle_angles = [math.radians(deg) for deg in range(0, 361, 5)]
+
+    for i in range(1, num_rings + 1):
+        r = i * ring_spacing
+        result.append(
+            [(page_cx + r * math.cos(a), page_cy + r * math.sin(a)) for a in circle_angles]
+        )
+
+    # -- Reference sizes -----------------------------------------------------
+    diameters = [1, 2, 3, 5, 8, 10]
+    gap_mm = 5.0
+
+    # Vertical centre for the reference rows: mid-point of the bottom half,
+    # shifted slightly upward to leave room for labels below.
+    ref_cy = (page_cy + y1) / 2.0 - 5.0
+
+    # -- Bottom-left: full circles at reference diameters -------------------
+    x_cursor = x0 + gap_mm
+    for d in diameters:
+        r = d / 2.0
+        circ_cx = x_cursor + r
+        result.append(
+            [(circ_cx + r * math.cos(a), ref_cy + r * math.sin(a)) for a in circle_angles]
+        )
+        label_x = circ_cx - r
+        label_y = ref_cy + r + 1.5
+        result.extend(_label(f"{d}mm", label_x, label_y, size_mm=2.5))
+        x_cursor = circ_cx + r + gap_mm
+
+    # -- Bottom-right: quarter-arcs (0°–90°) at reference diameters ---------
+    # 19 points: every 5° from 0° to 90° inclusive.
+    arc_angles = [math.radians(deg) for deg in range(0, 91, 5)]
+
+    x_cursor = page_cx + gap_mm
+    for d in diameters:
+        r = d / 2.0
+        arc_cx = x_cursor + r
+        result.append(
+            [(arc_cx + r * math.cos(a), ref_cy + r * math.sin(a)) for a in arc_angles]
+        )
+        label_x = arc_cx - r
+        label_y = ref_cy + r + 1.5
+        result.extend(_label(f"{d}mm", label_x, label_y, size_mm=2.5))
+        x_cursor = arc_cx + r + gap_mm
 
     return result
