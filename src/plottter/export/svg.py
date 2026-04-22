@@ -120,7 +120,7 @@ def export_layer_svg(
         _add_registration_marks(dwg, canvas, style=reg_style)
 
     dwg.add(_layer_group(dwg, layer, stroke_width))
-    dwg.save()
+    dwg.save(pretty=True)
 
 
 def export_all_layers_svg(
@@ -158,7 +158,7 @@ def export_all_layers_svg(
         if reg_marks:
             _add_registration_marks(dwg, project.canvas, style=reg_style)
         dwg.add(_layer_group(dwg, layer, stroke_width))
-        dwg.save()
+        dwg.save(pretty=True)
 
 
 def export_combined_svg(
@@ -190,4 +190,4 @@ def export_combined_svg(
         if layer.visible:
             dwg.add(_layer_group(dwg, layer, stroke_width))
 
-    dwg.save()
+    dwg.save(pretty=True)
