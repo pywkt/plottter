@@ -699,11 +699,9 @@ def generate_registration_test(
         (x1, y1, -1, -1, f"{int(round(x1))}, {int(round(y1))}"),
     ]
     for xc, yc, hdir, vdir, text in corner_label_defs:
-        # Position the label inward from the corner, past the crosshair arm.
-        if hdir > 0:
-            lx = xc + label_gap
-        else:
-            lx = xc - label_gap
+        # Position the label centred at the end of the horizontal crosshair arm
+        # so the text stays well within the drawing area boundary.
+        lx = xc + hdir * CORNER_ARM
         if vdir > 0:
             ly = yc + CORNER_ARM + label_gap
         else:
