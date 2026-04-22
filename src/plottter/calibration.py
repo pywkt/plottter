@@ -162,6 +162,48 @@ def generate_line_spacing_test(
     return result
 
 
+def _dashed_rect(
+    x0: float,
+    y0: float,
+    x1: float,
+    y1: float,
+    dash_len: float = 2.0,
+    gap_len: float = 2.0,
+) -> list[Polyline]:
+    """Return a dashed rectangle outline as 2-point polyline segments.
+
+    Alternates between *dash_len* drawn segments and *gap_len* gaps.
+    All four edges are processed in order: top, right, bottom, left.
+    """
+    def _dash_edge(ax: float, ay: float, bx: float, by: float) -> list[Polyline]:
+        segs: list[Polyline] = []
+        dx, dy = bx - ax, by - ay
+        total = math.sqrt(dx * dx + dy * dy)
+        if total < 1e-9:
+            return segs
+        ux, uy = dx / total, dy / total
+        t = 0.0
+        drawing = True
+        while t < total - 1e-9:
+            step = dash_len if drawing else gap_len
+            t_end = min(t + step, total)
+            if drawing and t_end > t + 1e-9:
+                segs.append([
+                    (ax + t * ux, ay + t * uy),
+                    (ax + t_end * ux, ay + t_end * uy),
+                ])
+            t = t_end
+            drawing = not drawing
+        return segs
+
+    lines: list[Polyline] = []
+    lines.extend(_dash_edge(x0, y0, x1, y0))  # top
+    lines.extend(_dash_edge(x1, y0, x1, y1))  # right
+    lines.extend(_dash_edge(x1, y1, x0, y1))  # bottom
+    lines.extend(_dash_edge(x0, y1, x0, y0))  # left
+    return lines
+
+
 def generate_paper_size_sheet(
     width_mm: float,
     height_mm: float,
@@ -174,16 +216,21 @@ def generate_paper_size_sheet(
     align paper on the plotter bed.  Both portrait and landscape orientations
     are drawn when they fit.
 
-    For each fitting paper size the sheet includes:
+    Paper sizes are drawn largest-area first so that smaller sizes appear on
+    top of larger ones.  For each fitting paper size the sheet includes:
+
+    - A thin dashed rectangle outline (2 mm on / 2 mm off) showing the full
+      paper boundary.
     - Two 8 mm arms per corner (one horizontal, one vertical) extending
       *outward* from the paper rectangle so they remain visible when the
       actual paper is placed on top.
     - A 5 mm 45° diagonal tick mark at each corner, also pointing outward.
-    - A text label near the top-left corner crosshair with the preset name
-      and dimensions, e.g. "A4 (210 x 297)".
+    - A text label placed at the top-left corner, offset upward.  Overlapping
+      labels are pushed further upward.
 
-    A "PAPER SIZE ALIGNMENT" title is drawn at the centre of the page and a
-    border rectangle is drawn at the drawing-area edges.
+    A "PAPER SIZE ALIGNMENT" title is drawn at the top of the drawing area, a
+    border rectangle is drawn at the drawing-area edges, and a legend listing
+    all drawn paper sizes is placed in the bottom margin.
 
     All output coordinates are in mm with (0, 0) at the top-left of the page.
     All points are clamped to [0, width_mm] × [0, height_mm].
@@ -207,10 +254,9 @@ def generate_paper_size_sheet(
     result.append([(x1, y1), (x0, y1)])
     result.append([(x0, y1), (x0, y0)])
 
-    # -- Title at page centre --------------------------------------------------
+    # -- Title at top of drawing area ------------------------------------------
     psa_title = "PAPER SIZE ALIGNMENT"
-    psa_title_h = _title_height(psa_title)
-    result.extend(_title(psa_title, width_mm / 2.0, height_mm / 2.0 - psa_title_h / 2.0))
+    result.extend(_title(psa_title, (x0 + x1) / 2.0, y0))
 
     # -- Paper size crosshairs -------------------------------------------------
     ARM = 8.0                               # crosshair arm length in mm
@@ -237,12 +283,23 @@ def generate_paper_size_sheet(
                 seen.add(key)
                 entries.append((lw, lh, f"{name} ({int(round(lw))} x {int(round(lh))}) (landscape)"))
 
+    # Sort largest area first so smaller outlines are drawn on top of larger ones.
+    entries.sort(key=lambda e: e[0] * e[1], reverse=True)
+
+    # Estimated label bounding box (width × height) for collision avoidance.
+    LABEL_W = 50.0
+    LABEL_H = 5.0
+    label_bboxes: list[tuple[float, float, float, float]] = []  # (lx0, ly0, lx1, ly1)
+
     for pw, ph, label in entries:
         # Centre each paper size on the canvas
         px0 = (width_mm - pw) / 2.0
         py0 = (height_mm - ph) / 2.0
         px1 = px0 + pw
         py1 = py0 + ph
+
+        # Dashed rectangle outline showing the full paper boundary.
+        result.extend(_dashed_rect(px0, py0, px1, py1))
 
         # Corners: (corner_x, corner_y, h_dir, v_dir)
         #   h_dir: -1 = left (outward for left corners), +1 = right
@@ -271,12 +328,34 @@ def generate_paper_size_sheet(
             if abs(tx - cx) > 1e-9 or abs(ty - cy) > 1e-9:
                 result.append([(cx, cy), (tx, ty)])
 
-        # Label near top-left corner crosshair, offset outward (~2 mm diagonal).
-        # Position is clamped to stay on-page; add a small inset buffer because
-        # Hershey glyph strokes can extend slightly beyond their reported width.
-        label_x = max(2.0, px0 - 2.0)
-        label_y = max(2.0, py0 - 12.0)
-        result.extend(_label(label, label_x, label_y, size_mm=2.5))
+        # Label at the top-left corner of the paper size, offset upward.
+        # Resolve overlaps with previously placed labels by pushing further up.
+        lx = max(1.0, px0)
+        ly = py0 - LABEL_H - 1.0
+        for _ in range(20):  # at most 20 upward shifts to avoid infinite loop
+            conflict = False
+            for bx0, by0, bx1, by1 in label_bboxes:
+                if lx < bx1 and lx + LABEL_W > bx0 and ly < by1 and ly + LABEL_H > by0:
+                    ly = by0 - LABEL_H - 1.0
+                    conflict = True
+                    break
+            if not conflict:
+                break
+        label_bboxes.append((lx, ly, lx + LABEL_W, ly + LABEL_H))
+        result.extend(_label(label, max(1.0, lx), max(1.0, ly), size_mm=2.5))
+
+    # -- Legend in the bottom margin -------------------------------------------
+    if entries:
+        n_per_row = max(1, min(4, int((x1 - x0) / 50.0)))
+        col_w = (x1 - x0) / n_per_row
+        row_h = 3.5
+        legend_y = y1 + 2.0
+        for i, (pw, ph, lbl) in enumerate(entries):
+            col = i % n_per_row
+            row = i // n_per_row
+            lx = x0 + col * col_w
+            ly = legend_y + row * row_h
+            result.extend(_label(lbl, lx, ly, size_mm=2.0))
 
     # Clamp every point to the physical page bounds to guard against
     # sub-millimetre Hershey glyph overhangs or floating-point drift.

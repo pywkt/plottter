@@ -5,6 +5,7 @@ import math
 import pytest
 
 from plottter.calibration import (
+    _dashed_rect,
     _hatch_rect,
     generate_angle_test,
     generate_circle_test,
@@ -545,3 +546,72 @@ def test_paper_size_sheet_labels_present():
     assert len(result) > 200, (
         f"Expected >200 polylines (labels included), got {len(result)}"
     )
+
+
+# (f) Paper sizes are drawn largest-area first.
+# A3 portrait (297×420, area=124 740) should appear before A4 portrait
+# (210×297, area=62 370) in the output.
+def test_paper_size_sheet_sorted_by_area():
+    result = generate_paper_size_sheet(A2_W, A2_H, MARGIN)
+    # Top-left corners of each paper size centred on the A2 canvas.
+    a3_px0 = (A2_W - 297.0) / 2.0   # 61.5
+    a3_py0 = (A2_H - 420.0) / 2.0   # 87.0
+    a4_px0 = (A2_W - 210.0) / 2.0   # 105.0
+    a4_py0 = (A2_H - 297.0) / 2.0   # 148.5
+
+    def first_index_near(cx: float, cy: float) -> int | None:
+        """Return the index of the first 2-point polyline starting near (cx, cy)."""
+        for idx, pl in enumerate(result):
+            if (
+                len(pl) == 2
+                and abs(pl[0][0] - cx) < TOLERANCE
+                and abs(pl[0][1] - cy) < TOLERANCE
+            ):
+                return idx
+        return None
+
+    idx_a3 = first_index_near(a3_px0, a3_py0)
+    idx_a4 = first_index_near(a4_px0, a4_py0)
+    assert idx_a3 is not None, "A3 top-left corner not found in output"
+    assert idx_a4 is not None, "A4 top-left corner not found in output"
+    assert idx_a3 < idx_a4, (
+        f"A3 (index {idx_a3}) should appear before A4 (index {idx_a4}) "
+        f"because A3 has larger area"
+    )
+
+
+# (g) Dashed rectangle outlines are present — verified by counting short
+# 2-point polyline segments with length ≈ 2 mm (the default dash_len).
+def test_paper_size_sheet_dashed_rects_present():
+    result = generate_paper_size_sheet(A2_W, A2_H, MARGIN)
+    dash_segs = [
+        pl for pl in result
+        if len(pl) == 2
+        and abs(
+            math.sqrt(
+                (pl[1][0] - pl[0][0]) ** 2 + (pl[1][1] - pl[0][1]) ** 2
+            ) - 2.0
+        ) < 0.5
+    ]
+    assert len(dash_segs) > 100, (
+        f"Expected >100 dash segments (≈2 mm each) for dashed rects, "
+        f"got {len(dash_segs)}"
+    )
+
+
+# (h) _dashed_rect helper produces expected segment structure.
+def test_dashed_rect_structure():
+    # A 20×10 mm rectangle with default 2 mm dash / 2 mm gap.
+    # Perimeter = 2*(20+10) = 60 mm; with 4 mm cycle → 15 dashes.
+    segs = _dashed_rect(0.0, 0.0, 20.0, 10.0)
+    # All segments must be 2-point polylines.
+    for seg in segs:
+        assert len(seg) == 2, f"Segment has {len(seg)} points, expected 2"
+    # Each segment length should be ≤ dash_len (2.0 mm).
+    for seg in segs:
+        length = math.sqrt(
+            (seg[1][0] - seg[0][0]) ** 2 + (seg[1][1] - seg[0][1]) ** 2
+        )
+        assert length <= 2.0 + 1e-9, f"Dash segment too long: {length:.4f} mm"
+    # Should produce a reasonable number of segments (around 15 for this rect).
+    assert len(segs) >= 12, f"Too few dash segments: {len(segs)}"

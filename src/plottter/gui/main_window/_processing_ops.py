@@ -314,6 +314,7 @@ class _ProcessingOpsMixin:
         layer = Layer(name=plot_type, color="#000000")
         self._controller.add_layer(layer)
         self._controller.set_layer_paths(layer.id, paths, "Calibration Plot")
+        self._controller.set_active_layer(layer.id)
 
     def _on_plot_axidraw(self) -> None:
         """Open AxiDraw plot dialog for direct USB plotting."""
