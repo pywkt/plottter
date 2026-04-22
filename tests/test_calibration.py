@@ -10,6 +10,7 @@ from plottter.calibration import (
     generate_circle_test,
     generate_fill_density_test,
     generate_line_spacing_test,
+    generate_paper_size_sheet,
     generate_registration_test,
 )
 from plottter.models.path import Polyline
@@ -354,3 +355,77 @@ def test_registration_test_different_sizes():
         for x, y in _all_points(result):
             assert x_min <= x <= x_max, f"{w}x{h}: x={x} outside [{x_min}, {x_max}]"
             assert y_min <= y <= y_max, f"{w}x{h}: y={y} outside [{y_min}, {y_max}]"
+
+
+# ---------------------------------------------------------------------------
+# generate_paper_size_sheet
+# ---------------------------------------------------------------------------
+
+# A2: 420 x 594 mm
+A2_W, A2_H = 420.0, 594.0
+
+
+# (a) A2 canvas returns non-empty polylines (A2 fits A3, A4, Letter, Legal).
+def test_paper_size_sheet_a2_nonempty():
+    result = generate_paper_size_sheet(A2_W, A2_H, MARGIN)
+    assert isinstance(result, list)
+    assert len(result) > 0
+
+
+# (b) A4 canvas: only paper sizes that fit within 210×297 are drawn.
+# From PAPER_PRESETS only A4 portrait (210×297) satisfies both dims ≤ canvas.
+# A2 canvas fits many more sizes, so it produces more polylines.
+def test_paper_size_sheet_a4_canvas_only_fitting():
+    result_a4 = generate_paper_size_sheet(A4_W, A4_H, MARGIN)
+    result_a2 = generate_paper_size_sheet(A2_W, A2_H, MARGIN)
+    assert len(result_a4) > 0
+    # A2 canvas contains more fitting paper sizes → more polylines
+    assert len(result_a2) > len(result_a4), (
+        f"A2 canvas ({len(result_a2)} polylines) should produce more than "
+        f"A4 canvas ({len(result_a4)} polylines)"
+    )
+    # No crosshair arm should start at negative coordinates on A4 canvas.
+    for pl in result_a4:
+        if len(pl) == 2:
+            x, y = pl[0]
+            assert x >= -TOLERANCE, f"Crosshair start x={x:.2f} is off-page"
+            assert y >= -TOLERANCE, f"Crosshair start y={y:.2f} is off-page"
+
+
+# (c) Crosshair lines start at paper boundary corners (or just outside).
+def test_paper_size_sheet_crosshair_positions():
+    result = generate_paper_size_sheet(A2_W, A2_H, MARGIN)
+    # A4 portrait centred on A2 canvas
+    a4_px0 = (A2_W - A4_W) / 2.0   # 105.0
+    a4_py0 = (A2_H - A4_H) / 2.0   # 148.5
+    a4_px1 = a4_px0 + A4_W          # 315.0
+    a4_py1 = a4_py0 + A4_H          # 445.5
+    corners = [(a4_px0, a4_py0), (a4_px1, a4_py0), (a4_px0, a4_py1), (a4_px1, a4_py1)]
+    for cx, cy in corners:
+        found = any(
+            len(pl) == 2
+            and abs(pl[0][0] - cx) < TOLERANCE
+            and abs(pl[0][1] - cy) < TOLERANCE
+            for pl in result
+        )
+        assert found, f"No crosshair line starting at A4 corner ({cx:.1f}, {cy:.1f})"
+
+
+# (d) All points are within canvas dimensions [0, width] × [0, height].
+# Crosshairs extend into the margin area but stay on the physical page.
+def test_paper_size_sheet_points_within_canvas():
+    result = generate_paper_size_sheet(A2_W, A2_H, MARGIN)
+    for x, y in _all_points(result):
+        assert 0.0 <= x <= A2_W, f"x={x:.3f} outside [0, {A2_W}]"
+        assert 0.0 <= y <= A2_H, f"y={y:.3f} outside [0, {A2_H}]"
+
+
+# (e) Labels with paper size names are rendered (verified by polyline count).
+# Structural elements alone (border, title, ~9 paper entries × 12 lines)
+# give roughly 140 polylines; each label adds ~25+ polylines for a total
+# well above 200 when labels are present.
+def test_paper_size_sheet_labels_present():
+    result = generate_paper_size_sheet(A2_W, A2_H, MARGIN)
+    assert len(result) > 200, (
+        f"Expected >200 polylines (labels included), got {len(result)}"
+    )

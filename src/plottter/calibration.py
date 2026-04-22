@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 
+from plottter.models.canvas import PAPER_PRESETS
 from plottter.models.path import Polyline
 from plottter.generators.text import _render_hershey_text
 
@@ -107,6 +108,142 @@ def generate_line_spacing_test(
         while y <= lines_y1 + 1e-9:
             result.append([(col_x0, y), (col_x1, y)])
             y += spacing
+
+    return result
+
+
+def generate_paper_size_sheet(
+    width_mm: float,
+    height_mm: float,
+    margin_mm: float,
+) -> list[Polyline]:
+    """Generate a paper size alignment underlay sheet.
+
+    Draws crosshair marks at the corners of each paper size from
+    ``PAPER_PRESETS`` that fits within the canvas, so the user can visually
+    align paper on the plotter bed.  Both portrait and landscape orientations
+    are drawn when they fit.
+
+    For each fitting paper size the sheet includes:
+    - Two 8 mm arms per corner (one horizontal, one vertical) extending
+      *outward* from the paper rectangle so they remain visible when the
+      actual paper is placed on top.
+    - A 5 mm 45° diagonal tick mark at each corner, also pointing outward.
+    - A text label near the top-left corner crosshair with the preset name
+      and dimensions, e.g. "A4 (210 x 297)".
+
+    A "PAPER SIZE ALIGNMENT" title is drawn at the centre of the page and a
+    border rectangle is drawn at the drawing-area edges.
+
+    All output coordinates are in mm with (0, 0) at the top-left of the page.
+    All points are clamped to [0, width_mm] × [0, height_mm].
+
+    Parameters
+    ----------
+    width_mm:   Page width in mm.
+    height_mm:  Page height in mm.
+    margin_mm:  Margin from each page edge to the drawing area.
+    """
+    x0 = margin_mm
+    y0 = margin_mm
+    x1 = width_mm - margin_mm
+    y1 = height_mm - margin_mm
+
+    result: list[Polyline] = []
+
+    # -- Border ----------------------------------------------------------------
+    result.append([(x0, y0), (x1, y0)])
+    result.append([(x1, y0), (x1, y1)])
+    result.append([(x1, y1), (x0, y1)])
+    result.append([(x0, y1), (x0, y0)])
+
+    # -- Title at page centre --------------------------------------------------
+    title_polys, _tw, title_h = _render_hershey_text(
+        "PAPER SIZE ALIGNMENT",
+        "Simplex",
+        3.0,
+        letter_spacing_mm=0.0,
+        line_spacing=1.2,
+        text_align="Center",
+        stroke_repeat=1,
+    )
+    title_cx = width_mm / 2.0
+    title_cy = height_mm / 2.0
+    for pl in title_polys:
+        result.append([(px + title_cx, py + title_cy) for px, py in pl])
+
+    # -- Paper size crosshairs -------------------------------------------------
+    ARM = 8.0                               # crosshair arm length in mm
+    TICK_LEN = 5.0                          # diagonal tick length in mm
+    TICK_C = TICK_LEN / math.sqrt(2.0)     # x and y component of 45° tick
+
+    # Collect (paper_w, paper_h, label) entries, avoiding duplicate sizes.
+    seen: set[tuple[float, float]] = set()
+    entries: list[tuple[float, float, str]] = []
+
+    for name, (pw, ph) in PAPER_PRESETS.items():
+        # Portrait orientation
+        if pw <= width_mm and ph <= height_mm:
+            key = (pw, ph)
+            if key not in seen:
+                seen.add(key)
+                entries.append((pw, ph, f"{name} ({int(round(pw))} x {int(round(ph))})"))
+
+        # Landscape orientation (swap); skip if square or already seen
+        lw, lh = ph, pw
+        if lw != pw and lw <= width_mm and lh <= height_mm:
+            key = (lw, lh)
+            if key not in seen:
+                seen.add(key)
+                entries.append((lw, lh, f"{name} ({int(round(lw))} x {int(round(lh))}) (landscape)"))
+
+    for pw, ph, label in entries:
+        # Centre each paper size on the canvas
+        px0 = (width_mm - pw) / 2.0
+        py0 = (height_mm - ph) / 2.0
+        px1 = px0 + pw
+        py1 = py0 + ph
+
+        # Corners: (corner_x, corner_y, h_dir, v_dir)
+        #   h_dir: -1 = left (outward for left corners), +1 = right
+        #   v_dir: -1 = up   (outward for top corners),  +1 = down
+        corners = [
+            (px0, py0, -1.0, -1.0),  # top-left:     go left and up
+            (px1, py0, +1.0, -1.0),  # top-right:    go right and up
+            (px0, py1, -1.0, +1.0),  # bottom-left:  go left and down
+            (px1, py1, +1.0, +1.0),  # bottom-right: go right and down
+        ]
+
+        for cx, cy, hdir, vdir in corners:
+            # Horizontal arm (clamped to canvas)
+            hx = max(0.0, min(width_mm, cx + hdir * ARM))
+            if abs(hx - cx) > 1e-9:
+                result.append([(cx, cy), (hx, cy)])
+
+            # Vertical arm (clamped to canvas)
+            vy = max(0.0, min(height_mm, cy + vdir * ARM))
+            if abs(vy - cy) > 1e-9:
+                result.append([(cx, cy), (cx, vy)])
+
+            # 45° diagonal tick (clamped to canvas)
+            tx = max(0.0, min(width_mm, cx + hdir * TICK_C))
+            ty = max(0.0, min(height_mm, cy + vdir * TICK_C))
+            if abs(tx - cx) > 1e-9 or abs(ty - cy) > 1e-9:
+                result.append([(cx, cy), (tx, ty)])
+
+        # Label near top-left corner crosshair, offset outward (~2 mm diagonal).
+        # Position is clamped to stay on-page; add a small inset buffer because
+        # Hershey glyph strokes can extend slightly beyond their reported width.
+        label_x = max(2.0, px0 - 2.0)
+        label_y = max(2.0, py0 - 12.0)
+        result.extend(_label(label, label_x, label_y, size_mm=2.5))
+
+    # Clamp every point to the physical page bounds to guard against
+    # sub-millimetre Hershey glyph overhangs or floating-point drift.
+    result = [
+        [(max(0.0, min(width_mm, px)), max(0.0, min(height_mm, py))) for px, py in pl]
+        for pl in result
+    ]
 
     return result
 
