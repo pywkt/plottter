@@ -290,10 +290,6 @@ class _MenusMixin:
                 "Registration Test",
                 "Test registration accuracy — border, corner crosshairs, centre crosshair with circle, and edge tick marks",
             ),
-            (
-                "Paper Size Alignment",
-                "Draw alignment crosshairs for standard paper sizes — use as a master sheet under your plotting paper",
-            ),
         ]
         for _plot_type, _tooltip in _calibration_actions:
             _act = QAction(_plot_type, self)
@@ -302,6 +298,29 @@ class _MenusMixin:
                 lambda checked, t=_plot_type: self._on_calibration_plot(t)
             )
             calib_menu.addAction(_act)
+
+        # Paper Size Alignment submenu with individual sizes
+        from plottter.models.canvas import PAPER_PRESETS
+        paper_menu = calib_menu.addMenu("Paper Size Alignment")
+        paper_menu.setToolTip("Draw alignment crosshairs for paper sizes — use as a master sheet under your plotting paper")
+
+        _act_all = QAction("All Sizes", self)
+        _act_all.setToolTip("Draw alignment outlines for all paper sizes that fit the canvas")
+        _act_all.triggered.connect(
+            lambda checked: self._on_calibration_plot("Paper Size Alignment")
+        )
+        paper_menu.addAction(_act_all)
+        paper_menu.addSeparator()
+
+        for _paper_name in PAPER_PRESETS:
+            _act_paper = QAction(_paper_name, self)
+            _act_paper.setToolTip(f"Draw alignment outline for {_paper_name} paper")
+            _act_paper.triggered.connect(
+                lambda checked, n=_paper_name: self._on_calibration_plot(
+                    f"Paper Size: {n}"
+                )
+            )
+            paper_menu.addAction(_act_paper)
 
         self._act_plot_axidraw = QAction("Plot with AxiDraw…", self)
         self._act_plot_axidraw.setToolTip("Send the current project directly to an AxiDraw plotter via USB")

@@ -304,12 +304,20 @@ class _ProcessingOpsMixin:
             "Paper Size Alignment": generate_paper_size_sheet,
         }
 
-        gen_fn = _generators.get(plot_type)
-        if gen_fn is None:
-            return
-
         canvas = self._controller.current_project.canvas
-        paths = gen_fn(canvas.width_mm, canvas.height_mm, canvas.margin_mm)
+
+        # Handle individual paper size requests ("Paper Size: A3", etc.)
+        if plot_type.startswith("Paper Size: "):
+            paper_name = plot_type.removeprefix("Paper Size: ")
+            paths = generate_paper_size_sheet(
+                canvas.width_mm, canvas.height_mm, canvas.margin_mm,
+                paper_name=paper_name,
+            )
+        else:
+            gen_fn = _generators.get(plot_type)
+            if gen_fn is None:
+                return
+            paths = gen_fn(canvas.width_mm, canvas.height_mm, canvas.margin_mm)
 
         layer = Layer(name=plot_type, color="#000000")
         self._controller.add_layer(layer)

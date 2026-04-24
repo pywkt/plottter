@@ -782,7 +782,7 @@ class TextGenerator(Generator):
                 min=-2.0,
                 max=10.0,
                 step=0.1,
-                default=0.0,
+                default=0.5,
                 description="Extra space between characters. Negative = tighter.",
             ),
             FloatParam(

@@ -580,23 +580,22 @@ def test_paper_size_sheet_sorted_by_area():
     )
 
 
-# (g) Dashed rectangle outlines are present — verified by counting short
-# 2-point polyline segments with length ≈ 2 mm (the default dash_len).
-def test_paper_size_sheet_dashed_rects_present():
+# (g) Solid rectangle outlines are present for each paper size.
+def test_paper_size_sheet_solid_rects_present():
     result = generate_paper_size_sheet(A2_W, A2_H, MARGIN)
-    dash_segs = [
-        pl for pl in result
-        if len(pl) == 2
-        and abs(
-            math.sqrt(
-                (pl[1][0] - pl[0][0]) ** 2 + (pl[1][1] - pl[0][1]) ** 2
-            ) - 2.0
-        ) < 0.5
-    ]
-    assert len(dash_segs) > 100, (
-        f"Expected >100 dash segments (≈2 mm each) for dashed rects, "
-        f"got {len(dash_segs)}"
+    # Each paper size gets 4 solid rectangle edges (2-point polylines).
+    edge_segs = [pl for pl in result if len(pl) == 2]
+    assert len(edge_segs) >= 16, (
+        f"Expected >=16 edge segments (4 per paper size), got {len(edge_segs)}"
     )
+
+
+# (g2) Single paper size filtering works.
+def test_paper_size_sheet_single_paper():
+    result = generate_paper_size_sheet(A2_W, A2_H, MARGIN, paper_name="A4")
+    assert len(result) > 0, "Single paper size produced no output"
+    result_all = generate_paper_size_sheet(A2_W, A2_H, MARGIN)
+    assert len(result) < len(result_all), "Single paper should have fewer paths than all"
 
 
 # (h) _dashed_rect helper produces expected segment structure.

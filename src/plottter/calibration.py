@@ -19,7 +19,7 @@ def _title(text: str, center_x: float, top_y: float, size_mm: float = 3.0) -> li
         text,
         "Simplex",
         size_mm,
-        letter_spacing_mm=0.0,
+        letter_spacing_mm=size_mm * 0.15,
         line_spacing=1.2,
         text_align="Center",
         stroke_repeat=1,
@@ -40,7 +40,7 @@ def _title_height(text: str, size_mm: float = 3.0) -> float:
     """Return the visual height of a rendered Hershey Simplex string."""
     polylines, _w, _h = _render_hershey_text(
         text, "Simplex", size_mm,
-        letter_spacing_mm=0.0, line_spacing=1.2,
+        letter_spacing_mm=size_mm * 0.15, line_spacing=1.2,
         text_align="Center", stroke_repeat=1,
     )
     if not polylines:
@@ -53,7 +53,7 @@ def _label_centered(text: str, cx: float, cy: float, size_mm: float = 3.0) -> li
     """Render a Hershey Simplex label centred on the point (cx, cy)."""
     polylines, _w, _h = _render_hershey_text(
         text, "Simplex", size_mm,
-        letter_spacing_mm=0.0, line_spacing=1.2,
+        letter_spacing_mm=size_mm * 0.15, line_spacing=1.2,
         text_align="Center", stroke_repeat=1,
     )
     if not polylines:
@@ -76,7 +76,7 @@ def _label(text: str, x: float, y: float, size_mm: float = 3.0) -> list[Polyline
         text,
         "Simplex",
         size_mm,
-        letter_spacing_mm=0.0,
+        letter_spacing_mm=size_mm * 0.15,
         line_spacing=1.2,
         text_align="Left",
         stroke_repeat=1,
@@ -208,6 +208,7 @@ def generate_paper_size_sheet(
     width_mm: float,
     height_mm: float,
     margin_mm: float,
+    paper_name: str | None = None,
 ) -> list[Polyline]:
     """Generate a paper size alignment underlay sheet.
 
@@ -216,30 +217,13 @@ def generate_paper_size_sheet(
     align paper on the plotter bed.  Both portrait and landscape orientations
     are drawn when they fit.
 
-    Paper sizes are drawn largest-area first so that smaller sizes appear on
-    top of larger ones.  For each fitting paper size the sheet includes:
-
-    - A thin dashed rectangle outline (2 mm on / 2 mm off) showing the full
-      paper boundary.
-    - Two 8 mm arms per corner (one horizontal, one vertical) extending
-      *outward* from the paper rectangle so they remain visible when the
-      actual paper is placed on top.
-    - A 5 mm 45° diagonal tick mark at each corner, also pointing outward.
-    - A text label placed at the top-left corner, offset upward.  Overlapping
-      labels are pushed further upward.
-
-    A "PAPER SIZE ALIGNMENT" title is drawn at the top of the drawing area, a
-    border rectangle is drawn at the drawing-area edges, and a legend listing
-    all drawn paper sizes is placed in the bottom margin.
-
-    All output coordinates are in mm with (0, 0) at the top-left of the page.
-    All points are clamped to [0, width_mm] × [0, height_mm].
-
     Parameters
     ----------
     width_mm:   Page width in mm.
     height_mm:  Page height in mm.
     margin_mm:  Margin from each page edge to the drawing area.
+    paper_name: If given, only draw this paper size (e.g. ``"A3"``).
+                If ``None``, draw all fitting paper sizes.
     """
     x0 = margin_mm
     y0 = margin_mm
@@ -247,16 +231,6 @@ def generate_paper_size_sheet(
     y1 = height_mm - margin_mm
 
     result: list[Polyline] = []
-
-    # -- Border ----------------------------------------------------------------
-    result.append([(x0, y0), (x1, y0)])
-    result.append([(x1, y0), (x1, y1)])
-    result.append([(x1, y1), (x0, y1)])
-    result.append([(x0, y1), (x0, y0)])
-
-    # -- Title at top of drawing area ------------------------------------------
-    psa_title = "PAPER SIZE ALIGNMENT"
-    result.extend(_title(psa_title, (x0 + x1) / 2.0, y0))
 
     # -- Paper size crosshairs -------------------------------------------------
     ARM = 8.0                               # crosshair arm length in mm
@@ -267,7 +241,14 @@ def generate_paper_size_sheet(
     seen: set[tuple[float, float]] = set()
     entries: list[tuple[float, float, str]] = []
 
-    for name, (pw, ph) in PAPER_PRESETS.items():
+    presets_to_check = PAPER_PRESETS.items()
+    if paper_name is not None:
+        # Filter to just the requested paper size
+        presets_to_check = [
+            (n, dims) for n, dims in PAPER_PRESETS.items() if n == paper_name
+        ]
+
+    for name, (pw, ph) in presets_to_check:
         # Portrait orientation
         if pw <= width_mm and ph <= height_mm:
             key = (pw, ph)
@@ -298,8 +279,11 @@ def generate_paper_size_sheet(
         px1 = px0 + pw
         py1 = py0 + ph
 
-        # Dashed rectangle outline showing the full paper boundary.
-        result.extend(_dashed_rect(px0, py0, px1, py1))
+        # Solid rectangle outline showing the full paper boundary.
+        result.append([(px0, py0), (px1, py0)])  # top
+        result.append([(px1, py0), (px1, py1)])  # right
+        result.append([(px1, py1), (px0, py1)])  # bottom
+        result.append([(px0, py1), (px0, py0)])  # left
 
         # Corners: (corner_x, corner_y, h_dir, v_dir)
         #   h_dir: -1 = left (outward for left corners), +1 = right
@@ -343,19 +327,6 @@ def generate_paper_size_sheet(
                 break
         label_bboxes.append((lx, ly, lx + LABEL_W, ly + LABEL_H))
         result.extend(_label(label, max(1.0, lx), max(1.0, ly), size_mm=2.5))
-
-    # -- Legend in the bottom margin -------------------------------------------
-    if entries:
-        n_per_row = max(1, min(4, int((x1 - x0) / 50.0)))
-        col_w = (x1 - x0) / n_per_row
-        row_h = 3.5
-        legend_y = y1 + 2.0
-        for i, (pw, ph, lbl) in enumerate(entries):
-            col = i % n_per_row
-            row = i // n_per_row
-            lx = x0 + col * col_w
-            ly = legend_y + row * row_h
-            result.extend(_label(lbl, lx, ly, size_mm=2.0))
 
     # Clamp every point to the physical page bounds to guard against
     # sub-millimetre Hershey glyph overhangs or floating-point drift.
