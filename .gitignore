@@ -20,6 +20,7 @@ IMPLEMENTATION_PLAN.md
 CLAUDE.md
 TASK.md
 .loop_state
+docs/plan-archive/
 
 # Dev loop prompts
 prompts/
