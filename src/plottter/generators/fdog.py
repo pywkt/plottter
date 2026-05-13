@@ -110,7 +110,7 @@ def _fdog(
     etf_iterations: int,
     fdog_iterations: int,
     phi: float = 200.0,
-    epsilon: float = -0.1,
+    epsilon: float = -0.01,
 ) -> np.ndarray:
     """Apply the full FDoG pipeline to a float32 grayscale image.
 
@@ -136,7 +136,11 @@ def _fdog(
     etf_iterations:  Number of ETF refinement passes (3–5 recommended).
     fdog_iterations: Number of FDoG filter + threshold passes (1–3 typical).
     phi:             XDoG soft-threshold sharpness; higher → crisper edges.
-    epsilon:         Black-level offset; negative allows softer dark regions.
+    epsilon:         Edge threshold. At 0 all DoG zero-crossings become edges;
+                     more negative values require a stronger negative DoG
+                     response (fewer, higher-contrast edges only).  Must be
+                     above roughly -0.05 for small sigma_c (< 1.0) where the
+                     DoG peak amplitude is naturally smaller.
 
     Returns
     -------
