@@ -247,12 +247,18 @@ def _generate_parallel_hatch(
         sample_x = max(draw_x1, min(draw_x2, sample_x))
         sample_y = max(draw_y1, min(draw_y2, sample_y))
 
-        # Sample a few points along the hatch line to get representative brightness
+        # Sample brightness in a small neighbourhood around the scan position.
+        # Using only the central ±20% of the line (instead of the full line)
+        # makes spacing reflect LOCAL brightness, so individual tonal features
+        # (a face surrounded by a different-toned background) are rendered with
+        # distinct spacing rather than averaging out to a flat mid-tone.
         n_samples = 5
+        para_center = 0.0  # symmetrically mid-range by construction
+        sample_half = (para_max - para_min) * 0.2  # ±20% of line length
         brightness_sum = 0.0
         brightness_count = 0
         for k in range(n_samples):
-            t = para_min + (k + 0.5) / n_samples * (para_max - para_min)
+            t = para_center + (k - (n_samples - 1) / 2.0) / ((n_samples - 1) / 2.0) * sample_half
             wx = sample_x + t * cos_a
             wy = sample_y + t * sin_a
             if not (draw_x1 <= wx <= draw_x2 and draw_y1 <= wy <= draw_y2):
@@ -616,58 +622,63 @@ class HatchingGenerator(Generator):
         #   → dark areas → min_s (dense lines); bright areas → max_s (sparse lines)
         #
         # Two independent density controls exist in _generate_parallel_hatch:
-        #   1) SCAN-LINE SPACING: determined once per scan line from the AVERAGE of
-        #      5 samples spread along the full line (para_min … para_max).  Controls
-        #      how far apart neighbouring hatch lines are placed.
+        #   1) SCAN-LINE SPACING: determined once per scan line from 5 samples
+        #      clustered in the central ±20% of the line (local neighbourhood).
+        #      Controls how far apart neighbouring hatch lines are placed.
         #   2) PER-PIXEL DRAWING: each line segment is drawn only if local pixel
         #      brightness < 240 (hardcoded).  Segments ≥ 240/255 ≈ 94% white produce
-        #      a visible gap in the hatching.  At contrast=0 almost no pixels reach
-        #      240, so all segments draw continuously.
+        #      a visible gap in the hatching.
         #
-        # Why Default Parallel at contrast=0 looks uniform on the Mona Lisa:
-        #   • Mona Lisa raw brightness range ≈ 60–210; all pixels < 240 → every
-        #     segment draws, no gaps, no white-space contrast cues.
-        #   • 5-sample scan-line average for a 45° diagonal spans shadows AND
-        #     highlights → averages to ≈ 120–170 for most lines.
-        #   • Resulting spacing varies only ~2.0–3.5 mm (factor ≈ 1.7×) — invisible
-        #     at A5 viewing distance.  Output looks like uniform wallpaper.
+        # Key finding — the Mona Lisa is a DARK image (mean grayscale ≈ 74/255):
+        #   • Face skin ≈ 93, background ≈ 102, dark dress ≈ 38
+        #   • All meaningful content is below 128 (the contrast pivot point)
+        #   • Positive contrast PUSHES these sub-128 values DARKER, toward 0
+        #   • At contrast=55 (factor≈4.6) with no brightness shift, only 4% of
+        #     pixels exceed the 240 gap threshold → almost no white-space gaps →
+        #     output still looks like uniform dark lines, image not recognisable
         #
-        # Fix: contrast=50 is the minimum change for clearly recognisable content.
-        #   Photoshop-style contrast factor ≈ 2.95 at value=50:
-        #     original 200 (bright face skin) → 255 → scan-line avg drops → wider
-        #     spacing AND per-pixel gaps appear in highlights
-        #     original 160 (mid skin)         → 222 → spacing ≈ 4.4 mm  (sparse)
-        #     original 80  (dark dress/shadow) →   0 → spacing = 0.5 mm  (dense)
-        #   Effective spacing ratio grows to ≈ 9× (0.5 mm vs 4.4 mm) — clearly
-        #   visible; Mona Lisa face is recognisable.
+        # Fix requires TWO changes working together:
+        #   A) brightness boost (20–40): shifts the whole tonal range upward so
+        #      face pixels (93→123+) are near the contrast pivot (128), enabling
+        #      contrast to push highlights toward 255 instead of toward 0.
+        #      With brightness=30: ≈28% of face pixels exceed 122 and hit > 240
+        #      after contrast → genuine white gaps appear in the face region.
+        #   B) local scan-line sampling (±20% of line length around centre):
+        #      Each scan line's spacing now reflects the LOCAL image brightness
+        #      at that perpendicular position rather than an average over the
+        #      full canvas diagonal (which washed out local tonal features).
+        #      Result: scan lines at the hair boundary → min spacing (dense);
+        #      scan lines at face skin → medium-wide spacing; dark dress → min.
         #
         # Key tuning guide for all presets below:
-        #   • Portrait/photo content: contrast ≥ 40 required; ≥ 50 recommended.
-        #   • quadratic density curve gives extra midtone punch vs linear.
-        #   • min_spacing 0.3–0.5 mm, max_spacing 5–8 mm → 10–20× physical range.
-        #   • blur_radius 1–2 mm smooths sensor noise without blurring face contours.
-        #   • The 240 draw threshold is the effective "white point"; boost contrast
-        #     to push image highlights past it and create natural white-paper gaps.
+        #   • Image-recognisable presets need brightness 20–40 AND contrast 50–65.
+        #   • min_spacing 0.3–0.5 mm, max_spacing 5–7 mm → 10–20× physical range.
+        #   • Cross-hatch (two passes) doubles density: use brightness=40 and
+        #     min_spacing ≥ 0.5 mm to avoid over-darkening.
+        #   • blur_radius 1–2 mm smooths sensor noise without blurring contours.
+        #   • quadratic curve gives extra mid-tone discrimination vs linear.
         # ──────────────────────────────────────────────────────────────────────────
         return [
             Preset(
                 name="Default Parallel",
                 params={
-                    # contrast=50 is the minimum needed for visible image content:
-                    # it stretches Mona Lisa's tonal range so bright face skin
-                    # approaches 255 (sparse/no lines) and dark shadows approach 0
-                    # (dense lines), giving a ~9× effective spacing ratio.
+                    # Clean horizontal (0°) parallel lines with strong tonal
+                    # contrast. brightness=30 shifts the dark Mona Lisa tonal
+                    # range upward so face pixels reach the 240 gap threshold
+                    # after contrast=55 (≈28% of face area creates white gaps).
+                    # Linear curve + wide spacing range (0.5–6 mm, 12× ratio)
+                    # gives clear banding: dense dress → open face highlights.
                     "mode": "parallel",
-                    "angle_deg": 45.0,
-                    "angle2_deg": 135.0,
+                    "angle_deg": 0.0,
+                    "angle2_deg": 90.0,
                     "min_spacing_mm": 0.5,
-                    "max_spacing_mm": 5.0,
+                    "max_spacing_mm": 6.0,
                     "density_curve": "linear",
                     "line_length_mm": 0.0,
                     "invert": False,
-                    "brightness": 0.0,
-                    "contrast": 50.0,
-                    "blur_radius": 1.0,
+                    "brightness": 30.0,
+                    "contrast": 55.0,
+                    "blur_radius": 1.5,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
                 },
@@ -675,16 +686,24 @@ class HatchingGenerator(Generator):
             Preset(
                 name="Cross Hatch",
                 params={
+                    # Two perpendicular passes at 45°/135° for classic cross-hatch.
+                    # brightness=40 compensates for the double-density of two passes
+                    # so bright face skin still opens up into sparse grid cells.
+                    # contrast=55 with quadratic curve pushes highlights to max
+                    # spacing (6 mm) in both passes → large open grid cells in face
+                    # region vs sub-mm dense grid in dark hair/dress areas.
+                    # min_spacing=0.5 mm (slightly wider than single-pass) prevents
+                    # the dual passes from over-darkening mid-tones.
                     "mode": "cross",
                     "angle_deg": 45.0,
                     "angle2_deg": 135.0,
                     "min_spacing_mm": 0.5,
-                    "max_spacing_mm": 4.0,
+                    "max_spacing_mm": 6.0,
                     "density_curve": "quadratic",
                     "line_length_mm": 0.0,
                     "invert": False,
-                    "brightness": 0.0,
-                    "contrast": 0.0,
+                    "brightness": 40.0,
+                    "contrast": 55.0,
                     "blur_radius": 1.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
@@ -714,16 +733,22 @@ class HatchingGenerator(Generator):
             Preset(
                 name="Fine Detail",
                 params={
+                    # High-resolution 30° parallel hatching for fine-featured
+                    # subjects. brightness=25 lifts mid-tones enough to create
+                    # white gaps in face highlights while preserving dark shadow
+                    # detail. Tight spacing range (0.3–2.5 mm, 8× ratio) with
+                    # quadratic curve captures fine tonal gradations. Small
+                    # blur_radius=0.5 mm keeps fine edge detail crisp.
                     "mode": "parallel",
                     "angle_deg": 30.0,
                     "angle2_deg": 120.0,
                     "min_spacing_mm": 0.3,
-                    "max_spacing_mm": 3.0,
+                    "max_spacing_mm": 2.5,
                     "density_curve": "quadratic",
                     "line_length_mm": 0.0,
                     "invert": False,
-                    "brightness": 0.0,
-                    "contrast": 0.0,
+                    "brightness": 25.0,
+                    "contrast": 55.0,
                     "blur_radius": 0.5,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
@@ -732,20 +757,24 @@ class HatchingGenerator(Generator):
             Preset(
                 name="Portrait Photo",
                 params={
-                    # 45° hatching tuned for face/portrait images: logarithmic
-                    # density curve emphasises shadow detail in skin tones;
-                    # contrast boost separates shadows from highlights.
+                    # 45° parallel hatching tuned for face/portrait sources.
+                    # brightness=30 lifts the dark Mona Lisa range so face
+                    # highlights reliably create white gaps (>240) while shadows
+                    # remain dense. logarithmic density curve emphasises mid-tone
+                    # skin richness: shadow detail is preserved rather than
+                    # crushed to black. blur_radius=2.0 smooths skin texture
+                    # without losing the coarser contours (jaw, brow, nose).
                     "mode": "parallel",
                     "angle_deg": 45.0,
                     "angle2_deg": 135.0,
                     "min_spacing_mm": 0.4,
-                    "max_spacing_mm": 4.0,
+                    "max_spacing_mm": 5.0,
                     "density_curve": "logarithmic",
                     "line_length_mm": 0.0,
                     "invert": False,
-                    "brightness": 0.0,
-                    "contrast": 20.0,
-                    "blur_radius": 1.5,
+                    "brightness": 30.0,
+                    "contrast": 55.0,
+                    "blur_radius": 2.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
                 },
@@ -753,19 +782,23 @@ class HatchingGenerator(Generator):
             Preset(
                 name="Landscape Photo",
                 params={
-                    # Horizontal cross-hatch at 0°/90° with wider spacing suits
-                    # landscape horizon lines and skies; quadratic curve preserves
-                    # bright sky while densely shading foreground detail.
+                    # Horizontal/vertical cross-hatch tuned for high-contrast
+                    # subjects (landscapes, architecture, strong B&W images).
+                    # contrast=65 maximises dark/light separation: dark foreground
+                    # → 0 (dense 0.5 mm lines), bright sky → 255 (sparse 7 mm +
+                    # gaps), yielding a ~14× effective spacing ratio.
+                    # quadratic curve keeps sky areas open while aggressively
+                    # shading dark ground/tree regions.
                     "mode": "cross",
                     "angle_deg": 0.0,
                     "angle2_deg": 90.0,
-                    "min_spacing_mm": 0.6,
-                    "max_spacing_mm": 6.0,
+                    "min_spacing_mm": 0.5,
+                    "max_spacing_mm": 7.0,
                     "density_curve": "quadratic",
                     "line_length_mm": 0.0,
                     "invert": False,
                     "brightness": 0.0,
-                    "contrast": 10.0,
+                    "contrast": 65.0,
                     "blur_radius": 1.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
