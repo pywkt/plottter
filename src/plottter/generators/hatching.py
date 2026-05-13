@@ -606,10 +606,57 @@ class HatchingGenerator(Generator):
         ]
 
     def get_presets(self) -> list[Preset]:
+        # ── BRIGHTNESS-TO-DENSITY MAPPING — diagnosis & tuning notes ─────────────
+        #
+        # How the mapping works:
+        #   _brightness_to_spacing(b, min_s, max_s, curve) converts a brightness
+        #   value b∈[0,255] to a scan-line spacing in mm:
+        #     t       = b / 255          (0 = black, 1 = white)
+        #     spacing = min_s + t * (max_s - min_s)
+        #   → dark areas → min_s (dense lines); bright areas → max_s (sparse lines)
+        #
+        # Two independent density controls exist in _generate_parallel_hatch:
+        #   1) SCAN-LINE SPACING: determined once per scan line from the AVERAGE of
+        #      5 samples spread along the full line (para_min … para_max).  Controls
+        #      how far apart neighbouring hatch lines are placed.
+        #   2) PER-PIXEL DRAWING: each line segment is drawn only if local pixel
+        #      brightness < 240 (hardcoded).  Segments ≥ 240/255 ≈ 94% white produce
+        #      a visible gap in the hatching.  At contrast=0 almost no pixels reach
+        #      240, so all segments draw continuously.
+        #
+        # Why Default Parallel at contrast=0 looks uniform on the Mona Lisa:
+        #   • Mona Lisa raw brightness range ≈ 60–210; all pixels < 240 → every
+        #     segment draws, no gaps, no white-space contrast cues.
+        #   • 5-sample scan-line average for a 45° diagonal spans shadows AND
+        #     highlights → averages to ≈ 120–170 for most lines.
+        #   • Resulting spacing varies only ~2.0–3.5 mm (factor ≈ 1.7×) — invisible
+        #     at A5 viewing distance.  Output looks like uniform wallpaper.
+        #
+        # Fix: contrast=50 is the minimum change for clearly recognisable content.
+        #   Photoshop-style contrast factor ≈ 2.95 at value=50:
+        #     original 200 (bright face skin) → 255 → scan-line avg drops → wider
+        #     spacing AND per-pixel gaps appear in highlights
+        #     original 160 (mid skin)         → 222 → spacing ≈ 4.4 mm  (sparse)
+        #     original 80  (dark dress/shadow) →   0 → spacing = 0.5 mm  (dense)
+        #   Effective spacing ratio grows to ≈ 9× (0.5 mm vs 4.4 mm) — clearly
+        #   visible; Mona Lisa face is recognisable.
+        #
+        # Key tuning guide for all presets below:
+        #   • Portrait/photo content: contrast ≥ 40 required; ≥ 50 recommended.
+        #   • quadratic density curve gives extra midtone punch vs linear.
+        #   • min_spacing 0.3–0.5 mm, max_spacing 5–8 mm → 10–20× physical range.
+        #   • blur_radius 1–2 mm smooths sensor noise without blurring face contours.
+        #   • The 240 draw threshold is the effective "white point"; boost contrast
+        #     to push image highlights past it and create natural white-paper gaps.
+        # ──────────────────────────────────────────────────────────────────────────
         return [
             Preset(
                 name="Default Parallel",
                 params={
+                    # contrast=50 is the minimum needed for visible image content:
+                    # it stretches Mona Lisa's tonal range so bright face skin
+                    # approaches 255 (sparse/no lines) and dark shadows approach 0
+                    # (dense lines), giving a ~9× effective spacing ratio.
                     "mode": "parallel",
                     "angle_deg": 45.0,
                     "angle2_deg": 135.0,
@@ -619,7 +666,7 @@ class HatchingGenerator(Generator):
                     "line_length_mm": 0.0,
                     "invert": False,
                     "brightness": 0.0,
-                    "contrast": 0.0,
+                    "contrast": 50.0,
                     "blur_radius": 1.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
