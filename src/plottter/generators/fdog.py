@@ -417,10 +417,14 @@ class FDoGGenerator(Generator):
                 name="Coherent Lines",
                 params={
                     **_shared,
+                    # Balanced general-purpose preset.  sigma_m=6 is large
+                    # enough to build a coherent ETF that follows ridges and
+                    # cloud boundaries over many pixels; 5 ETF iterations
+                    # refine the flow field before the single FDoG pass.
                     "sigma_c": 1.0,
-                    "sigma_m": 3.0,
+                    "sigma_m": 6.0,
                     "rho": 3.0,
-                    "etf_iterations": 3,
+                    "etf_iterations": 5,
                     "fdog_iterations": 1,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
@@ -430,10 +434,12 @@ class FDoGGenerator(Generator):
                 name="Fine Lines",
                 params={
                     **_shared,
-                    "sigma_c": 0.5,
-                    "sigma_m": 2.0,
+                    # Thin, precise lines — small sigma_c captures sub-pixel
+                    # detail; two FDoG passes sharpen the edge response.
+                    "sigma_c": 0.7,
+                    "sigma_m": 4.0,
                     "rho": 2.5,
-                    "etf_iterations": 3,
+                    "etf_iterations": 4,
                     "fdog_iterations": 2,
                     "smooth_iterations": 0,
                     "x_offset_mm": 0.0,
@@ -444,13 +450,18 @@ class FDoGGenerator(Generator):
                 name="Bold Strokes",
                 params={
                     **_shared,
-                    "sigma_c": 1.5,
-                    "sigma_m": 4.0,
-                    "rho": 3.5,
+                    # Heavy expressive strokes — large sigma_c widens each
+                    # detected edge; high sigma_m creates very long, sweeping
+                    # flow lines; contrast boost ensures only strong mountain
+                    # ridges and major contours survive.
+                    "sigma_c": 1.8,
+                    "sigma_m": 7.0,
+                    "rho": 4.0,
                     "etf_iterations": 5,
                     "fdog_iterations": 2,
-                    "brightness": 10.0,
                     "contrast": 20.0,
+                    "smooth_iterations": 2,
+                    "min_contour_length": 15,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
                 },
@@ -459,13 +470,16 @@ class FDoGGenerator(Generator):
                 name="Portrait",
                 params={
                     **_shared,
+                    # Long, smooth, flowing strokes ideal for portraits and
+                    # gentle landscape curves.  Pre-blur suppresses noise;
+                    # 6 ETF iterations and extra Chaikin passes produce
+                    # organic, rounded contours.
                     "sigma_c": 1.2,
-                    "sigma_m": 4.5,
+                    "sigma_m": 6.5,
                     "rho": 3.0,
-                    "etf_iterations": 5,
+                    "etf_iterations": 6,
                     "fdog_iterations": 1,
                     "blur_radius": 1.0,
-                    "contrast": 10.0,
                     "smooth_iterations": 2,
                     "min_contour_length": 15,
                     "close_gaps_mm": 2.0,
@@ -477,13 +491,17 @@ class FDoGGenerator(Generator):
                 name="Ink Sketch",
                 params={
                     **_shared,
+                    # Raw ink-pen quality.  Small sigma_c captures fine
+                    # detail; centerline thinning converts thick edge bands
+                    # to single-pixel strokes; fragment merging reconnects
+                    # broken line ends.
                     "sigma_c": 0.8,
-                    "sigma_m": 2.0,
+                    "sigma_m": 4.0,
                     "rho": 2.5,
                     "etf_iterations": 3,
                     "fdog_iterations": 2,
                     "centerline": True,
-                    "adaptive_threshold": True,
+                    "adaptive_threshold": False,
                     "adaptive_c": 5.0,
                     "merge_gap_mm": 1.0,
                     "min_contour_length": 8,
@@ -496,12 +514,17 @@ class FDoGGenerator(Generator):
                 name="Stylized Illustration",
                 params={
                     **_shared,
-                    "sigma_c": 1.3,
-                    "sigma_m": 5.5,
-                    "rho": 3.5,
-                    "etf_iterations": 5,
+                    # Maximum flow coherence — 7 ETF iterations with
+                    # sigma_m=8 produce very long, clean strokes that
+                    # follow major structural boundaries.  High contrast
+                    # keeps only the strongest edges; Bezier fitting yields
+                    # smooth, print-ready curves.
+                    "sigma_c": 1.5,
+                    "sigma_m": 8.0,
+                    "rho": 4.0,
+                    "etf_iterations": 7,
                     "fdog_iterations": 1,
-                    "contrast": 15.0,
+                    "contrast": 20.0,
                     "smooth_iterations": 2,
                     "smooth_curves": True,
                     "curve_tolerance_mm": 0.5,
@@ -515,15 +538,19 @@ class FDoGGenerator(Generator):
                 name="Noisy Photo",
                 params={
                     **_shared,
-                    "sigma_c": 1.0,
-                    "sigma_m": 4.0,
-                    "rho": 3.0,
+                    # Designed for photographic or noisy input.  Heavy
+                    # pre-blur suppresses high-frequency noise before the
+                    # ETF is computed; a higher min_contour_length discards
+                    # residual speckle fragments.
+                    "sigma_c": 1.2,
+                    "sigma_m": 5.0,
+                    "rho": 3.5,
                     "etf_iterations": 4,
-                    "fdog_iterations": 1,
-                    "blur_radius": 2.5,
+                    "fdog_iterations": 2,
+                    "blur_radius": 2.0,
                     "brightness": 5.0,
-                    "contrast": 15.0,
-                    "min_contour_length": 30,
+                    "contrast": 10.0,
+                    "min_contour_length": 20,
                     "close_gaps_mm": 2.0,
                     "smooth_iterations": 1,
                     "x_offset_mm": 0.0,
@@ -534,11 +561,15 @@ class FDoGGenerator(Generator):
                 name="Ultra-Fine Detail",
                 params={
                     **_shared,
+                    # Maximum detail capture — smallest sigma_c detects the
+                    # finest edges; three FDoG passes progressively sharpen
+                    # the response; tighter simplification tolerance
+                    # preserves every inflection point.
                     "sigma_c": 0.5,
-                    "sigma_m": 1.5,
+                    "sigma_m": 3.0,
                     "rho": 2.0,
-                    "etf_iterations": 2,
-                    "fdog_iterations": 2,
+                    "etf_iterations": 3,
+                    "fdog_iterations": 3,
                     "smooth_iterations": 0,
                     "min_contour_length": 5,
                     "close_gaps_mm": 0.5,
