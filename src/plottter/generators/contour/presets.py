@@ -820,54 +820,13 @@ def build_presets() -> list[Preset]:
             name="FMM Displacement Lines",
             params={
                 # Parallel lines displaced perpendicularly by the FMM
-                # travel-time field value — produces an engraving / relief
-                # effect where dark regions cause strong lateral deflections.
+                # travel-time field — dark regions cause strong lateral
+                # deflections, creating an engraving / relief effect.
                 #
-                # AMPLITUDE DIAGNOSIS (task 106.1)
-                # ─────────────────────────────────
-                # Brightness → displacement chain:
-                #   speed = max(brightness^fmm_gamma, fmm_speed_floor)   # per pixel
-                #   FMM propagates from source; T large where speed is slow (dark)
-                #   T_norm = (T_val - T_min) / T_range  # globalised to [0, 1]
-                #   disp   = T_norm * fmm_displacement_mm  # perpendicular mm offset
-                #
-                # Root problem — T_range compression by the darkest pixel:
-                #   With speed_floor=0.01 and gamma=1.5, a near-black pixel
-                #   (brightness≈0) has speed≈0.01, so T ≈ distance / 0.01 = 100×dist.
-                #   T_range is therefore dominated by T_max ≈ 100 × max_dist.
-                #   Every other pixel is normalised against this enormous denominator:
-                #
-                #   brightness  speed   T at canvas edge   T_norm  disp @ 6 mm
-                #   ──────────  ──────  ─────────────────  ──────  ───────────
-                #   0.05        0.011         89×dist        0.89     5.4 mm  ← visible
-                #   0.10        0.032         32×dist        0.32     1.9 mm  ← marginal
-                #   0.30        0.164          6×dist        0.06     0.4 mm  ← invisible
-                #   0.50        0.354          3×dist        0.03     0.2 mm  ← invisible
-                #   1.00        1.000          1×dist        0.01     0.06mm  ← invisible
-                #
-                #   Confirmed: at fmm_displacement_mm=6 the effect is invisible for
-                #   >90 % of typical photographic content (brightness > 0.10).
-                #   Only near-black pixels (brightness < 0.05) produce visible bends.
-                #
-                # Params that control amplitude:
-                #   fmm_displacement_mm — primary knob; linear scale on T_norm output
-                #   fmm_speed_floor     — MOST IMPACTFUL: raising from 0.01 → 0.1
-                #                         shrinks T_range by 10×, making midtones
-                #                         visible without changing displacement_mm
-                #   fmm_gamma           — higher γ → faster speed falloff → slightly
-                #                         larger T_range spread; secondary effect
-                #   fmm_num_lines       — line density; more lines → finer spacing →
-                #                         higher displacement_mm required for visibility
-                #
-                # Working amplitude range (A4, 120 lines, inter-line spacing ≈ 2.3 mm):
-                #   speed_floor=0.01 (current):
-                #     displacement_mm =   6 : invisible for b>0.10 (current — too small)
-                #     displacement_mm =  20 : visible only for dark shadows (b<0.20)
-                #     displacement_mm =  80 : needed for midtone (b=0.5) to reach 2.3 mm
-                #   speed_floor=0.10 (recommended fix):
-                #     displacement_mm =   6 : marginal (0.9 mm at b=0.5 midtone)
-                #     displacement_mm =  15 : visible at midtones (~2.2 mm at b=0.5)
-                #     displacement_mm =  25 : strong effect; lines cross in dark areas
+                # speed_floor=0.10 compresses T_range so midtones are
+                # visible (≈3 mm deflection at b=0.5 with displacement=20).
+                # With speed_floor=0.01 the effect was invisible for >90%
+                # of photographic content (see prior analysis in task 106.1).
                 "mode": "FMM Topographic",
                 "num_levels": 8,
                 "spacing": "linear",
@@ -884,7 +843,7 @@ def build_presets() -> list[Preset]:
                 "min_contour_px": 10,
                 "invert": False,
                 "brightness": 0.0,
-                "contrast": 15.0,
+                "contrast": 20.0,
                 "blur_radius": 1.5,
                 "smooth_curves": False,
                 "curve_tolerance_mm": 0.5,
@@ -893,12 +852,12 @@ def build_presets() -> list[Preset]:
                 "fmm_source_x_pct": 50.0,
                 "fmm_source_y_pct": 50.0,
                 "fmm_gamma": 1.5,
-                "fmm_speed_floor": 0.01,
+                "fmm_speed_floor": 0.10,
                 "fmm_contour_spacing": "Linear",
                 "fmm_min_contour_length_mm": 2.0,
                 "fmm_render_mode": "Displacement",
-                "fmm_num_lines": 120,
-                "fmm_displacement_mm": 6.0,
+                "fmm_num_lines": 80,
+                "fmm_displacement_mm": 20.0,
                 "fmm_line_angle": 0.0,
                 "fmm_amplitude_mm": 3.0,
                 "fmm_frequency": 10.0,
@@ -919,9 +878,11 @@ def build_presets() -> list[Preset]:
             name="FMM Wave Lines",
             params={
                 # Horizontal scan lines with sinusoidal amplitude modulated
-                # by the FMM travel-time gradient magnitude — waves grow
-                # large in dark / high-gradient regions and flatten out in
-                # bright / smooth areas.
+                # by the FMM travel-time gradient magnitude — waves are large
+                # in dark / high-gradient regions and flat in bright areas.
+                #
+                # speed_floor=0.10 gives usable gradient range across all
+                # tones; amplitude=6 mm produces clearly visible sinusoids.
                 "mode": "FMM Topographic",
                 "num_levels": 8,
                 "spacing": "linear",
@@ -947,15 +908,15 @@ def build_presets() -> list[Preset]:
                 "fmm_source_x_pct": 50.0,
                 "fmm_source_y_pct": 50.0,
                 "fmm_gamma": 1.5,
-                "fmm_speed_floor": 0.01,
+                "fmm_speed_floor": 0.10,
                 "fmm_contour_spacing": "Linear",
                 "fmm_min_contour_length_mm": 2.0,
                 "fmm_render_mode": "Wave",
-                "fmm_num_lines": 100,
+                "fmm_num_lines": 70,
                 "fmm_displacement_mm": 5.0,
                 "fmm_line_angle": 0.0,
-                "fmm_amplitude_mm": 4.0,
-                "fmm_frequency": 12.0,
+                "fmm_amplitude_mm": 6.0,
+                "fmm_frequency": 8.0,
                 "fmm_num_radials": 120,
                 "fmm_step_size_mm": 0.5,
                 "fmm_line_spacing": "Uniform",
@@ -972,10 +933,16 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Radial Lines",
             params={
-                # Lines radiate from the FMM source following gradient
-                # ascent of the travel-time field — they spread in bright /
-                # fast regions and bunch together in dark / slow areas,
-                # creating a starburst effect that warps around features.
+                # Lines radiate from canvas centre following gradient ascent
+                # of the FMM travel-time field — a starburst that bends
+                # around bright/dark features.
+                #
+                # Redesign (task 106.2): previous "blob in center" was caused
+                # by speed_floor=0.01 creating extreme gradient spikes near
+                # dark pixels, pulling all radials toward the same feature.
+                # Fix: speed_floor=0.25 + gamma=0.8 smooth the field so lines
+                # spread uniformly outward before deflecting around features.
+                # Source is fixed at canvas centre for a clear starburst.
                 "mode": "FMM Topographic",
                 "num_levels": 8,
                 "spacing": "linear",
@@ -992,16 +959,16 @@ def build_presets() -> list[Preset]:
                 "min_contour_px": 10,
                 "invert": False,
                 "brightness": 0.0,
-                "contrast": 15.0,
-                "blur_radius": 1.5,
+                "contrast": 20.0,
+                "blur_radius": 2.0,
                 "smooth_curves": False,
                 "curve_tolerance_mm": 0.5,
                 "fmm_num_contours": 20,
                 "fmm_source_point": "Center",
                 "fmm_source_x_pct": 50.0,
                 "fmm_source_y_pct": 50.0,
-                "fmm_gamma": 1.5,
-                "fmm_speed_floor": 0.01,
+                "fmm_gamma": 0.8,
+                "fmm_speed_floor": 0.25,
                 "fmm_contour_spacing": "Linear",
                 "fmm_min_contour_length_mm": 2.0,
                 "fmm_render_mode": "Radial",
@@ -1010,8 +977,8 @@ def build_presets() -> list[Preset]:
                 "fmm_line_angle": 0.0,
                 "fmm_amplitude_mm": 3.0,
                 "fmm_frequency": 10.0,
-                "fmm_num_radials": 120,
-                "fmm_step_size_mm": 0.5,
+                "fmm_num_radials": 90,
+                "fmm_step_size_mm": 1.0,
                 "fmm_line_spacing": "Uniform",
                 "fmm_min_spacing_mm": 0.5,
                 "fmm_max_spacing_mm": 5.0,
@@ -1026,9 +993,14 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Adaptive Wave",
             params={
-                # Horizontal scan lines with adaptive spacing: lines cluster
-                # densely in high-gradient / dark regions and spread apart in
-                # smooth / bright areas, giving organic topographic density.
+                # Scan lines with adaptive spacing and gradient-modulated
+                # wave amplitude — lines cluster densely in high-gradient /
+                # dark regions and spread apart in smooth / bright areas,
+                # giving organic topographic density with visible sinusoids.
+                #
+                # speed_floor=0.10 ensures wave amplitude varies visibly
+                # across all tones; wide spacing range (0.4–8 mm) produces
+                # strong density variation between shadow and highlight.
                 "mode": "FMM Topographic",
                 "num_levels": 8,
                 "spacing": "linear",
@@ -1054,20 +1026,20 @@ def build_presets() -> list[Preset]:
                 "fmm_source_x_pct": 50.0,
                 "fmm_source_y_pct": 50.0,
                 "fmm_gamma": 1.5,
-                "fmm_speed_floor": 0.01,
+                "fmm_speed_floor": 0.10,
                 "fmm_contour_spacing": "Linear",
                 "fmm_min_contour_length_mm": 2.0,
                 "fmm_render_mode": "Wave",
                 "fmm_num_lines": 100,
                 "fmm_displacement_mm": 5.0,
                 "fmm_line_angle": 0.0,
-                "fmm_amplitude_mm": 5.0,
-                "fmm_frequency": 6.0,
+                "fmm_amplitude_mm": 7.0,
+                "fmm_frequency": 8.0,
                 "fmm_num_radials": 120,
                 "fmm_step_size_mm": 0.5,
                 "fmm_line_spacing": "Adaptive",
-                "fmm_min_spacing_mm": 0.5,
-                "fmm_max_spacing_mm": 6.0,
+                "fmm_min_spacing_mm": 0.4,
+                "fmm_max_spacing_mm": 8.0,
                 "fmm_group_size": 3,
                 "fmm_group_gap_mm": 4.0,
                 "fmm_group_intra_spacing_mm": 0.5,
@@ -1079,9 +1051,15 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Grouped Wave",
             params={
-                # Wave scan lines arranged in tight clusters separated by
-                # larger gaps, with random per-line amplitude variation for
-                # a hand-drawn, sketchy topographic feel.
+                # Wave scan lines arranged in tight clusters of 4, separated
+                # by large 10 mm gaps — strong inter-group whitespace makes
+                # the grouping clearly visible, with per-line amplitude
+                # variation giving a hand-drawn sketchy feel.
+                #
+                # speed_floor=0.10 ensures wave amplitude modulates visibly
+                # across the full tonal range.  Wide group gap (10 mm)
+                # versus tight intra-group spacing (0.5 mm) produces the
+                # stacked-hatching / grouped-contour aesthetic.
                 "mode": "FMM Topographic",
                 "num_levels": 8,
                 "spacing": "linear",
@@ -1107,24 +1085,24 @@ def build_presets() -> list[Preset]:
                 "fmm_source_x_pct": 50.0,
                 "fmm_source_y_pct": 50.0,
                 "fmm_gamma": 1.5,
-                "fmm_speed_floor": 0.01,
+                "fmm_speed_floor": 0.10,
                 "fmm_contour_spacing": "Linear",
                 "fmm_min_contour_length_mm": 2.0,
                 "fmm_render_mode": "Wave",
                 "fmm_num_lines": 100,
                 "fmm_displacement_mm": 5.0,
                 "fmm_line_angle": 0.0,
-                "fmm_amplitude_mm": 4.0,
+                "fmm_amplitude_mm": 6.0,
                 "fmm_frequency": 8.0,
                 "fmm_num_radials": 120,
                 "fmm_step_size_mm": 0.5,
                 "fmm_line_spacing": "Grouped",
                 "fmm_min_spacing_mm": 0.5,
                 "fmm_max_spacing_mm": 5.0,
-                "fmm_group_size": 3,
-                "fmm_group_gap_mm": 5.0,
-                "fmm_group_intra_spacing_mm": 0.6,
-                "fmm_displacement_variation": 0.4,
+                "fmm_group_size": 4,
+                "fmm_group_gap_mm": 10.0,
+                "fmm_group_intra_spacing_mm": 0.5,
+                "fmm_displacement_variation": 0.5,
                 "x_offset_mm": 0.0,
                 "y_offset_mm": 0.0,
             },
