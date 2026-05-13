@@ -712,20 +712,26 @@ class HatchingGenerator(Generator):
             Preset(
                 name="Woodcut",
                 params={
-                    # Contour mode: streamlines follow iso-brightness curves.
-                    # Grid seed spacing = max_spacing_mm so each seed produces an
-                    # independent streamline (no near-duplicate paths).
-                    "mode": "contour",
+                    # Traditional woodblock print look: bold contrasts with
+                    # dense line clusters in shadows and open white areas in
+                    # highlights. brightness=30 lifts the Mona Lisa tonal range
+                    # so contrast=70 pushes highlights toward white (sparse
+                    # lines, clear paper) while shadows compress to near-solid
+                    # hatching at 0.4 mm spacing. Wide 20× ratio (0.4–8 mm)
+                    # with logarithmic curve creates the dramatic ink-on-wood
+                    # appearance: dark dress → dense block, face highlights →
+                    # open white. blur_radius=2 smooths noise for bold strokes.
+                    "mode": "parallel",
                     "angle_deg": 0.0,
                     "angle2_deg": 90.0,
-                    "min_spacing_mm": 1.0,
-                    "max_spacing_mm": 6.0,
+                    "min_spacing_mm": 0.4,
+                    "max_spacing_mm": 8.0,
                     "density_curve": "logarithmic",
                     "line_length_mm": 0.0,
                     "invert": False,
-                    "brightness": 0.0,
-                    "contrast": 0.0,
-                    "blur_radius": 1.0,
+                    "brightness": 30.0,
+                    "contrast": 70.0,
+                    "blur_radius": 2.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
                 },
@@ -807,6 +813,11 @@ class HatchingGenerator(Generator):
             Preset(
                 name="Wavy Hatch",
                 params={
+                    # Sine-wave oscillation at 45°. brightness=30 + contrast=55
+                    # ensures the Mona Lisa tonal range maps correctly so that
+                    # the wave amplitude (scaled by darkness) creates visible
+                    # density variation — dark regions wave strongly, bright
+                    # regions wave gently, making the image recognisable.
                     "mode": "parallel",
                     "angle_deg": 45.0,
                     "angle2_deg": 135.0,
@@ -815,8 +826,8 @@ class HatchingGenerator(Generator):
                     "density_curve": "linear",
                     "line_length_mm": 0.0,
                     "invert": False,
-                    "brightness": 0.0,
-                    "contrast": 0.0,
+                    "brightness": 30.0,
+                    "contrast": 55.0,
                     "blur_radius": 1.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
@@ -829,6 +840,15 @@ class HatchingGenerator(Generator):
             Preset(
                 name="Zigzag Fill",
                 params={
+                    # Sawtooth (zigzag) oscillation with dramatically increased
+                    # amplitude so individual zigzags are clearly distinguishable
+                    # from straight lines. osc_amplitude=4.0 mm creates bold
+                    # triangular peaks; osc_wavelength_mm=4.0 gives each zigzag
+                    # enough horizontal extent to be visually distinct. Wider
+                    # wavelength also prevents lines from tangling in dense areas.
+                    # brightness=30 + contrast=55 maps the image so dark shadow
+                    # areas produce the strongest zigzag displacement and the
+                    # image remains recognisable through density variation.
                     "mode": "parallel",
                     "angle_deg": 0.0,
                     "angle2_deg": 90.0,
@@ -837,20 +857,27 @@ class HatchingGenerator(Generator):
                     "density_curve": "linear",
                     "line_length_mm": 0.0,
                     "invert": False,
-                    "brightness": 0.0,
-                    "contrast": 0.0,
+                    "brightness": 30.0,
+                    "contrast": 55.0,
                     "blur_radius": 1.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
                     "oscillation": True,
                     "osc_mode": "Sawtooth",
-                    "osc_amplitude": 1.5,
-                    "osc_wavelength_mm": 1.5,
+                    "osc_amplitude": 4.0,
+                    "osc_wavelength_mm": 4.0,
                 },
             ),
             Preset(
                 name="Oscillating Cross-Hatch",
                 params={
+                    # Cross-hatch with sine-wave oscillation at 45°/135°.
+                    # brightness=40 compensates for the double-density of two
+                    # passes (same reasoning as the plain Cross Hatch preset)
+                    # so face highlights open up into sparse wavy grid cells.
+                    # contrast=55 ensures tonal variation is visible through
+                    # the spacing changes. The sinusoidal displacement adds
+                    # organic texture on top of the tonal density mapping.
                     "mode": "cross",
                     "angle_deg": 45.0,
                     "angle2_deg": 135.0,
@@ -859,8 +886,8 @@ class HatchingGenerator(Generator):
                     "density_curve": "linear",
                     "line_length_mm": 0.0,
                     "invert": False,
-                    "brightness": 0.0,
-                    "contrast": 0.0,
+                    "brightness": 40.0,
+                    "contrast": 55.0,
                     "blur_radius": 1.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
