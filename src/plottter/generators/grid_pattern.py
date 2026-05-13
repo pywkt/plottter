@@ -313,7 +313,7 @@ class GridPatternGenerator(Generator):
                     "knot_cols": 6,
                     "knot_rows": 6,
                     "tile_size_mm": 12.0,
-                    "gap_mm": 0.8,
+                    "gap_mm": 2.5,
                 },
             ),
             Preset(
@@ -323,7 +323,7 @@ class GridPatternGenerator(Generator):
                     "knot_cols": 10,
                     "knot_rows": 8,
                     "tile_size_mm": 10.0,
-                    "gap_mm": 0.6,
+                    "gap_mm": 2.0,
                 },
             ),
         ]
@@ -775,7 +775,7 @@ class GridPatternGenerator(Generator):
                 a_enter = (cx - half, cy + half)
                 a_exit = (cx + half, cy - half)
 
-                if (c + r) % 2 == 0:  # Type-A is over: draw full segment.
+                if c % 2 == 0:  # Type-A is over: draw full segment.
                     if not current:
                         current = [a_enter, a_exit]
                     else:
@@ -824,7 +824,7 @@ class GridPatternGenerator(Generator):
                 b_enter = (cx - half, cy - half)
                 b_exit = (cx + half, cy + half)
 
-                if (c + r) % 2 == 1:  # Type-B is over: draw full segment.
+                if c % 2 == 1:  # Type-B is over: draw full segment.
                     if not current:
                         current = [b_enter, b_exit]
                     else:
