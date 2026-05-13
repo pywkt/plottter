@@ -297,12 +297,13 @@ class XDoGGenerator(Generator):
                 name="Pencil Sketch",
                 params={
                     **_shared,
-                    "sigma": 0.5,
+                    "sigma": 0.8,
                     "k": 1.6,
-                    "phi": 100.0,
-                    "epsilon": 0.0,
-                    "centerline": True,  # Line art inputs benefit from centerline tracing
-                    "merge_gap_mm": 0.5,  # Merge skeleton fragments to reduce pen lifts
+                    "phi": 80.0,
+                    "epsilon": -0.02,
+                    "blur_radius": 1.0,   # mild pre-smooth reduces noise in photos
+                    "centerline": True,   # thin edges to single-pixel centerlines
+                    "merge_gap_mm": 0.5,  # merge skeleton fragments to reduce pen lifts
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
                 },
@@ -311,10 +312,11 @@ class XDoGGenerator(Generator):
                 name="Woodcut",
                 params={
                     **_shared,
-                    "sigma": 1.0,
-                    "k": 2.0,
-                    "phi": 200.0,
-                    "epsilon": -0.1,
+                    "sigma": 1.5,
+                    "k": 3.0,
+                    "phi": 100.0,
+                    "epsilon": -0.04,   # was -0.1 which excluded all edges in real images
+                    "blur_radius": 1.0,  # mild pre-smooth
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
                 },
@@ -323,10 +325,12 @@ class XDoGGenerator(Generator):
                 name="Soft Charcoal",
                 params={
                     **_shared,
-                    "sigma": 1.5,
-                    "k": 1.4,
-                    "phi": 10.0,
-                    "epsilon": 0.05,
+                    "sigma": 2.0,
+                    "k": 2.5,
+                    "phi": 15.0,
+                    "epsilon": -0.04,
+                    "blur_radius": 2.0,    # stronger pre-smooth for organic feel
+                    "smooth_iterations": 1, # gentle Chaikin smoothing
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
                 },

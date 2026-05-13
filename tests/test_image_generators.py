@@ -2638,28 +2638,28 @@ class TestXDoGGenerator:
                 )
 
     def test_pencil_sketch_preset_values(self):
-        """Pencil Sketch preset: σ=0.5, k=1.6, φ=100, ε=0.0 per spec."""
+        """Pencil Sketch preset: σ=0.8, k=1.6, φ=80, ε=-0.02."""
         preset = next(p for p in self.gen.get_presets() if p.name == "Pencil Sketch")
-        assert preset.params["sigma"] == pytest.approx(0.5)
+        assert preset.params["sigma"] == pytest.approx(0.8)
         assert preset.params["k"] == pytest.approx(1.6)
-        assert preset.params["phi"] == pytest.approx(100.0)
-        assert preset.params["epsilon"] == pytest.approx(0.0)
+        assert preset.params["phi"] == pytest.approx(80.0)
+        assert preset.params["epsilon"] == pytest.approx(-0.02)
 
     def test_woodcut_preset_values(self):
-        """Woodcut preset: σ=1.0, k=2.0, φ=200, ε=-0.1 per spec."""
+        """Woodcut preset: σ=1.5, k=3.0, φ=100, ε=-0.04."""
         preset = next(p for p in self.gen.get_presets() if p.name == "Woodcut")
-        assert preset.params["sigma"] == pytest.approx(1.0)
-        assert preset.params["k"] == pytest.approx(2.0)
-        assert preset.params["phi"] == pytest.approx(200.0)
-        assert preset.params["epsilon"] == pytest.approx(-0.1)
+        assert preset.params["sigma"] == pytest.approx(1.5)
+        assert preset.params["k"] == pytest.approx(3.0)
+        assert preset.params["phi"] == pytest.approx(100.0)
+        assert preset.params["epsilon"] == pytest.approx(-0.04)
 
     def test_soft_charcoal_preset_values(self):
-        """Soft Charcoal preset: σ=1.5, k=1.4, φ=10, ε=0.05 per spec."""
+        """Soft Charcoal preset: σ=2.0, k=2.5, φ=15, ε=-0.04."""
         preset = next(p for p in self.gen.get_presets() if p.name == "Soft Charcoal")
-        assert preset.params["sigma"] == pytest.approx(1.5)
-        assert preset.params["k"] == pytest.approx(1.4)
-        assert preset.params["phi"] == pytest.approx(10.0)
-        assert preset.params["epsilon"] == pytest.approx(0.05)
+        assert preset.params["sigma"] == pytest.approx(2.0)
+        assert preset.params["k"] == pytest.approx(2.5)
+        assert preset.params["phi"] == pytest.approx(15.0)
+        assert preset.params["epsilon"] == pytest.approx(-0.04)
 
     # --- Core generation ---
 
