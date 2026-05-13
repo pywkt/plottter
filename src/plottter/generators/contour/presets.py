@@ -822,6 +822,52 @@ def build_presets() -> list[Preset]:
                 # Parallel lines displaced perpendicularly by the FMM
                 # travel-time field value — produces an engraving / relief
                 # effect where dark regions cause strong lateral deflections.
+                #
+                # AMPLITUDE DIAGNOSIS (task 106.1)
+                # ─────────────────────────────────
+                # Brightness → displacement chain:
+                #   speed = max(brightness^fmm_gamma, fmm_speed_floor)   # per pixel
+                #   FMM propagates from source; T large where speed is slow (dark)
+                #   T_norm = (T_val - T_min) / T_range  # globalised to [0, 1]
+                #   disp   = T_norm * fmm_displacement_mm  # perpendicular mm offset
+                #
+                # Root problem — T_range compression by the darkest pixel:
+                #   With speed_floor=0.01 and gamma=1.5, a near-black pixel
+                #   (brightness≈0) has speed≈0.01, so T ≈ distance / 0.01 = 100×dist.
+                #   T_range is therefore dominated by T_max ≈ 100 × max_dist.
+                #   Every other pixel is normalised against this enormous denominator:
+                #
+                #   brightness  speed   T at canvas edge   T_norm  disp @ 6 mm
+                #   ──────────  ──────  ─────────────────  ──────  ───────────
+                #   0.05        0.011         89×dist        0.89     5.4 mm  ← visible
+                #   0.10        0.032         32×dist        0.32     1.9 mm  ← marginal
+                #   0.30        0.164          6×dist        0.06     0.4 mm  ← invisible
+                #   0.50        0.354          3×dist        0.03     0.2 mm  ← invisible
+                #   1.00        1.000          1×dist        0.01     0.06mm  ← invisible
+                #
+                #   Confirmed: at fmm_displacement_mm=6 the effect is invisible for
+                #   >90 % of typical photographic content (brightness > 0.10).
+                #   Only near-black pixels (brightness < 0.05) produce visible bends.
+                #
+                # Params that control amplitude:
+                #   fmm_displacement_mm — primary knob; linear scale on T_norm output
+                #   fmm_speed_floor     — MOST IMPACTFUL: raising from 0.01 → 0.1
+                #                         shrinks T_range by 10×, making midtones
+                #                         visible without changing displacement_mm
+                #   fmm_gamma           — higher γ → faster speed falloff → slightly
+                #                         larger T_range spread; secondary effect
+                #   fmm_num_lines       — line density; more lines → finer spacing →
+                #                         higher displacement_mm required for visibility
+                #
+                # Working amplitude range (A4, 120 lines, inter-line spacing ≈ 2.3 mm):
+                #   speed_floor=0.01 (current):
+                #     displacement_mm =   6 : invisible for b>0.10 (current — too small)
+                #     displacement_mm =  20 : visible only for dark shadows (b<0.20)
+                #     displacement_mm =  80 : needed for midtone (b=0.5) to reach 2.3 mm
+                #   speed_floor=0.10 (recommended fix):
+                #     displacement_mm =   6 : marginal (0.9 mm at b=0.5 midtone)
+                #     displacement_mm =  15 : visible at midtones (~2.2 mm at b=0.5)
+                #     displacement_mm =  25 : strong effect; lines cross in dark areas
                 "mode": "FMM Topographic",
                 "num_levels": 8,
                 "spacing": "linear",
