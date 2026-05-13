@@ -981,11 +981,11 @@ class FlowImageGenerator(Generator):
                 name="Default Flow",
                 params={
                     "mode": "flow",
-                    "seed_spacing_mm": 2.0,
-                    "max_length_mm": 20.0,
+                    "seed_spacing_mm": 4.0,
+                    "max_length_mm": 15.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
-                    "separation_distance_mm": 0.8,
+                    "separation_distance_mm": 1.5,
                     **_flow_base,
                 },
             ),
@@ -1075,19 +1075,21 @@ class FlowImageGenerator(Generator):
             Preset(
                 name="Loose Sketch",
                 params={
-                    # Wide spacing and long lines with the Perpendicular Gradient
-                    # field produce a gestural, hand-drawn quality; density
-                    # modulation disabled for an even, sketch-like coverage.
+                    # Wide spacing and moderate-length lines with ETF edge flow
+                    # produce a gestural, hand-drawn quality; density modulation
+                    # disabled for an even, sketch-like coverage.  ETF is used
+                    # instead of Perpendicular Gradient for coherent trajectories.
                     "mode": "flow",
                     "seed_spacing_mm": 3.0,
-                    "max_length_mm": 40.0,
+                    "max_length_mm": 25.0,
                     "brightness_threshold": 230,
                     "density_modulation": False,
                     "separation_distance_mm": 1.5,
                     **_flow_base,
-                    "vector_field": "Perpendicular Gradient",
+                    "vector_field": "Edge Flow (ETF)",
                     "seed": 99,
-                    "blur_radius": 2.0,
+                    "blur_radius": 3.0,
+                    "contrast": 10.0,
                 },
             ),
             Preset(
@@ -1185,15 +1187,19 @@ class FlowImageGenerator(Generator):
                 name="Sketchy Grouped Strokes",
                 params={
                     # Groups of 3 tightly spaced scan lines with wide gaps
-                    # between clusters, like rough hatching.
+                    # between clusters, like rough hatching.  High amplitude
+                    # and displacement_variation make individual strokes vary
+                    # visibly; contrast boost helps image content emerge from
+                    # the grouped structure.
                     "mode": "squiggle",
-                    "amplitude_mm": 3.0,
+                    "amplitude_mm": 6.0,
                     "frequency": 6.0,
                     **_squiggle_base,
                     "line_spacing": "Grouped",
                     "group_gap_mm": 6.0,
                     "group_intra_spacing_mm": 0.8,
-                    "displacement_variation": 0.6,
+                    "displacement_variation": 0.85,
+                    "contrast": 15.0,
                     "seed": 42,
                 },
             ),

@@ -566,10 +566,10 @@ class TestPresets:
         gen = FlowImageGenerator()
         preset = next(p for p in gen.get_presets() if p.name == "Loose Sketch")
         assert preset.params["seed_spacing_mm"] == 3.0
-        assert preset.params["max_length_mm"] == 40.0
+        assert preset.params["max_length_mm"] == 25.0
         assert preset.params["separation_distance_mm"] == 1.5
         assert preset.params["density_modulation"] is False
-        assert preset.params["vector_field"] == "Perpendicular Gradient"
+        assert preset.params["vector_field"] == "Edge Flow (ETF)"
 
     def test_dense_coverage_preset_params(self) -> None:
         gen = FlowImageGenerator()
