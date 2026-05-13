@@ -252,17 +252,23 @@ class EdgeDetectGenerator(Generator):
             Preset(
                 name="Bold Outlines",
                 params={
-                    "low_threshold": 100.0,
-                    "high_threshold": 200.0,
-                    "min_contour_length": 20,
-                    "simplify_tolerance_mm": 1.0,
-                    "close_gaps_mm": 3.0,
+                    # Moderate Canny thresholds combined with blur + contrast
+                    # preprocessing: blur suppresses fine texture so only the
+                    # strongest gradient edges (mountain silhouettes, horizon
+                    # lines) survive; contrast boost amplifies those main
+                    # transitions.  min_contour_length and large simplify
+                    # tolerance keep only the prominent, continuous strokes.
+                    "low_threshold": 40.0,
+                    "high_threshold": 110.0,
+                    "min_contour_length": 15,
+                    "simplify_tolerance_mm": 1.5,
+                    "close_gaps_mm": 5.0,
                     "smooth_curves": False,
                     "curve_tolerance_mm": 0.5,
                     "invert": False,
                     "brightness": 0.0,
-                    "contrast": 0.0,
-                    "blur_radius": 0.0,
+                    "contrast": 20.0,
+                    "blur_radius": 2.5,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
                 },
