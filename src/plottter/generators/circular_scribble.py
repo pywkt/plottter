@@ -1021,43 +1021,65 @@ class CircularScribbleGenerator(Generator):
                 name="Default",
                 params={
                     **_base,
-                    "min_radius_mm": 0.5,
+                    # Wider radius range → small tight circles in darks, large open ones in brights
+                    "min_radius_mm": 0.4,
                     "max_radius_mm": 5.0,
+                    # Wider spacing/speed ratios amplify dark-vs-bright density contrast
+                    "min_sample_spacing_mm": 0.8,
+                    "max_sample_spacing_mm": 12.0,
+                    "min_speed": 0.4,
+                    "max_speed": 12.0,
+                    # Higher gamma: mid-tones mapped toward darks → more detail in shadows
+                    "tone_gamma": 2.0,
+                    # Contrast pre-stretch: makes compressed tonal ranges pop
+                    "contrast": 20.0,
                 },
             ),
             Preset(
                 name="Portrait",
                 params={
                     **_base,
-                    "min_radius_mm": 0.3,
+                    # Fine detail for skin texture and facial features
+                    "min_radius_mm": 0.25,
                     "max_radius_mm": 3.0,
-                    "min_sample_spacing_mm": 0.8,
-                    "max_sample_spacing_mm": 6.0,
-                    "min_speed": 0.3,
-                    "max_speed": 5.0,
+                    "min_sample_spacing_mm": 0.6,
+                    "max_sample_spacing_mm": 9.0,
+                    "min_speed": 0.25,
+                    "max_speed": 7.0,
+                    # Smooth circles → natural look on face curves
                     "angle_step_deg": 15.0,
-                    "tone_gamma": 2.0,
+                    # Strong gamma: face shadows stay visibly darker
+                    "tone_gamma": 2.5,
+                    # High edge sensitivity: respect contours of eyes, nose, lips
                     "edge_sensitivity": 0.9,
                     "edge_low": 40,
                     "edge_high": 120,
                     "orientation_strength": 0.4,
+                    # Skip white background so the face is the sole subject
                     "skip_background": True,
+                    # Moderate contrast boost to pull out face tonal variation
+                    "contrast": 30.0,
                 },
             ),
             Preset(
                 name="Detailed",
                 params={
                     **_base,
-                    "min_radius_mm": 0.3,
+                    # Very fine radius for maximum resolution
+                    "min_radius_mm": 0.2,
                     "max_radius_mm": 2.5,
-                    "min_sample_spacing_mm": 0.8,
+                    # Dense point cloud everywhere; still sparser in brights
+                    "min_sample_spacing_mm": 0.5,
                     "max_sample_spacing_mm": 5.0,
-                    "min_speed": 0.3,
+                    "min_speed": 0.2,
                     "max_speed": 4.0,
                     "angle_step_deg": 15.0,
-                    "tone_gamma": 2.0,
+                    # Very high gamma: mid-tones treated like darks → high coverage with contrast
+                    "tone_gamma": 2.8,
                     "edge_sensitivity": 0.8,
                     "orientation_strength": 0.2,
+                    # Strong contrast pre-stretch to maximise separation between tone bands
+                    "contrast": 40.0,
                 },
             ),
             Preset(
@@ -1081,44 +1103,64 @@ class CircularScribbleGenerator(Generator):
                 name="Shaded",
                 params={
                     **_base,
-                    "min_radius_mm": 0.5,
+                    # Moderate radius range; let density carry the tonal weight
+                    "min_radius_mm": 0.35,
                     "max_radius_mm": 5.0,
-                    "min_sample_spacing_mm": 1.0,
-                    "max_sample_spacing_mm": 7.0,
-                    "min_speed": 0.5,
-                    "max_speed": 7.0,
-                    "angle_step_deg": 20.0,
-                    "tone_gamma": 1.5,
+                    # Very wide spacing ratio (21:1) → extreme density contrast dark/bright
+                    "min_sample_spacing_mm": 0.7,
+                    "max_sample_spacing_mm": 15.0,
+                    # Very wide speed ratio → tight loops in darks, sweeping advance in brights
+                    "min_speed": 0.3,
+                    "max_speed": 15.0,
+                    # Highest gamma of all presets: dramatic shadow emphasis
+                    "tone_gamma": 3.0,
                     "edge_sensitivity": 0.5,
+                    # Strong orientation effect for sculptural shading feel
                     "orientation_strength": 0.8,
                     "seed": 13,
+                    "contrast": 20.0,
                 },
             ),
             Preset(
                 name="Bold Scribble",
                 params={
                     **_base,
-                    "min_radius_mm": 1.0,
-                    "max_radius_mm": 8.0,
+                    # Large bold circles; clearly visible dark/bright separation
+                    "min_radius_mm": 1.2,
+                    "max_radius_mm": 10.0,
+                    # Wide spacing range (9:1) so bold darks contrast with open brights
                     "min_sample_spacing_mm": 2.0,
-                    "max_sample_spacing_mm": 12.0,
-                    "min_speed": 1.0,
-                    "max_speed": 12.0,
-                    "angle_step_deg": 20.0,
-                    "tone_gamma": 1.2,
+                    "max_sample_spacing_mm": 18.0,
+                    "min_speed": 1.2,
+                    "max_speed": 18.0,
+                    "tone_gamma": 2.2,
                     "orientation_strength": 0.3,
+                    # Strong contrast pre-stretch for clear large-scale tonal separation
+                    "contrast": 35.0,
                 },
             ),
             Preset(
                 name="Soft Edge Aware",
                 params={
                     **_base,
-                    "min_radius_mm": 0.5,
-                    "max_radius_mm": 5.0,
-                    "edge_sensitivity": 0.5,
+                    # Moderate parameters for smooth tonal transitions
+                    "min_radius_mm": 0.4,
+                    "max_radius_mm": 6.0,
+                    "min_sample_spacing_mm": 0.8,
+                    "max_sample_spacing_mm": 12.0,
+                    "min_speed": 0.4,
+                    "max_speed": 12.0,
+                    # Softer gamma than other presets → gentle gradient
+                    "tone_gamma": 1.8,
+                    # Edge sensitivity tuned for smooth, slightly soft contours
+                    "edge_sensitivity": 0.55,
                     "edge_low": 60,
                     "edge_high": 180,
                     "orientation_strength": 0.3,
+                    # Blur input slightly so density varies smoothly across gradients
+                    "blur_radius": 1.5,
+                    # Light contrast boost — enough to reveal gradients, not harsh
+                    "contrast": 15.0,
                 },
             ),
         ]
