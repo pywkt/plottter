@@ -232,7 +232,7 @@ class HedcutGenerator(Generator):
                 min=0,
                 max=128,
                 step=1,
-                default=80,
+                default=60,
                 description=(
                     "Brightness below which pixels are shadows — "
                     "directional hatching fills these dark areas (0=black, 255=white)"
@@ -288,7 +288,7 @@ class HedcutGenerator(Generator):
                 min=500,
                 max=30000,
                 step=100,
-                default=5000,
+                default=8000,
                 description=(
                     "Number of stipple dots in the midtone zone — "
                     "more = finer tonal detail but slower to generate"
@@ -375,7 +375,7 @@ class HedcutGenerator(Generator):
                 min=0.2,
                 max=3.0,
                 step=0.1,
-                default=0.5,
+                default=0.8,
                 description="Minimum spacing between shadow hatch lines in mm",
             ),
             BoolParam(
@@ -448,18 +448,18 @@ class HedcutGenerator(Generator):
         # Shared defaults applied to all presets
         _shared: dict[str, Any] = {
             "highlight_threshold": 200,
-            "shadow_threshold": 80,
+            "shadow_threshold": 60,
             "edge_method": "XDoG",
             "edge_sigma": 1.0,
             "edge_min_len": 10,
             "edge_simplify_mm": 0.3,
-            "stipple_points": 5000,
+            "stipple_points": 8000,
             "stipple_iterations": 20,
             "min_dot_size_mm": 0.2,
             "max_dot_size_mm": 0.8,
             "dot_size_gamma": 1.0,
             "hatch_angle": 45.0,
-            "hatch_spacing_mm": 0.5,
+            "hatch_spacing_mm": 0.8,
             "cross_hatch_shadows": False,
             "brightness": 0.0,
             "contrast": 0.0,
@@ -473,13 +473,15 @@ class HedcutGenerator(Generator):
                 name="Hedcut / Classic WSJ",
                 params={
                     **_shared,
-                    # Traditional newspaper hedcut: XDoG outlines, moderate stipple,
-                    # 45-degree shadow hatching — the signature portrait illustration style.
+                    # Traditional newspaper hedcut: XDoG outlines, dense stipple dominant,
+                    # sparse 45-degree hatching restricted to the darkest 24% of tones —
+                    # the signature portrait illustration style with stipple as the hero.
                     "edge_method": "XDoG",
-                    "stipple_points": 5000,
+                    "stipple_points": 10000,
                     "stipple_iterations": 20,
+                    "shadow_threshold": 60,
                     "hatch_angle": 45.0,
-                    "hatch_spacing_mm": 0.5,
+                    "hatch_spacing_mm": 0.9,
                     "contrast": 10.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
@@ -489,16 +491,18 @@ class HedcutGenerator(Generator):
                 name="Hedcut / Dense Detail",
                 params={
                     **_shared,
-                    # High dot count with cross-hatching: for complex portraits with
-                    # fine hair and shadow detail — FDoG produces longer coherent strokes.
+                    # High dot count for complex portraits with fine hair and detail.
+                    # FDoG produces longer coherent strokes; dense stipple dominates,
+                    # hatching restricted to darkest 22% of tones — no cross-hatching.
                     "edge_method": "FDoG",
-                    "stipple_points": 15000,
+                    "stipple_points": 20000,
                     "stipple_iterations": 25,
                     "min_dot_size_mm": 0.15,
                     "max_dot_size_mm": 0.5,
+                    "shadow_threshold": 55,
                     "hatch_angle": 45.0,
-                    "hatch_spacing_mm": 0.4,
-                    "cross_hatch_shadows": True,
+                    "hatch_spacing_mm": 0.7,
+                    "cross_hatch_shadows": False,
                     "contrast": 15.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
@@ -508,15 +512,17 @@ class HedcutGenerator(Generator):
                 name="Hedcut / Minimal",
                 params={
                     **_shared,
-                    # Clean modern hedcut with fewer dots and no cross-hatching —
-                    # simpler, faster to plot.
+                    # Clean modern hedcut: fewer dots for a fast, sparse result.
+                    # Very wide hatch spacing keeps shadow lines minimal and airy;
+                    # stipple clearly dominates the tonal rendering.
                     "edge_method": "XDoG",
-                    "stipple_points": 2000,
+                    "stipple_points": 4000,
                     "stipple_iterations": 15,
                     "min_dot_size_mm": 0.2,
                     "max_dot_size_mm": 0.7,
+                    "shadow_threshold": 65,
                     "hatch_angle": 45.0,
-                    "hatch_spacing_mm": 0.7,
+                    "hatch_spacing_mm": 1.2,
                     "cross_hatch_shadows": False,
                     "contrast": 5.0,
                     "x_offset_mm": 0.0,
@@ -527,9 +533,10 @@ class HedcutGenerator(Generator):
                 name="Hedcut / Bold Hedcut",
                 params={
                     **_shared,
-                    # Dramatic filled-dot style with a wide size range and deep shadows.
+                    # Dramatic filled-dot style with a wide size range.
                     # Large filled dots in shadow areas contrast sharply with tiny dots
-                    # in highlights, producing bold, high-impact tonal variation.
+                    # in highlights. Hatching restricted to deepest 24% only; no cross-
+                    # hatching so stipple remains the unambiguous dominant technique.
                     "dot_style": "Filled",
                     "min_dot_size_mm": 0.2,
                     "max_dot_size_mm": 1.8,
@@ -537,13 +544,13 @@ class HedcutGenerator(Generator):
                     "pen_width_mm": 0.3,
                     "edge_method": "XDoG",
                     "edge_sigma": 1.2,
-                    "stipple_points": 5000,
+                    "stipple_points": 10000,
                     "stipple_iterations": 20,
-                    "shadow_threshold": 80,
+                    "shadow_threshold": 60,
                     "highlight_threshold": 200,
                     "hatch_angle": 45.0,
-                    "hatch_spacing_mm": 0.5,
-                    "cross_hatch_shadows": True,
+                    "hatch_spacing_mm": 0.9,
+                    "cross_hatch_shadows": False,
                     "contrast": 20.0,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
@@ -554,8 +561,9 @@ class HedcutGenerator(Generator):
                 params={
                     **_shared,
                     # Subtle, detailed stipple with outline dots in a narrow size range.
-                    # High dot count with fine edge detection captures fine detail
-                    # without the bold character of filled-dot styles.
+                    # Very high dot count captures fine tonal gradients; hatching confined
+                    # to the darkest 22% of tones with generous spacing so stipple clearly
+                    # dominates.
                     "dot_style": "Outline",
                     "min_dot_size_mm": 0.1,
                     "max_dot_size_mm": 0.4,
@@ -564,12 +572,12 @@ class HedcutGenerator(Generator):
                     "edge_sigma": 0.7,
                     "edge_simplify_mm": 0.2,
                     "edge_min_len": 8,
-                    "stipple_points": 15000,
+                    "stipple_points": 20000,
                     "stipple_iterations": 25,
-                    "shadow_threshold": 70,
+                    "shadow_threshold": 55,
                     "highlight_threshold": 210,
                     "hatch_angle": 45.0,
-                    "hatch_spacing_mm": 0.4,
+                    "hatch_spacing_mm": 0.8,
                     "cross_hatch_shadows": False,
                     "contrast": 10.0,
                     "blur_radius": 0.5,
@@ -581,10 +589,11 @@ class HedcutGenerator(Generator):
                 name="Hedcut / WSJ Portrait",
                 params={
                     **_shared,
-                    # Tuned to mimic the classic Wall Street Journal hedcut portrait:
+                    # Closest to the authentic Wall Street Journal hedcut portrait:
                     # filled dots with moderate size variation, gamma 1.5 to push
-                    # shadow dots larger, FDoG for smooth coherent facial contours,
-                    # and moderate contrast to preserve skin tone gradation.
+                    # shadow dots larger, FDoG for smooth coherent facial contours.
+                    # Stipple is strongly dominant; hatching reserved for the deepest
+                    # 24% of tones only, with generous spacing for an airy shadow feel.
                     "dot_style": "Filled",
                     "min_dot_size_mm": 0.2,
                     "max_dot_size_mm": 0.9,
@@ -594,12 +603,12 @@ class HedcutGenerator(Generator):
                     "edge_sigma": 1.0,
                     "edge_simplify_mm": 0.3,
                     "edge_min_len": 10,
-                    "stipple_points": 8000,
+                    "stipple_points": 12000,
                     "stipple_iterations": 25,
-                    "shadow_threshold": 80,
+                    "shadow_threshold": 60,
                     "highlight_threshold": 200,
                     "hatch_angle": 45.0,
-                    "hatch_spacing_mm": 0.5,
+                    "hatch_spacing_mm": 0.9,
                     "cross_hatch_shadows": False,
                     "contrast": 15.0,
                     "blur_radius": 1.0,
