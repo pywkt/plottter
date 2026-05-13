@@ -335,3 +335,156 @@ def _zhang_suen_thinning(binary: np.ndarray) -> np.ndarray:
             break
 
     return img.astype(np.uint8) * 255
+
+
+def _walk_skeleton_branches(
+    skeleton: np.ndarray,
+    min_pixels: int,
+) -> list[list[tuple[int, int]]]:
+    """Walk a skeleton image and extract ordered polyline pixel paths.
+
+    Extracts centerlines by pixel-graph walking: the skeleton is treated as
+    a graph where each foreground pixel is a node connected to its 8-connected
+    neighbours.  Branches between junction/endpoint pixels are each walked into
+    one polyline, producing true centerline paths rather than boundary outlines.
+
+    Parameters
+    ----------
+    skeleton:
+        uint8 image, skeleton pixels = 255, background = 0.
+    min_pixels:
+        Minimum path length (in pixels) to keep; shorter paths are discarded.
+
+    Returns
+    -------
+    List of pixel coordinate lists ``[(x, y), ...]`` (x first, image space).
+    """
+    from scipy.ndimage import convolve as _nd_convolve  # type: ignore[import]
+
+    skel = skeleton > 0
+    if not skel.any():
+        return []
+
+    # Count 8-connected skeleton neighbours per pixel with a 3x3 convolution.
+    kernel = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=np.int32)
+    ncount = _nd_convolve(skel.astype(np.int32), kernel, mode="constant", cval=0)
+    ncount = ncount * skel  # zero out non-skeleton pixels
+
+    # Classify pixels by connectivity.
+    endpoint_mask = skel & (ncount == 1)
+    junction_mask = skel & (ncount >= 3)
+
+    ys, xs = np.where(skel)
+    pixel_set: set[tuple[int, int]] = set(zip(ys.tolist(), xs.tolist()))
+
+    endpoints: set[tuple[int, int]] = (
+        set(zip(*np.where(endpoint_mask))) if endpoint_mask.any() else set()
+    )
+    junctions: set[tuple[int, int]] = (
+        set(zip(*np.where(junction_mask))) if junction_mask.any() else set()
+    )
+    stop_pixels = endpoints | junctions
+
+    # ------------------------------------------------------------------
+    # Neighbour lookup (8-connected, staying in pixel_set).
+    # ------------------------------------------------------------------
+    def nbrs(y: int, x: int) -> list[tuple[int, int]]:
+        result = []
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                nb = (y + dy, x + dx)
+                if nb in pixel_set:
+                    result.append(nb)
+        return result
+
+    # ------------------------------------------------------------------
+    # Branch walking: follow the chain from a stop pixel to the next
+    # stop pixel (or dead end).
+    # ------------------------------------------------------------------
+    def walk_branch(
+        start: tuple[int, int], first: tuple[int, int]
+    ) -> list[tuple[int, int]]:
+        path = [start, first]
+        prev, curr = start, first
+        while curr not in stop_pixels:
+            candidates = [n for n in nbrs(*curr) if n != prev]
+            if not candidates:
+                break
+            prev, curr = curr, candidates[0]
+            path.append(curr)
+        return path
+
+    walked_edges: set[tuple[tuple, tuple]] = set()
+    visited: set[tuple[int, int]] = set()
+    polylines: list[list[tuple[int, int]]] = []
+
+    # Walk all branches from stop pixels (endpoints and junctions).
+    for sp in stop_pixels:
+        for n in nbrs(*sp):
+            edge = (min(sp, n), max(sp, n))
+            if edge in walked_edges:
+                continue
+            walked_edges.add(edge)
+            path = walk_branch(sp, n)
+            # Mark all consecutive edges in this path as walked.
+            for i in range(len(path) - 1):
+                walked_edges.add(
+                    (min(path[i], path[i + 1]), max(path[i], path[i + 1]))
+                )
+            visited.update(path)
+            if len(path) >= min_pixels:
+                polylines.append([(x, y) for y, x in path])
+
+    # ------------------------------------------------------------------
+    # Cyclic components: closed loops with no endpoints or junctions.
+    # Walk each remaining connected component as a single closed polygon.
+    # ------------------------------------------------------------------
+    remaining = pixel_set - visited
+    while remaining:
+        seed = next(iter(remaining))
+        # BFS to collect the full connected component inside remaining.
+        component: list[tuple[int, int]] = []
+        queue = [seed]
+        seen: set[tuple[int, int]] = {seed}
+        while queue:
+            p = queue.pop()
+            component.append(p)
+            for n in nbrs(*p):
+                if n in remaining and n not in seen:
+                    seen.add(n)
+                    queue.append(n)
+        remaining -= seen
+        visited.update(component)
+
+        if not component:
+            continue
+
+        # Walk the cycle: greedy DFS, close the loop at the end.
+        comp_set = set(component)
+        start_c = component[0]
+        path_c: list[tuple[int, int]] = [start_c]
+        path_set_c: set[tuple[int, int]] = {start_c}
+        prev_c: tuple[int, int] | None = None
+        curr_c = start_c
+
+        while True:
+            candidates = [
+                n
+                for n in nbrs(*curr_c)
+                if n != prev_c and n in comp_set and n not in path_set_c
+            ]
+            if not candidates:
+                # Close the cycle if start is reachable from current position.
+                if start_c in nbrs(*curr_c) and len(path_c) > 2:
+                    path_c.append(start_c)
+                break
+            prev_c, curr_c = curr_c, candidates[0]
+            path_c.append(curr_c)
+            path_set_c.add(curr_c)
+
+        if len(path_c) >= min_pixels:
+            polylines.append([(x, y) for y, x in path_c])
+
+    return polylines

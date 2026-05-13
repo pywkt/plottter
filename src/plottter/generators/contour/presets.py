@@ -504,13 +504,20 @@ def build_presets() -> list[Preset]:
                 # photos of drawings where global threshold fails due to
                 # uneven lighting or shadow gradients.  Skeleton mode
                 # produces clean centerlines from thick ink strokes.
+                #
+                # Tuned for maximum detail: smaller cleanup_kernel (1)
+                # preserves thin pencil/pen lines that kernel=2 would
+                # erase; reduced min_contour_px (4) keeps short strokes;
+                # larger merge_gap (1.5 mm) reconnects broken fragments
+                # from rough scan quality; two Chaikin passes smooth
+                # the pixel-stepped skeleton into plotter-friendly curves.
                 "mode": "Skeleton",
                 "num_levels": 8,
                 "spacing": "linear",
                 "trace_threshold": 128,
-                "smooth_iterations": 1,
-                "cleanup_kernel": 2,
-                "merge_gap_mm": 1.0,
+                "smooth_iterations": 2,
+                "cleanup_kernel": 1,
+                "merge_gap_mm": 1.5,
                 "adaptive_threshold": True,
                 "adaptive_c": 5.0,
                 "fmm_num_contours": 20,
@@ -531,11 +538,11 @@ def build_presets() -> list[Preset]:
                 "fill": "None",
                 "fill_spacing_mm": 0.3,
                 "fill_angle": 45.0,
-                "simplify_mm": 0.3,
-                "min_contour_px": 5,
+                "simplify_mm": 0.2,
+                "min_contour_px": 4,
                 "invert": False,
-                "brightness": 0.0,
-                "contrast": 10.0,
+                "brightness": 5.0,
+                "contrast": 15.0,
                 "blur_radius": 0.5,
                 "smooth_curves": False,
                 "curve_tolerance_mm": 0.5,

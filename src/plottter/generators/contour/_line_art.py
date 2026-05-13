@@ -116,12 +116,13 @@ def _trace_skeleton(
     1. Threshold (THRESH_BINARY_INV): dark ink → white foreground.
     2. Optional morphological cleanup (MORPH_CLOSE then MORPH_OPEN).
     3. Skeletonize: reduce ink regions to single-pixel-wide centerlines.
-    4. findContours on the skeleton: each connected skeleton component
-       produces one contour that — after RDP simplification — approximates
-       the centerline of the original thick stroke.
-    5. Optional fragment merging: connect nearby endpoint pairs within
+    4. Walk the skeleton pixel graph: extract one polyline per branch
+       (segment between junction/endpoint pixels), producing true centerline
+       paths rather than the boundary outline of each connected component.
+    5. Optional RDP simplification + mm coordinate conversion.
+    6. Optional fragment merging: connect nearby endpoint pairs within
        ``merge_gap_mm`` to reduce disconnected short segments at junctions.
-    6. Optional Chaikin smoothing.
+    7. Optional Chaikin smoothing.
 
     This produces approximately **one polyline per original thick line**,
     unlike Line Art Trace which traces both the inner and outer edge of
@@ -135,7 +136,7 @@ def _trace_skeleton(
     img_w, img_h:    Source image dimensions in pixels.
     draw_x1..y2:     Canvas drawing area bounds in mm.
     simplify_tol:    RDP simplification tolerance in mm.
-    min_length:      Minimum contour length in pixels (shorter contours discarded).
+    min_length:      Minimum path length in pixels (shorter paths discarded).
     smooth_iterations: Number of Chaikin smoothing passes.
     merge_gap_mm:    Maximum endpoint distance (mm) for fragment merging
                      (0 = disabled).
@@ -145,7 +146,12 @@ def _trace_skeleton(
     except ImportError:  # pragma: no cover
         raise RuntimeError("opencv-python is required for ContourGenerator.")
 
-    from plottter.generators._helpers import _apply_threshold, _skeletonize
+    from plottter.generators._helpers import (
+        _apply_threshold,
+        _px_to_mm,
+        _skeletonize,
+        _walk_skeleton_branches,
+    )
 
     # Step 1: threshold — dark ink (≤ threshold) → white foreground
     binary = _apply_threshold(
@@ -163,27 +169,28 @@ def _trace_skeleton(
     # Step 3: skeletonize — reduce white ink regions to 1-pixel-wide centerlines
     skeleton = _skeletonize(binary)
 
-    # Step 4: trace contours of the skeleton.
-    # findContours finds the boundary of each connected white component.
-    # For 1-pixel-wide centerlines, the boundary of each component closely
-    # approximates the skeleton segment.  After RDP simplification, these
-    # collapse to the line's endpoints — roughly one polyline per original
-    # thick stroke.
-    contours, _ = cv2.findContours(skeleton, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+    # Step 4: extract centerline polylines by walking the skeleton pixel graph.
+    # Each branch between junction/endpoint pixels becomes one polyline, so
+    # branching ink structures (e.g. letter strokes, face features) produce
+    # multiple independent branches rather than a single boundary outline.
+    pixel_paths = _walk_skeleton_branches(skeleton, min_length)
 
     px_per_mm = img_w / (draw_x2 - draw_x1) if (draw_x2 - draw_x1) > 0 else 1.0
 
-    # Collect raw polylines before merging and smoothing
+    # Step 5: RDP simplification and pixel→mm conversion
     raw_polylines: list[Polyline] = []
-    for contour in contours:
-        if len(contour) < min_length:
+    for pixel_path in pixel_paths:
+        if len(pixel_path) < 2:
             continue
 
         if simplify_tol > 0:
             tol_px = max(0.5, simplify_tol * px_per_mm)
-            contour = cv2.approxPolyDP(contour, tol_px, closed=True)
+            pts = np.array(pixel_path, dtype=np.float32).reshape(-1, 1, 2)
+            pts = cv2.approxPolyDP(pts, tol_px, closed=False)
+            pts = pts.reshape(-1, 2)
+        else:
+            pts = np.array(pixel_path, dtype=np.float32)
 
-        pts = contour.reshape(-1, 2)
         if len(pts) < 2:
             continue
 
@@ -192,17 +199,16 @@ def _trace_skeleton(
                       draw_x1, draw_y1, draw_x2, draw_y2)
             for p in pts
         ]
-
         if len(poly) >= 2:
             raw_polylines.append(poly)
 
-    # Step 5: optional fragment merging — connect nearby endpoint pairs
+    # Step 6: optional fragment merging — connect nearby endpoint pairs
     # before smoothing so that merged segments receive a single smooth pass.
     if merge_gap_mm > 0 and raw_polylines:
         from plottter.processing.merge import merge_fragments
         raw_polylines = merge_fragments(raw_polylines, merge_gap_mm)
 
-    # Step 6: optional Chaikin smoothing applied to the (possibly merged) polylines
+    # Step 7: optional Chaikin smoothing applied to the (possibly merged) polylines
     polylines: list[Polyline] = []
     for poly in raw_polylines:
         if smooth_iterations > 0:
