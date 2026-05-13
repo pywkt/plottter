@@ -554,9 +554,11 @@ class TestPresets:
     def test_fine_detail_preset_params(self) -> None:
         gen = FlowImageGenerator()
         preset = next(p for p in gen.get_presets() if p.name == "Fine Detail")
-        assert preset.params["seed_spacing_mm"] == 1.0
+        # Params tuned for <30s runtime on a 600px source (seed_spacing_mm and
+        # separation_distance_mm raised from 1.0/0.4 to keep candidate count low).
+        assert preset.params["seed_spacing_mm"] == 2.0
         assert preset.params["max_length_mm"] == 15.0
-        assert preset.params["separation_distance_mm"] == 0.4
+        assert preset.params["separation_distance_mm"] == 0.8
         assert preset.params["density_modulation"] is True
         assert preset.params["brightness_threshold"] == 240
 
@@ -572,9 +574,12 @@ class TestPresets:
     def test_dense_coverage_preset_params(self) -> None:
         gen = FlowImageGenerator()
         preset = next(p for p in gen.get_presets() if p.name == "Dense Coverage")
-        assert preset.params["seed_spacing_mm"] == 0.8
-        assert preset.params["max_length_mm"] == 10.0
-        assert preset.params["separation_distance_mm"] == 0.3
+        # Params tuned for <30s runtime on a 600px source (seed_spacing_mm raised
+        # from 0.8 to 1.5, max_length_mm lowered from 10 to 8, separation raised
+        # from 0.3 to 0.8 to keep candidate and streamline counts manageable).
+        assert preset.params["seed_spacing_mm"] == 1.5
+        assert preset.params["max_length_mm"] == 8.0
+        assert preset.params["separation_distance_mm"] == 0.8
         assert preset.params["density_modulation"] is True
 
     def test_no_preset_has_deprecated_params(self) -> None:

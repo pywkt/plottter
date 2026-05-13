@@ -110,7 +110,7 @@ def _filter_streamlines_by_separation(
     Processes in brightness-priority order (darkest first — lower value first)
     so that when two streamlines compete for the same region the one in the
     darker area is kept.  Proximity is measured between streamline *midpoints*
-    using a KD-tree for O(n log n) queries.
+    using a spatial hash grid for O(n) average-case performance.
 
     Parameters
     ----------
@@ -121,7 +121,7 @@ def _filter_streamlines_by_separation(
     separation_distance_mm:
         Minimum allowed distance between accepted midpoints (mm).
     """
-    from scipy.spatial import cKDTree
+    import math as _math
 
     if not streamlines or separation_distance_mm <= 0.0:
         return streamlines
@@ -137,22 +137,34 @@ def _filter_streamlines_by_separation(
     # Process darkest first (ascending brightness)
     order = sorted(range(n), key=lambda i: float(brightnesses[i]))
 
-    accepted_midpoints: list[list[float]] = []
+    # Spatial hash grid: cell side = separation_distance_mm so only the 3x3
+    # neighbourhood of cells needs to be checked for each query - O(1) per point.
+    cell_size = separation_distance_mm
+    sep_sq = separation_distance_mm * separation_distance_mm
+    grid: dict[tuple[int, int], list[tuple[float, float]]] = {}
+
+    def _has_nearby(x: float, y: float) -> bool:
+        cx = _math.floor(x / cell_size)
+        cy = _math.floor(y / cell_size)
+        for dx in range(-1, 2):
+            for dy in range(-1, 2):
+                bucket = grid.get((cx + dx, cy + dy))
+                if bucket is None:
+                    continue
+                for px, py in bucket:
+                    if (x - px) * (x - px) + (y - py) * (y - py) < sep_sq:
+                        return True
+        return False
+
     accepted_indices: set[int] = set()
 
     for i in order:
         mx, my = midpoints[i]
-
-        if not accepted_midpoints:
-            accepted_midpoints.append([mx, my])
-            accepted_indices.add(i)
-            continue
-
-        tree = cKDTree(accepted_midpoints)
-        dist, _ = tree.query([mx, my], k=1)
-
-        if dist >= separation_distance_mm:
-            accepted_midpoints.append([mx, my])
+        if not _has_nearby(mx, my):
+            ck = (_math.floor(mx / cell_size), _math.floor(my / cell_size))
+            if ck not in grid:
+                grid[ck] = []
+            grid[ck].append((mx, my))
             accepted_indices.add(i)
 
     # Return accepted streamlines in original order
@@ -1044,15 +1056,17 @@ class FlowImageGenerator(Generator):
             Preset(
                 name="Fine Detail",
                 params={
-                    # Very tight seed spacing and short lines capture fine texture
+                    # Tight seed spacing and short lines capture fine texture
                     # and micro-edges; high brightness_threshold keeps lines out of
-                    # all but the darkest shadow regions.
+                    # all but the darkest shadow regions.  seed_spacing_mm and
+                    # separation_distance_mm are balanced so the preset completes
+                    # in well under 30 s on a 600 px source image.
                     "mode": "flow",
-                    "seed_spacing_mm": 1.0,
+                    "seed_spacing_mm": 2.0,
                     "max_length_mm": 15.0,
                     "brightness_threshold": 240,
                     "density_modulation": True,
-                    "separation_distance_mm": 0.4,
+                    "separation_distance_mm": 0.8,
                     **_flow_base,
                     "seed": 3,
                     "blur_radius": 0.5,
@@ -1079,15 +1093,16 @@ class FlowImageGenerator(Generator):
             Preset(
                 name="Dense Coverage",
                 params={
-                    # Very fine seed grid with short lines and tight separation
+                    # Fine seed grid with short lines and moderate separation
                     # fills the drawing area evenly; best used with high-contrast
-                    # reference images.
+                    # reference images.  Params are tuned to complete in well under
+                    # 30 s on a 600 px source image while keeping visual density high.
                     "mode": "flow",
-                    "seed_spacing_mm": 0.8,
-                    "max_length_mm": 10.0,
+                    "seed_spacing_mm": 1.5,
+                    "max_length_mm": 8.0,
                     "brightness_threshold": 230,
                     "density_modulation": True,
-                    "separation_distance_mm": 0.3,
+                    "separation_distance_mm": 0.8,
                     **_flow_base,
                     "seed": 13,
                     "blur_radius": 0.5,
