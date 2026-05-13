@@ -28,6 +28,7 @@ A free, open-source desktop application for generating pen-plotter-ready vector 
 | Requirement | Version |
 |-------------|---------|
 | Python | 3.12+ |
+| pip | 21.3+ (for PEP 660 editable installs) |
 | OS | Linux, macOS, Windows |
 
 ## Installation
