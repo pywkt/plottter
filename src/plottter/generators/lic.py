@@ -110,12 +110,19 @@ def _brightness_filter(
     canvas_h: float,
     brightness_img: np.ndarray,
     brightness_threshold: float,
+    rng: np.random.Generator | None = None,
 ) -> list[tuple[float, float]]:
     """Remove seed points that fall in bright image regions.
 
     Bilinearly samples ``brightness_img`` at each seed position (mapped from
     mm coordinates to pixel coordinates) and keeps only those seeds whose
     sampled brightness is *below* ``brightness_threshold``.
+
+    When *rng* is supplied the filter operates in **probabilistic mode**: seeds
+    are kept with probability ``1 - brightness / brightness_threshold``, which
+    produces a continuous density gradient — dark regions keep nearly all seeds
+    while seeds in progressively brighter areas thin out toward the threshold.
+    Seeds at or above the threshold are always discarded regardless of mode.
 
     Parameters
     ----------
@@ -128,12 +135,12 @@ def _brightness_filter(
         2-D grayscale array of shape ``(H, W)`` with float values in
         ``[0, 1]`` (0 = black, 1 = white).
     brightness_threshold:
-        Seeds with sampled brightness ≥ this value are discarded.  A value of
-        ``0.0`` removes all seeds (everything is at least as bright as 0),
-        and ``1.0`` removes no seeds (nothing exceeds 1 in normalised images;
-        passing ``> 1.0`` guarantees no seeds are removed even with slight
-        floating-point drift, but the public interface uses ``255`` for 8-bit
-        images — see notes below).
+        Seeds with sampled brightness >= this value are always discarded.  In
+        binary mode (``rng`` is ``None``) this is also a hard keep threshold.
+        In probabilistic mode the threshold is the upper bound of the ramp.
+    rng:
+        NumPy random generator for probabilistic mode.  Pass ``None`` (the
+        default) to use the legacy binary-threshold behaviour.
 
     Notes
     -----
@@ -161,8 +168,15 @@ def _brightness_filter(
     kept: list[tuple[float, float]] = []
     for x_mm, y_mm in seeds:
         brightness = _bilinear_sample(img, x_mm, y_mm, canvas_w, canvas_h, w, h)
-        if brightness < brightness_threshold:
-            kept.append((x_mm, y_mm))
+        if brightness >= brightness_threshold:
+            continue  # always discard at or above threshold
+        if rng is not None:
+            # Probabilistic mode: keep probability tapers linearly from 1 at
+            # b=0 (pure black) down to 0 as b approaches the threshold.
+            keep_prob = 1.0 - brightness / brightness_threshold
+            if rng.random() > keep_prob:
+                continue
+        kept.append((x_mm, y_mm))
 
     return kept
 
@@ -677,11 +691,11 @@ class LICGenerator(Generator):
                 params={
                     "vector_field": "etf",
                     "kernel_length_mm": 15.0,
-                    "seed_spacing_mm": 2.0,
+                    "seed_spacing_mm": 1.5,
                     "separation_distance_mm": 0.8,
                     "step_size_mm": 0.5,
                     "density_modulation": True,
-                    "brightness_threshold": 220,
+                    "brightness_threshold": 190,
                     "etf_kernel_radius": 5.0,
                     "etf_iterations": 3,
                     "brightness": 0.0,
@@ -697,8 +711,8 @@ class LICGenerator(Generator):
                 params={
                     "vector_field": "etf",
                     "kernel_length_mm": 20.0,
-                    "seed_spacing_mm": 1.0,
-                    "separation_distance_mm": 0.5,
+                    "seed_spacing_mm": 1.5,
+                    "separation_distance_mm": 1.2,
                     "step_size_mm": 0.3,
                     "density_modulation": True,
                     "brightness_threshold": 200,
@@ -860,6 +874,7 @@ class LICGenerator(Generator):
                 canvas_h,
                 img_gray,
                 brightness_threshold / 255.0,
+                rng=rng,
             )
 
         if progress_callback:
