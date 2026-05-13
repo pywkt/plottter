@@ -880,9 +880,10 @@ class StippleGenerator(Generator):
         ]
 
     def get_presets(self) -> list[Preset]:
-        # Shared defaults for all presets (Lloyd algorithm)
+        # Shared defaults for all presets — LBG is the quality baseline:
+        # better blue-noise spatial distribution and faster convergence than Lloyd.
         _shared = {
-            "algorithm": "Lloyd",
+            "algorithm": "LBG",
             "working_resolution": 400,
             "convergence_threshold": 0.5,
             "split_threshold": 1.5,
@@ -895,17 +896,20 @@ class StippleGenerator(Generator):
             Preset(
                 name="Default Stipple",
                 params={
-                    "num_points": 5000,
+                    # LBG with 8 000 points gives clearly distinguishable facial
+                    # features (eyes, mouth, hairline) on portrait photos.
+                    # A mild contrast boost separates shadows from highlights.
+                    "num_points": 8000,
                     "iterations": 30,
                     "render_mode": "Dots",
                     "tsp_optimize": True,
                     "connect_tsp": False,
-                    "min_dot_spacing_mm": 0.5,
+                    "min_dot_spacing_mm": 0.4,
                     "seed": 42,
                     "invert": False,
                     "brightness": 0.0,
-                    "contrast": 0.0,
-                    "blur_radius": 1.0,
+                    "contrast": 10.0,
+                    "blur_radius": 1.5,
                     **_shared,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
@@ -914,16 +918,18 @@ class StippleGenerator(Generator):
             Preset(
                 name="Dense Stipple",
                 params={
+                    # Very high point count for fine-grained tonal detail;
+                    # small dot spacing keeps dots from merging visually.
                     "num_points": 15000,
                     "iterations": 30,
                     "render_mode": "Dots",
                     "tsp_optimize": True,
                     "connect_tsp": False,
-                    "min_dot_spacing_mm": 0.3,
+                    "min_dot_spacing_mm": 0.25,
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
-                    "contrast": 0.0,
+                    "contrast": 5.0,
                     "blur_radius": 1.0,
                     **_shared,
                     "x_offset_mm": 0.0,
@@ -933,6 +939,9 @@ class StippleGenerator(Generator):
             Preset(
                 name="TSP Art",
                 params={
+                    # LBG stipple with a single-line TSP tour.  LBG produces
+                    # spatially even dots so the tour has fewer long crossings
+                    # than Lloyd-based approaches.
                     "num_points": 5000,
                     "iterations": 30,
                     "render_mode": "TSP Path",
@@ -942,7 +951,7 @@ class StippleGenerator(Generator):
                     "seed": 42,
                     "invert": False,
                     "brightness": 0.0,
-                    "contrast": 0.0,
+                    "contrast": 5.0,
                     "blur_radius": 1.0,
                     **_shared,
                     "x_offset_mm": 0.0,
@@ -952,10 +961,10 @@ class StippleGenerator(Generator):
             Preset(
                 name="Quick Preview",
                 params={
-                    # Low point count and few iterations for rapid visual feedback;
-                    # useful while tuning preprocessing controls before committing
-                    # to a high-quality render.
-                    "num_points": 1000,
+                    # Fast preview: LBG converges well in just 5 iterations.
+                    # 2 000 points at elevated contrast gives a readable
+                    # impression of the image structure even at low density.
+                    "num_points": 2000,
                     "iterations": 5,
                     "render_mode": "Dots",
                     "tsp_optimize": True,
@@ -964,7 +973,7 @@ class StippleGenerator(Generator):
                     "seed": 42,
                     "invert": False,
                     "brightness": 0.0,
-                    "contrast": 0.0,
+                    "contrast": 15.0,
                     "blur_radius": 1.0,
                     **_shared,
                     "x_offset_mm": 0.0,
@@ -974,20 +983,21 @@ class StippleGenerator(Generator):
             Preset(
                 name="Portrait Photo",
                 params={
-                    # High point count with generous min_dot_spacing so dots
-                    # cluster naturally in shadow areas of facial features;
-                    # contrast boost separates highlights from shadows.
-                    "num_points": 8000,
+                    # High point count + strong contrast + gentle blur:
+                    # 12 000 LBG dots weighted toward shadow regions render
+                    # eyes, mouth, and hairline as individually distinguishable
+                    # clusters on plotted output.
+                    "num_points": 12000,
                     "iterations": 40,
                     "render_mode": "Dots",
                     "tsp_optimize": True,
                     "connect_tsp": False,
-                    "min_dot_spacing_mm": 0.4,
+                    "min_dot_spacing_mm": 0.35,
                     "seed": 7,
                     "invert": False,
                     "brightness": 0.0,
-                    "contrast": 20.0,
-                    "blur_radius": 1.5,
+                    "contrast": 25.0,
+                    "blur_radius": 2.0,
                     **_shared,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
@@ -1052,7 +1062,8 @@ class StippleGenerator(Generator):
             Preset(
                 name="LBG TSP Art",
                 params={
-                    # LBG stipple with TSP path connection.
+                    # LBG stipple with TSP path connection — well-distributed
+                    # seed points keep the single-line tour short and local.
                     "num_points": 5000,
                     "iterations": 30,
                     "render_mode": "TSP Path",
@@ -1079,9 +1090,10 @@ class StippleGenerator(Generator):
             Preset(
                 name="TSP Portrait",
                 params={
-                    # Portrait-optimised TSP path: moderate point count with
-                    # contrast boost and slight blur to emphasise facial tones;
-                    # renders as a single continuous line for pen plotters.
+                    # Portrait-optimised TSP path: strong contrast directs
+                    # LBG points into shadow areas (eyes, mouth, hair) so the
+                    # 2 000-point tour traces recognisable facial contours.
+                    # Renders as a single continuous line for pen plotters.
                     "num_points": 2000,
                     "iterations": 30,
                     "render_mode": "TSP Path",
@@ -1091,8 +1103,8 @@ class StippleGenerator(Generator):
                     "seed": 7,
                     "invert": False,
                     "brightness": 0.0,
-                    "contrast": 20.0,
-                    "blur_radius": 1.5,
+                    "contrast": 25.0,
+                    "blur_radius": 2.0,
                     **_shared,
                     "x_offset_mm": 0.0,
                     "y_offset_mm": 0.0,
@@ -1101,8 +1113,9 @@ class StippleGenerator(Generator):
             Preset(
                 name="TSP Dense",
                 params={
-                    # Dense TSP path with 5000 points and tight dot spacing;
-                    # produces fine detail as a single connected line.
+                    # Dense 5 000-point LBG TSP path; produces fine tonal
+                    # gradients as a single connected line.  Mild contrast
+                    # boost helps separate tone regions without harshness.
                     "num_points": 5000,
                     "iterations": 30,
                     "render_mode": "TSP Path",
@@ -1112,7 +1125,7 @@ class StippleGenerator(Generator):
                     "seed": 0,
                     "invert": False,
                     "brightness": 0.0,
-                    "contrast": 0.0,
+                    "contrast": 10.0,
                     "blur_radius": 1.0,
                     **_shared,
                     "x_offset_mm": 0.0,
