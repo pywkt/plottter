@@ -866,6 +866,10 @@ _EXPECTED_PRESET_NAMES = {
     "Full Decoration",
     "Dense Tiling",
     "Dart Origin",
+    "Sparse Penrose",
+    "Dense Penrose",
+    "Asymmetric Center",
+    "Star Arcs",
 }
 
 
@@ -885,9 +889,9 @@ class TestTask464Presets:
 
     # --- preset inventory ---
 
-    def test_exact_six_presets(self):
+    def test_preset_count(self):
         presets = self.gen.get_presets()
-        assert len(presets) == 6, f"Expected 6 presets, got {len(presets)}"
+        assert len(presets) == 10, f"Expected 10 presets, got {len(presets)}"
 
     def test_all_expected_preset_names_present(self):
         preset_names = {p.name for p in self.gen.get_presets()}
@@ -937,6 +941,36 @@ class TestTask464Presets:
         assert p.params["initial_config"] == "Dart"
         assert p.params["subdivisions"] == 5
         assert p.params["render_mode"] == "Edges Only"
+
+    def test_sparse_penrose_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Sparse Penrose"]
+        assert p.params["initial_config"] == "Sun"
+        assert p.params["subdivisions"] == 3
+        assert p.params["render_mode"] == "Edges Only"
+
+    def test_dense_penrose_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Dense Penrose"]
+        assert p.params["initial_config"] == "Star"
+        assert p.params["subdivisions"] == 8
+        assert p.params["render_mode"] == "Edges Only"
+
+    def test_asymmetric_center_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Asymmetric Center"]
+        assert p.params["initial_config"] == "Sun"
+        assert p.params["subdivisions"] == 5
+        assert p.params["render_mode"] == "Edges Only"
+        assert p.params["x_offset_mm"] != 0.0 or p.params["y_offset_mm"] != 0.0
+        assert p.params["rotation_deg"] != 0.0
+
+    def test_star_arcs_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Star Arcs"]
+        assert p.params["initial_config"] == "Star"
+        assert p.params["subdivisions"] == 5
+        assert p.params["render_mode"] == "Arcs Only"
 
     # (f) all presets generate valid output
 

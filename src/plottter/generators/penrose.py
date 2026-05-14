@@ -774,4 +774,48 @@ class PenroseGenerator(Generator):
                     "y_offset_mm": 0.0,
                 },
             ),
+            Preset(
+                name="Sparse Penrose",
+                params={
+                    "initial_config": "Sun",
+                    "subdivisions": 3,
+                    "rotation_deg": 0.0,
+                    "render_mode": "Edges Only",
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="Dense Penrose",
+                params={
+                    "initial_config": "Star",
+                    "subdivisions": 8,
+                    "rotation_deg": 0.0,
+                    "render_mode": "Edges Only",
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="Asymmetric Center",
+                params={
+                    "initial_config": "Sun",
+                    "subdivisions": 5,
+                    "rotation_deg": 27.0,
+                    "render_mode": "Edges Only",
+                    "x_offset_mm": 30.0,
+                    "y_offset_mm": 20.0,
+                },
+            ),
+            Preset(
+                name="Star Arcs",
+                params={
+                    "initial_config": "Star",
+                    "subdivisions": 5,
+                    "rotation_deg": 0.0,
+                    "render_mode": "Arcs Only",
+                    "x_offset_mm": 0.0,
+                    "y_offset_mm": 0.0,
+                },
+            ),
         ]
