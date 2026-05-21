@@ -93,6 +93,18 @@ class _GenerateMixin:
         ):
             params["_source_image"] = self._preprocessed_image
 
+        # For multi-layer generators, capture the run ID of the currently-active
+        # layer so _on_multilayer_generation_finished can replace that run instead
+        # of appending duplicate layers.
+        if getattr(self._generator, "emits_multiple_layers", False):
+            layer = self._controller.get_layer(layer_id)
+            if layer and isinstance(layer.generator_info, dict):
+                self._pending_multilayer_regen_run_id = layer.generator_info.get(
+                    "_generator_run_id"
+                )
+            else:
+                self._pending_multilayer_regen_run_id = None
+
         self._worker = GeneratorWorker(self._generator, params, canvas)
         self._worker.progress.connect(self._on_progress)
         if getattr(self._generator, "emits_multiple_layers", False):
@@ -154,14 +166,47 @@ class _GenerateMixin:
 
         Creates one new :class:`~plottter.models.Layer` per
         :class:`~plottter.generators.base.LayerSpec` returned by
-        ``generate_layers()``.  Each layer is added via
-        ``ProjectController.add_layer`` so the operation is undoable.
+        ``generate_layers()``.  Each new layer is tagged with a fresh
+        ``_generator_run_id`` inside its ``generator_info`` dict.
+
+        If ``_pending_multilayer_regen_run_id`` was set by ``_on_generate``
+        (i.e. the active layer already belonged to a previous run of the same
+        multi-layer generator), all layers from that old run are removed first
+        so re-generation replaces rather than appends.  The remove + add
+        operations are grouped into a single undo macro.
         """
+        import uuid
         from plottter.models import Layer
 
-        for spec in layer_specs:
-            layer = Layer(name=spec.name, color=spec.color, paths=spec.paths)
-            self._controller.add_layer(layer)
+        new_run_id = str(uuid.uuid4())
+        old_run_id = getattr(self, "_pending_multilayer_regen_run_id", None)
+        self._pending_multilayer_regen_run_id = None
+
+        macro_name = "Regenerate Layers" if old_run_id else "Generate Layers"
+        self._controller.undo_stack.beginMacro(macro_name)
+        try:
+            # Remove layers that belong to the previous run of this generator.
+            if old_run_id:
+                old_ids = [
+                    layer.id
+                    for layer in self._controller.current_project.layers
+                    if isinstance(layer.generator_info, dict)
+                    and layer.generator_info.get("_generator_run_id") == old_run_id
+                ]
+                for lid in old_ids:
+                    self._controller.remove_layer(lid)
+
+            # Add the freshly generated layers, each tagged with the new run ID.
+            for spec in layer_specs:
+                layer = Layer(
+                    name=spec.name,
+                    color=spec.color,
+                    paths=spec.paths,
+                    generator_info={"_generator_run_id": new_run_id},
+                )
+                self._controller.add_layer(layer)
+        finally:
+            self._controller.undo_stack.endMacro()
 
     def _on_generation_metadata(self, meta: dict, source_layer_id: str) -> None:
         """Handle side-channel metadata emitted by GeneratorWorker after generation.
