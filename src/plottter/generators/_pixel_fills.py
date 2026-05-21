@@ -333,3 +333,173 @@ def fill_diagonal(
         polylines = _clip_to_polygon(polylines, polygon)
 
     return polylines
+
+
+_DIAMOND_RADIUS_MM: float = 0.15  # half-width (~0.3 mm total) of dithered-dot diamonds
+
+
+def fill_x_mark(
+    cell_x_mm: float,
+    cell_y_mm: float,
+    cell_size_mm: float,
+    density: float,
+    polygon: Any | None = None,
+) -> list[Polyline]:
+    """Fill a square cell with an X mark (the two cell corner diagonals).
+
+    Parameters
+    ----------
+    cell_x_mm, cell_y_mm:
+        Top-left corner of the cell in mm.
+    cell_size_mm:
+        Side length of the square cell in mm.
+    density:
+        Ignored — the X mark always consists of exactly 2 polylines.
+    polygon:
+        Optional :class:`shapely.geometry.Polygon` clip boundary.
+
+    Returns
+    -------
+    Exactly 2 two-point polylines (the two diagonals), clipped to *polygon*
+    when provided.
+    """
+    if cell_size_mm <= 0.0:
+        return []
+
+    x0 = cell_x_mm
+    y0 = cell_y_mm
+    x1 = cell_x_mm + cell_size_mm
+    y1 = cell_y_mm + cell_size_mm
+
+    polylines: list[Polyline] = [
+        [(x0, y0), (x1, y1)],
+        [(x1, y0), (x0, y1)],
+    ]
+
+    if polygon is not None:
+        polylines = _clip_to_polygon(polylines, polygon)
+
+    return polylines
+
+
+def fill_outline(
+    cell_x_mm: float,
+    cell_y_mm: float,
+    cell_size_mm: float,
+    density: float,
+    polygon: Any | None = None,
+) -> list[Polyline]:
+    """Fill a square cell with its rectangular outline.
+
+    Parameters
+    ----------
+    cell_x_mm, cell_y_mm:
+        Top-left corner of the cell in mm.
+    cell_size_mm:
+        Side length of the square cell in mm.
+    density:
+        Ignored — the outline is always a single closed rectangle.
+    polygon:
+        Optional :class:`shapely.geometry.Polygon` clip boundary.
+
+    Returns
+    -------
+    A single closed 5-point polyline tracing the cell boundary, or
+    multiple fragments when clipped to *polygon*.
+    """
+    if cell_size_mm <= 0.0:
+        return []
+
+    x0 = cell_x_mm
+    y0 = cell_y_mm
+    x1 = cell_x_mm + cell_size_mm
+    y1 = cell_y_mm + cell_size_mm
+
+    polylines: list[Polyline] = [
+        [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)],
+    ]
+
+    if polygon is not None:
+        polylines = _clip_to_polygon(polylines, polygon)
+
+    return polylines
+
+
+def fill_dithered_dots(
+    cell_x_mm: float,
+    cell_y_mm: float,
+    cell_size_mm: float,
+    density: float,
+    polygon: Any | None = None,
+) -> list[Polyline]:
+    """Fill a square cell with tiny diamond-shaped dots on a regular grid.
+
+    Each diamond is drawn as a closed 4-segment polyline approximately
+    ``2 * _DIAMOND_RADIUS_MM`` (~0.3 mm) wide.  The grid spacing matches
+    the hatch spacing returned by :func:`_lerp_spacing`, so dot count
+    scales with *density*.
+
+    Parameters
+    ----------
+    cell_x_mm, cell_y_mm:
+        Top-left corner of the cell in mm.
+    cell_size_mm:
+        Side length of the square cell in mm.
+    density:
+        Fill density in [0, 1].  0 -> sparse grid; 1 -> dense grid.
+    polygon:
+        Optional :class:`shapely.geometry.Polygon` clip boundary.
+
+    Returns
+    -------
+    One closed 5-point polyline per dot, clipped to *polygon* when provided.
+    """
+    spacing = _lerp_spacing(density)
+    if spacing <= 0.0 or cell_size_mm <= 0.0:
+        return []
+
+    r = _DIAMOND_RADIUS_MM
+    x_end = cell_x_mm + cell_size_mm
+    y_end = cell_y_mm + cell_size_mm
+
+    polylines: list[Polyline] = []
+    cx = cell_x_mm + spacing / 2.0
+    while cx < x_end:
+        cy = cell_y_mm + spacing / 2.0
+        while cy < y_end:
+            diamond: Polyline = [
+                (cx,     cy - r),
+                (cx + r, cy    ),
+                (cx,     cy + r),
+                (cx - r, cy    ),
+                (cx,     cy - r),
+            ]
+            polylines.append(diamond)
+            cy += spacing
+        cx += spacing
+
+    if polygon is not None:
+        polylines = _clip_to_polygon(polylines, polygon)
+
+    return polylines
+
+
+def fill_leave_empty(
+    cell_x_mm: float,
+    cell_y_mm: float,
+    cell_size_mm: float,
+    density: float,
+    polygon: Any | None = None,
+) -> list[Polyline]:
+    """Leave the cell empty — always returns an empty list.
+
+    Parameters
+    ----------
+    cell_x_mm, cell_y_mm, cell_size_mm, density, polygon:
+        All parameters are accepted but ignored.
+
+    Returns
+    -------
+    ``[]``
+    """
+    return []
