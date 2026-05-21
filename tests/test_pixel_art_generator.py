@@ -236,3 +236,117 @@ class TestGenerateSingleLayer:
             self.canvas,
         )
         assert paths == []
+
+
+# ---------------------------------------------------------------------------
+# Game Boy Portrait preset — multi-layer colour check (task 119.1)
+# ---------------------------------------------------------------------------
+
+# Game Boy DMG palette hex values (from _GAMEBOY_DMG_COLORS in palettes/gameboy.py):
+#   (155, 188,  15) → #9BBC0F
+#   (139, 172,  15) → #8BAC0F
+#   ( 48,  98,  48) → #306230
+#   ( 15,  56,  15) → #0F380F
+_GAMEBOY_HEX_COLORS = {"#9BBC0F", "#8BAC0F", "#306230", "#0F380F"}
+
+
+def make_gameboy_image(width: int = 16, height: int = 20) -> np.ndarray:
+    """Return a synthetic image that exercises all 4 Game Boy DMG shades."""
+    gb_rgb = [
+        (155, 188, 15),
+        (139, 172, 15),
+        (48, 98, 48),
+        (15, 56, 15),
+    ]
+    img = np.zeros((height, width, 3), dtype=np.uint8)
+    for row in range(height):
+        r, g, b = gb_rgb[row % 4]
+        img[row, :] = (r, g, b)
+    return img
+
+
+class TestGameBoyPortraitPreset:
+    def setup_method(self):
+        from plottter.generators.pixel_art import PixelArtGenerator
+
+        self.gen = PixelArtGenerator()
+        self.canvas = make_canvas()
+
+    def test_game_boy_portrait_preset_exists(self):
+        names = [p.name for p in self.gen.get_presets()]
+        assert "Game Boy Portrait" in names
+
+    def test_game_boy_portrait_preset_params(self):
+        preset = next(p for p in self.gen.get_presets() if p.name == "Game Boy Portrait")
+        assert preset.params["palette"] == "gameboy"
+        assert preset.params["grid_width"] == 80
+        assert preset.params["dithering"] == "floyd_steinberg"
+        assert preset.params["cell_fill_style"] == "solid_hatch"
+        assert abs(preset.params["fill_density"] - 0.7) < 1e-6
+
+    def test_game_boy_portrait_emits_up_to_4_layers(self):
+        """generate_layers with gameboy palette must return at most 4 LayerSpecs."""
+        img = make_gameboy_image()
+        params = {
+            "_source_image": img,
+            "grid_width": 16,
+            "palette": "gameboy",
+            "dithering": "none",
+            "cell_fill_style": "solid_hatch",
+            "fill_density": 0.7,
+            "cell_border": False,
+            "cell_gap_mm": 0.0,
+        }
+        specs = self.gen.generate_layers(params, self.canvas)
+        assert 0 < len(specs) <= 4, f"Expected 1–4 layers, got {len(specs)}"
+
+    def test_game_boy_portrait_layer_colors_are_gameboy_palette(self):
+        """Each LayerSpec.color must be one of the 4 Game Boy DMG hex values."""
+        img = make_gameboy_image()
+        params = {
+            "_source_image": img,
+            "grid_width": 16,
+            "palette": "gameboy",
+            "dithering": "none",
+            "cell_fill_style": "solid_hatch",
+            "fill_density": 0.7,
+            "cell_border": False,
+            "cell_gap_mm": 0.0,
+        }
+        specs = self.gen.generate_layers(params, self.canvas)
+        layer_colors = {spec.color.upper() for spec in specs}
+        assert layer_colors.issubset(_GAMEBOY_HEX_COLORS), (
+            f"Unexpected colors {layer_colors - _GAMEBOY_HEX_COLORS}; "
+            f"expected subset of {_GAMEBOY_HEX_COLORS}"
+        )
+
+    def test_game_boy_portrait_dithering_param_accepted(self):
+        """floyd_steinberg dithering must not raise an error."""
+        img = make_gameboy_image()
+        params = {
+            "_source_image": img,
+            "grid_width": 8,
+            "palette": "gameboy",
+            "dithering": "floyd_steinberg",
+            "cell_fill_style": "solid_hatch",
+            "fill_density": 0.7,
+            "cell_border": False,
+            "cell_gap_mm": 0.0,
+        }
+        specs = self.gen.generate_layers(params, self.canvas)
+        assert isinstance(specs, list)
+        assert len(specs) > 0
+
+    def test_dithering_parameter_present(self):
+        """The generator must expose a 'dithering' ChoiceParam."""
+        params = self.gen.get_parameters()
+        names = {p.name for p in params}
+        assert "dithering" in names
+
+    def test_dithering_choices_correct(self):
+        param = next(p for p in self.gen.get_parameters() if p.name == "dithering")
+        assert set(param.choices) == {"none", "floyd_steinberg", "ordered", "atkinson"}
+
+    def test_dithering_default_is_none(self):
+        param = next(p for p in self.gen.get_parameters() if p.name == "dithering")
+        assert param.default == "none"

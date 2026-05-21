@@ -80,6 +80,13 @@ class PixelArtGenerator(Generator):
                 description="Colour palette used to quantise the source image.",
             ),
             ChoiceParam(
+                name="dithering",
+                label="Dithering",
+                choices=["none", "floyd_steinberg", "ordered", "atkinson"],
+                default="none",
+                description="Dithering algorithm applied during palette quantisation.",
+            ),
+            ChoiceParam(
                 name="cell_fill_style",
                 label="Cell Fill Style",
                 choices=["solid_hatch"],
@@ -123,6 +130,7 @@ class PixelArtGenerator(Generator):
                 params={
                     "grid_width": 48,
                     "palette": "grayscale_4",
+                    "dithering": "none",
                     "cell_fill_style": "solid_hatch",
                     "fill_density": 0.5,
                     "cell_border": False,
@@ -134,6 +142,19 @@ class PixelArtGenerator(Generator):
                 params={
                     "grid_width": 40,
                     "palette": "grayscale_4",
+                    "dithering": "none",
+                    "cell_fill_style": "solid_hatch",
+                    "fill_density": 0.7,
+                    "cell_border": False,
+                    "cell_gap_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="Game Boy Portrait",
+                params={
+                    "grid_width": 80,
+                    "palette": "gameboy",
+                    "dithering": "floyd_steinberg",
                     "cell_fill_style": "solid_hatch",
                     "fill_density": 0.7,
                     "cell_border": False,
@@ -145,6 +166,7 @@ class PixelArtGenerator(Generator):
                 params={
                     "grid_width": 32,
                     "palette": "nes",
+                    "dithering": "none",
                     "cell_fill_style": "solid_hatch",
                     "fill_density": 0.8,
                     "cell_border": False,
@@ -173,13 +195,14 @@ class PixelArtGenerator(Generator):
 
         grid_width = int(params.get("grid_width", 32))
         palette_name = str(params.get("palette", "grayscale_4"))
+        dithering = str(params.get("dithering", "none"))
         fill_style = str(params.get("cell_fill_style", "solid_hatch"))
         density = float(params.get("fill_density", 0.7))
         cell_border = bool(params.get("cell_border", False))
         cell_gap_mm = float(params.get("cell_gap_mm", 0.0))
 
         palette = get_palette(palette_name)
-        indices = image_to_palette_grid(source, palette, grid_width)
+        indices = image_to_palette_grid(source, palette, grid_width, dithering=dithering)
 
         n_rows, n_cols = indices.shape
         draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
