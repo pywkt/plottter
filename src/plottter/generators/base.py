@@ -119,6 +119,20 @@ class Preset:
     description: str = ""
 
 
+@dataclass
+class LayerSpec:
+    """Specification for a single layer emitted by a multi-layer generator.
+
+    Used when ``Generator.emits_multiple_layers`` is ``True``.  The generator
+    returns a list of ``LayerSpec`` objects from ``generate_layers()`` and the
+    GUI creates one ``Layer`` per spec.
+    """
+
+    name: str
+    color: str
+    paths: list[Polyline]
+
+
 class Generator(ABC):
     """Abstract base class for all art generators."""
 
@@ -127,6 +141,10 @@ class Generator(ABC):
     #: Set to True in generators that accept a preprocessed image via
     #: ``params["_source_image"]`` (numpy array injected by the settings panel).
     uses_source_image: bool = False
+    #: Set to True in generators that emit multiple named layers via
+    #: ``generate_layers()`` instead of a single ``list[Polyline]`` via
+    #: ``generate()``.
+    emits_multiple_layers: bool = False
 
     @abstractmethod
     def get_parameters(self) -> list[Parameter]:
@@ -141,6 +159,22 @@ class Generator(ABC):
         cancelled_callback: Any = None,
     ) -> list[Polyline]:
         """Run the generator and return a list of polylines (coordinates in mm)."""
+
+    def generate_layers(
+        self,
+        params: dict[str, Any],
+        canvas: Canvas,
+        progress_callback: Any = None,
+        cancelled_callback: Any = None,
+    ) -> list[LayerSpec]:
+        """Run the generator and return a list of LayerSpec objects.
+
+        Override this method (and set ``emits_multiple_layers = True``) in
+        generators that need to produce multiple named, coloured layers in a
+        single generation pass.  The default implementation raises
+        ``NotImplementedError``.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     def get_presets(self) -> list[Preset]:

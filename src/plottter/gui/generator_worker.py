@@ -21,6 +21,7 @@ class GeneratorWorker(QThread):
 
     progress = pyqtSignal(int)
     finished = pyqtSignal(list)
+    layers_finished = pyqtSignal(list)  # emitted instead of finished for multi-layer generators
     metadata_ready = pyqtSignal(dict)  # emitted after finished if params contain side-channel data
     error = pyqtSignal(str)
 
@@ -46,22 +47,32 @@ class GeneratorWorker(QThread):
 
     def run(self) -> None:
         try:
-            result: list[Polyline] = self._generator.generate(
-                self._params,
-                self._canvas,
-                progress_callback=self._emit_progress,
-                cancelled_callback=self.is_cancelled,
-            )
-            if not self._cancelled:
-                self.finished.emit(result)
-                # Emit any side-channel metadata written into params by the generator
-                # (e.g. "_depth_map_result" from ContourGenerator's AI depth mode).
-                metadata: dict = {}
-                depth_map = self._params.get("_depth_map_result")
-                if depth_map is not None:
-                    metadata["depth_map"] = depth_map
-                if metadata:
-                    self.metadata_ready.emit(metadata)
+            if getattr(self._generator, "emits_multiple_layers", False):
+                layer_specs = self._generator.generate_layers(
+                    self._params,
+                    self._canvas,
+                    progress_callback=self._emit_progress,
+                    cancelled_callback=self.is_cancelled,
+                )
+                if not self._cancelled:
+                    self.layers_finished.emit(layer_specs)
+            else:
+                result: list[Polyline] = self._generator.generate(
+                    self._params,
+                    self._canvas,
+                    progress_callback=self._emit_progress,
+                    cancelled_callback=self.is_cancelled,
+                )
+                if not self._cancelled:
+                    self.finished.emit(result)
+                    # Emit any side-channel metadata written into params by the generator
+                    # (e.g. "_depth_map_result" from ContourGenerator's AI depth mode).
+                    metadata: dict = {}
+                    depth_map = self._params.get("_depth_map_result")
+                    if depth_map is not None:
+                        metadata["depth_map"] = depth_map
+                    if metadata:
+                        self.metadata_ready.emit(metadata)
         except Exception as exc:  # noqa: BLE001
             self.error.emit(str(exc))
 

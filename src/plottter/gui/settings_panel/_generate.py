@@ -95,12 +95,18 @@ class _GenerateMixin:
 
         self._worker = GeneratorWorker(self._generator, params, canvas)
         self._worker.progress.connect(self._on_progress)
-        self._worker.finished.connect(lambda paths: self._on_generation_finished(paths, layer_id))
-        self._worker.metadata_ready.connect(
-            lambda meta: self._on_generation_metadata(meta, layer_id)
-        )
+        if getattr(self._generator, "emits_multiple_layers", False):
+            self._worker.layers_finished.connect(
+                lambda specs: self._on_multilayer_generation_finished(specs)
+            )
+            self._worker.layers_finished.connect(self._cleanup_generation_ui)
+        else:
+            self._worker.finished.connect(lambda paths: self._on_generation_finished(paths, layer_id))
+            self._worker.metadata_ready.connect(
+                lambda meta: self._on_generation_metadata(meta, layer_id)
+            )
+            self._worker.finished.connect(self._cleanup_generation_ui)
         self._worker.error.connect(self._on_generation_error)
-        self._worker.finished.connect(self._cleanup_generation_ui)
         self._worker.error.connect(self._cleanup_generation_ui)
 
         self._generate_btn.setEnabled(False)
@@ -142,6 +148,20 @@ class _GenerateMixin:
             and self._auto_regen_3d_cb.isChecked()
         ):
             self._trigger_auto_regen_siblings(layer_id)
+
+    def _on_multilayer_generation_finished(self, layer_specs: list) -> None:
+        """Handle results from a multi-layer generator.
+
+        Creates one new :class:`~plottter.models.Layer` per
+        :class:`~plottter.generators.base.LayerSpec` returned by
+        ``generate_layers()``.  Each layer is added via
+        ``ProjectController.add_layer`` so the operation is undoable.
+        """
+        from plottter.models import Layer
+
+        for spec in layer_specs:
+            layer = Layer(name=spec.name, color=spec.color, paths=spec.paths)
+            self._controller.add_layer(layer)
 
     def _on_generation_metadata(self, meta: dict, source_layer_id: str) -> None:
         """Handle side-channel metadata emitted by GeneratorWorker after generation.
