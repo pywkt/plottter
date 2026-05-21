@@ -215,7 +215,7 @@ class PixelArtConverter:
         # === STEP 2: Scale image ===
         image, scaling_applied = self._apply_scaling(image, options)
 
-        # === STEP 3: Quantize colors to palette ===
+        # === STEP 3+4: Quantize (and optionally dither) colors to palette ===
         if self.palette is not None:
             alpha_backup = None
             if image.mode == "RGBA":
@@ -225,29 +225,32 @@ class PixelArtConverter:
             else:
                 rgb_image = image
 
-            quant_options = QuantizeOptions(
-                method=options.quantize_method,
-                color_space=options.color_space,
-            )
-            quantized = quantize_to_palette(
-                rgb_image,
-                self.palette,
-                method=options.quantize_method,
-                color_space=options.color_space,
-                options=quant_options,
-            )
-
-            # === STEP 4: Apply dithering ===
             dithering_applied = False
             if options.dither_method != DitherMethod.NONE:
+                # Dithering must be applied to the pre-quantized image so that
+                # quantisation error (old_pixel - nearest_palette_color) is non-zero
+                # and can be diffused to neighbours.  Passing the already-quantized
+                # image would yield zero error everywhere and a no-op result.
                 dither_options = DitherOptions(
                     method=options.dither_method,
                     strength=options.dither_strength,
                     preserve_alpha=True,
                     ordered_matrix_size=options.bayer_size,
                 )
-                quantized = apply_dithering(quantized, self.palette, dither_options)
+                quantized = apply_dithering(rgb_image, self.palette, dither_options)
                 dithering_applied = True
+            else:
+                quant_options = QuantizeOptions(
+                    method=options.quantize_method,
+                    color_space=options.color_space,
+                )
+                quantized = quantize_to_palette(
+                    rgb_image,
+                    self.palette,
+                    method=options.quantize_method,
+                    color_space=options.color_space,
+                    options=quant_options,
+                )
 
             image = quantized
 
