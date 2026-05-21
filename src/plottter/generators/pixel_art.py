@@ -119,6 +119,17 @@ class PixelArtGenerator(Generator):
     def get_presets(self) -> list[Preset]:
         return [
             Preset(
+                name="Default",
+                params={
+                    "grid_width": 48,
+                    "palette": "grayscale_4",
+                    "cell_fill_style": "solid_hatch",
+                    "fill_density": 0.5,
+                    "cell_border": False,
+                    "cell_gap_mm": 0.0,
+                },
+            ),
+            Preset(
                 name="Game Boy",
                 params={
                     "grid_width": 40,
@@ -181,6 +192,15 @@ class PixelArtGenerator(Generator):
         hex_colors = palette.to_hex_list()
         n_colors = len(hex_colors)
 
+        # Pre-compute perceptual brightness [0, 1] for each palette colour so
+        # darker colours receive denser fill and lighter colours receive sparser
+        # fill, making different shades visually distinguishable when rendered.
+        palette_colors = palette.colors
+        color_brightness: list[float] = []
+        for pr, pg, pb in palette_colors:
+            lum = (0.2126 * pr + 0.7152 * pg + 0.0722 * pb) / 255.0
+            color_brightness.append(max(0.0, min(1.0, lum)))
+
         # Accumulate paths keyed by palette index.
         paths_by_index: dict[int, list] = {}
 
@@ -201,6 +221,9 @@ class PixelArtGenerator(Generator):
                 cell_x = draw_x1 + c * cell_size_mm + cell_gap_mm / 2.0
                 cell_y = draw_y1 + r * cell_size_mm + cell_gap_mm / 2.0
 
+                # Scale density by darkness: black → full density, white → 0.
+                cell_density = density * (1.0 - color_brightness[idx])
+
                 cell_paths: list = []
 
                 if cell_border:
@@ -212,7 +235,7 @@ class PixelArtGenerator(Generator):
 
                 if fill_style == "solid_hatch":
                     cell_paths.extend(
-                        fill_solid_hatch(cell_x, cell_y, effective_cell_mm, density)
+                        fill_solid_hatch(cell_x, cell_y, effective_cell_mm, cell_density)
                     )
 
                 if idx not in paths_by_index:
