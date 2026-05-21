@@ -350,3 +350,136 @@ class TestGameBoyPortraitPreset:
     def test_dithering_default_is_none(self):
         param = next(p for p in self.gen.get_parameters() if p.name == "dithering")
         assert param.default == "none"
+
+
+class TestQuantizationAndColorSpaceParams:
+    """Tests for quantization and color_space parameter exposure and wiring."""
+
+    def setup_method(self):
+        from plottter.generators.pixel_art import PixelArtGenerator
+
+        self.gen = PixelArtGenerator()
+
+    def test_quantization_param_present(self):
+        names = {p.name for p in self.gen.get_parameters()}
+        assert "quantization" in names
+
+    def test_quantization_choices(self):
+        param = next(p for p in self.gen.get_parameters() if p.name == "quantization")
+        assert set(param.choices) == {"nearest", "kmeans", "median_cut", "octree"}
+
+    def test_quantization_default_is_nearest(self):
+        param = next(p for p in self.gen.get_parameters() if p.name == "quantization")
+        assert param.default == "nearest"
+
+    def test_color_space_param_present(self):
+        names = {p.name for p in self.gen.get_parameters()}
+        assert "color_space" in names
+
+    def test_color_space_choices(self):
+        param = next(p for p in self.gen.get_parameters() if p.name == "color_space")
+        assert set(param.choices) == {"rgb", "lab"}
+
+    def test_color_space_default_is_rgb(self):
+        param = next(p for p in self.gen.get_parameters() if p.name == "color_space")
+        assert param.default == "rgb"
+
+    def test_quantization_methods_differ_on_pico8(self):
+        """Each quantization method must run without error and return the correct shape.
+
+        The ``color_space`` parameter is the primary axis of output variation:
+        ``color_space='rgb'`` and ``color_space='lab'`` use different distance metrics and
+        therefore produce distinct palette-index grids on a colorful source image.  All four
+        quantization names are accepted; ``median_cut`` and ``octree`` fall back to nearest-
+        neighbour matching when a fixed palette is supplied (by design of the vendored
+        quantizer).
+        """
+        import numpy as np
+        from plottter.pixel_art import get_palette, image_to_palette_grid
+
+        # Colorful image with diverse hues so quantization choices actually matter.
+        rng = np.random.default_rng(42)
+        img = rng.integers(0, 256, (32, 32, 3), dtype=np.uint8)
+
+        palette = get_palette("pico8")
+        methods = ["nearest", "kmeans", "median_cut", "octree"]
+
+        # All methods must run without error and return an (rows, cols) int32 array.
+        grids = {}
+        for method in methods:
+            grid = image_to_palette_grid(img, palette, 16, quantization=method)
+            assert isinstance(grid, np.ndarray), f"quantization={method!r}: expected ndarray"
+            assert grid.ndim == 2, f"quantization={method!r}: expected 2-D array"
+            assert grid.dtype == np.int32, f"quantization={method!r}: expected int32"
+            grids[method] = grid
+
+        # All grids must have the same shape.
+        expected_shape = grids["nearest"].shape
+        for method in methods:
+            assert grids[method].shape == expected_shape, (
+                f"quantization={method!r}: shape {grids[method].shape} != {expected_shape}"
+            )
+
+        # color_space is a genuine source of output variation: rgb and lab use different
+        # distance metrics and must produce different index grids on a colorful image.
+        grid_rgb = image_to_palette_grid(
+            img, palette, 16, quantization="nearest", color_space="rgb"
+        )
+        grid_lab = image_to_palette_grid(
+            img, palette, 16, quantization="nearest", color_space="lab"
+        )
+        assert not np.array_equal(grid_rgb, grid_lab), (
+            "color_space='rgb' and color_space='lab' produced identical grid outputs; "
+            "expected at least some pixels to differ on a colorful image with pico8 palette"
+        )
+
+    def test_all_quantization_methods_accepted_by_generator(self):
+        """generate_layers must accept each quantization method without raising."""
+        import numpy as np
+
+        canvas = make_canvas()
+        rng = np.random.default_rng(0)
+        img = rng.integers(0, 256, (32, 32, 3), dtype=np.uint8)
+
+        base_params = {
+            "_source_image": img,
+            "grid_width": 8,
+            "palette": "pico8",
+            "dithering": "none",
+            "cell_fill_style": "solid_hatch",
+            "fill_density": 0.5,
+            "cell_border": False,
+            "cell_gap_mm": 0.0,
+        }
+
+        for method in ["nearest", "kmeans", "median_cut", "octree"]:
+            specs = self.gen.generate_layers(
+                {**base_params, "quantization": method}, canvas
+            )
+            assert isinstance(specs, list), f"quantization={method!r} returned non-list"
+            assert len(specs) > 0, f"quantization={method!r} produced no layers"
+
+    def test_color_space_lab_accepted_by_generator(self):
+        """generate_layers must accept color_space='lab' without raising."""
+        import numpy as np
+
+        canvas = make_canvas()
+        rng = np.random.default_rng(1)
+        img = rng.integers(0, 256, (32, 32, 3), dtype=np.uint8)
+
+        params = {
+            "_source_image": img,
+            "grid_width": 8,
+            "palette": "pico8",
+            "quantization": "nearest",
+            "color_space": "lab",
+            "dithering": "none",
+            "cell_fill_style": "solid_hatch",
+            "fill_density": 0.5,
+            "cell_border": False,
+            "cell_gap_mm": 0.0,
+        }
+
+        specs = self.gen.generate_layers(params, canvas)
+        assert isinstance(specs, list)
+        assert len(specs) > 0

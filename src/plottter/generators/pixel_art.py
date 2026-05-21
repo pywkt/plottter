@@ -80,6 +80,20 @@ class PixelArtGenerator(Generator):
                 description="Colour palette used to quantise the source image.",
             ),
             ChoiceParam(
+                name="quantization",
+                label="Quantization",
+                choices=["nearest", "kmeans", "median_cut", "octree"],
+                default="nearest",
+                description="Color quantization algorithm used to map pixels to the palette.",
+            ),
+            ChoiceParam(
+                name="color_space",
+                label="Color Space",
+                choices=["rgb", "lab"],
+                default="rgb",
+                description="Color space used for distance calculations during quantization.",
+            ),
+            ChoiceParam(
                 name="dithering",
                 label="Dithering",
                 choices=["none", "floyd_steinberg", "ordered", "atkinson"],
@@ -195,6 +209,8 @@ class PixelArtGenerator(Generator):
 
         grid_width = int(params.get("grid_width", 32))
         palette_name = str(params.get("palette", "grayscale_4"))
+        quantization = str(params.get("quantization", "nearest"))
+        color_space = str(params.get("color_space", "rgb"))
         dithering = str(params.get("dithering", "none"))
         fill_style = str(params.get("cell_fill_style", "solid_hatch"))
         density = float(params.get("fill_density", 0.7))
@@ -202,7 +218,14 @@ class PixelArtGenerator(Generator):
         cell_gap_mm = float(params.get("cell_gap_mm", 0.0))
 
         palette = get_palette(palette_name)
-        indices = image_to_palette_grid(source, palette, grid_width, dithering=dithering)
+        indices = image_to_palette_grid(
+            source,
+            palette,
+            grid_width,
+            quantization=quantization,
+            color_space=color_space,
+            dithering=dithering,
+        )
 
         n_rows, n_cols = indices.shape
         draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
