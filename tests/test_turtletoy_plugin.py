@@ -1054,3 +1054,278 @@ t.forward(10);
         gen = TurtleToyGenerator()
         polylines = gen.generate({"code": sketch}, canvas)
         assert len(polylines) >= 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: segment-to-polyline grouping (spec §7.4, task 130.1)
+# ---------------------------------------------------------------------------
+
+
+class TestPolylineGrouping:
+    """_segments_to_polylines groups consecutive co-terminal segments (spec §7.4)."""
+
+    def test_full_circle_produces_one_polyline(self, canvas: Canvas) -> None:
+        """A full circle (72 consecutive segments) must merge into exactly 1 polyline."""
+        polylines = _run_sketch("const t = new Turtle(); t.circle(50);", canvas)
+        assert len(polylines) == 1, (
+            f"Full circle should produce 1 polyline after grouping, got {len(polylines)}"
+        )
+
+    def test_full_circle_polyline_has_correct_point_count(self, canvas: Canvas) -> None:
+        """72 segments → 73 points in the single grouped polyline."""
+        polylines = _run_sketch("const t = new Turtle(); t.circle(50);", canvas)
+        assert len(polylines) == 1
+        # 72 segments = 73 points
+        assert len(polylines[0]) == 73, (
+            f"72-segment circle should have 73 points, got {len(polylines[0])}"
+        )
+
+    def test_disconnected_segments_produce_multiple_polylines(self, canvas: Canvas) -> None:
+        """Two disconnected lines (with a jump in between) produce 2 polylines."""
+        sketch = (
+            "const t = new Turtle();"
+            " t.forward(20);"         # segment 1: (0,0)->(20,0)
+            " t.jump(50, 50);"        # pen up teleport — no segment
+            " t.forward(20);"         # segment 2: (50,50)->(70,50)
+        )
+        polylines = _run_sketch(sketch, canvas)
+        assert len(polylines) == 2, (
+            f"Two disconnected lines should produce 2 polylines, got {len(polylines)}"
+        )
+
+    def test_consecutive_segments_merge(self, canvas: Canvas) -> None:
+        """Three forward() calls in a row merge into 1 polyline with 4 points."""
+        sketch = (
+            "const t = new Turtle();"
+            " t.forward(10); t.forward(10); t.forward(10);"
+        )
+        polylines = _run_sketch(sketch, canvas)
+        assert len(polylines) == 1, (
+            f"Three consecutive segments should merge into 1 polyline, got {len(polylines)}"
+        )
+        assert len(polylines[0]) == 4, (
+            f"3 consecutive segments → 4 points, got {len(polylines[0])}"
+        )
+
+    def test_segments_to_polylines_direct_grouping(self) -> None:
+        """Direct call to _segments_to_polylines: co-terminal segments merge correctly."""
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        # Three co-terminal segments: (0,0)->(1,0), (1,0)->(2,0), (2,0)->(3,0)
+        segs = [(0.0, 0.0, 1.0, 0.0), (1.0, 0.0, 2.0, 0.0), (2.0, 0.0, 3.0, 0.0)]
+        polylines = _tt._segments_to_polylines(segs, canvas)
+        assert len(polylines) == 1, f"Co-terminal segments should merge, got {len(polylines)}"
+        assert len(polylines[0]) == 4, f"3 segs → 4 points, got {len(polylines[0])}"
+
+    def test_segments_to_polylines_gap_splits(self) -> None:
+        """Direct call: a gap between segment endpoints creates a new polyline."""
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        # Segment 1 ends at (1, 0); segment 2 starts at (5, 0) — gap > 1e-6
+        segs = [(0.0, 0.0, 1.0, 0.0), (5.0, 0.0, 6.0, 0.0)]
+        polylines = _tt._segments_to_polylines(segs, canvas)
+        assert len(polylines) == 2, f"Gap should produce 2 polylines, got {len(polylines)}"
+
+    def test_empty_segments_returns_empty(self) -> None:
+        """Empty segment list produces empty polyline list."""
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        polylines = _tt._segments_to_polylines([], canvas)
+        assert polylines == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: coordinate mapping — fit modes (spec §7.3, task 130.1)
+# ---------------------------------------------------------------------------
+
+
+def _circle_bounding_box(
+    polylines: list[list[tuple[float, float]]],
+) -> tuple[float, float, float, float]:
+    """Return (min_x, min_y, max_x, max_y) of all points in polylines."""
+    xs = [pt[0] for pl in polylines for pt in pl]
+    ys = [pt[1] for pl in polylines for pt in pl]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+_CIRCLE_SKETCH = "const t = new Turtle(); t.circle(50);"
+
+
+class TestFitModes:
+    """Coordinate mapping: letterbox, stretch, fixed_scale (spec §7.3)."""
+
+    def test_fit_mode_param_in_get_parameters(self) -> None:
+        """get_parameters() includes a 'fit_mode' ChoiceParam."""
+        gen = TurtleToyGenerator()
+        param_names = [p.name for p in gen.get_parameters()]
+        assert "fit_mode" in param_names, "get_parameters() must include 'fit_mode'"
+
+    def test_mm_per_unit_param_in_get_parameters(self) -> None:
+        """get_parameters() includes a 'mm_per_unit' FloatParam."""
+        gen = TurtleToyGenerator()
+        param_names = [p.name for p in gen.get_parameters()]
+        assert "mm_per_unit" in param_names, "get_parameters() must include 'mm_per_unit'"
+
+    def test_fit_mode_default_is_letterbox(self) -> None:
+        """fit_mode default value is 'letterbox'."""
+        gen = TurtleToyGenerator()
+        fit_param = next(p for p in gen.get_parameters() if p.name == "fit_mode")
+        assert fit_param.default == "letterbox", (
+            f"fit_mode default should be 'letterbox', got {fit_param.default!r}"
+        )
+
+    def test_mm_per_unit_default_is_1(self) -> None:
+        """mm_per_unit default value is 1.0."""
+        gen = TurtleToyGenerator()
+        param = next(p for p in gen.get_parameters() if p.name == "mm_per_unit")
+        assert param.default == 1.0, (
+            f"mm_per_unit default should be 1.0, got {param.default!r}"
+        )
+
+    def test_mm_per_unit_visible_when_fixed_scale(self) -> None:
+        """mm_per_unit is only visible when fit_mode == 'fixed_scale'."""
+        gen = TurtleToyGenerator()
+        param = next(p for p in gen.get_parameters() if p.name == "mm_per_unit")
+        assert hasattr(param, "visible_when"), "mm_per_unit must have visible_when"
+        assert param.visible_when == {"fit_mode": ["fixed_scale"]}, (
+            f"mm_per_unit.visible_when expected {{'fit_mode': ['fixed_scale']}}, "
+            f"got {param.visible_when!r}"
+        )
+
+    def test_letterbox_preserves_aspect_ratio(self) -> None:
+        """Letterbox: a full circle maps to equal x and y spans (aspect 1:1)."""
+        # Use a non-square canvas to expose distortion
+        canvas = Canvas(width_mm=297.0, height_mm=148.0, margin_mm=10.0)  # A4 landscape-ish
+        gen = TurtleToyGenerator()
+        polylines = gen.generate({"code": _CIRCLE_SKETCH, "fit_mode": "letterbox"}, canvas)
+        min_x, min_y, max_x, max_y = _circle_bounding_box(polylines)
+        span_x = max_x - min_x
+        span_y = max_y - min_y
+        # For a circle both spans should be equal (aspect preserved)
+        assert abs(span_x - span_y) < 0.5, (
+            f"Letterbox should preserve circle aspect ratio: "
+            f"span_x={span_x:.3f}, span_y={span_y:.3f}"
+        )
+
+    def test_stretch_distorts_aspect_ratio_on_non_square_canvas(self) -> None:
+        """Stretch: a circle maps to an ellipse on a non-square canvas."""
+        # Strongly non-square canvas
+        canvas = Canvas(width_mm=297.0, height_mm=100.0, margin_mm=5.0)
+        gen = TurtleToyGenerator()
+        polylines = gen.generate({"code": _CIRCLE_SKETCH, "fit_mode": "stretch"}, canvas)
+        min_x, min_y, max_x, max_y = _circle_bounding_box(polylines)
+        span_x = max_x - min_x
+        span_y = max_y - min_y
+        # x span should be significantly wider than y span
+        assert span_x > span_y * 1.5, (
+            f"Stretch on wide canvas should produce wider x-span: "
+            f"span_x={span_x:.3f}, span_y={span_y:.3f}"
+        )
+
+    def test_letterbox_vs_stretch_differ_on_non_square_canvas(self) -> None:
+        """Letterbox and stretch produce visibly different outputs on a non-square canvas."""
+        canvas = Canvas(width_mm=297.0, height_mm=100.0, margin_mm=5.0)
+        gen = TurtleToyGenerator()
+        pl_lb = gen.generate({"code": _CIRCLE_SKETCH, "fit_mode": "letterbox"}, canvas)
+        pl_st = gen.generate({"code": _CIRCLE_SKETCH, "fit_mode": "stretch"}, canvas)
+
+        _, _, max_x_lb, _ = _circle_bounding_box(pl_lb)
+        _, _, max_x_st, _ = _circle_bounding_box(pl_st)
+
+        # Stretch uses full canvas width; letterbox is constrained by the short axis.
+        # So stretch x-extent must be greater than letterbox x-extent.
+        assert max_x_st > max_x_lb, (
+            f"Stretch x-extent ({max_x_st:.3f}) should exceed letterbox ({max_x_lb:.3f})"
+        )
+
+    def test_fixed_scale_uses_mm_per_unit(self) -> None:
+        """fixed_scale mode: world unit 1 → mm_per_unit mm."""
+        canvas = Canvas.from_preset("A4", margin=0.0)
+        # forward(100) at heading=0 → segment (0,0)->(100,0) in world space.
+        sketch = "const t = new Turtle(); t.forward(100);"
+        for scale in (0.5, 1.0, 2.0):
+            gen = TurtleToyGenerator()
+            polylines = gen.generate(
+                {"code": sketch, "fit_mode": "fixed_scale", "mm_per_unit": scale},
+                canvas,
+            )
+            pts = [pt for pl in polylines for pt in pl]
+            assert len(pts) == 2
+            x0, y0 = pts[0]
+            x1, y1 = pts[1]
+            expected_dx = 100.0 * scale
+            actual_dx = abs(x1 - x0)
+            assert abs(actual_dx - expected_dx) < 1e-6, (
+                f"fixed_scale={scale}: expected dx={expected_dx}, got {actual_dx:.6f}"
+            )
+
+    def test_letterbox_centers_world_origin(self) -> None:
+        """Letterbox: the world origin (0, 0) maps to the canvas printable-area center."""
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        left, top, right, bottom = canvas.drawing_area()
+        cx_canvas = (left + right) / 2.0
+        cy_canvas = (top + bottom) / 2.0
+        # A zero-length forward produces a degenerate segment at (0,0)->(0,0).
+        # Use direct API instead.
+        segs = [(0.0, 0.0, 0.0, 0.0)]
+        polylines = _tt._segments_to_polylines(segs, canvas, fit_mode="letterbox")
+        assert len(polylines) == 1
+        x0, y0 = polylines[0][0]
+        assert abs(x0 - cx_canvas) < 1e-9, (
+            f"World origin x should map to canvas cx={cx_canvas:.3f}, got {x0:.3f}"
+        )
+        assert abs(y0 - cy_canvas) < 1e-9, (
+            f"World origin y should map to canvas cy={cy_canvas:.3f}, got {y0:.3f}"
+        )
+
+    def test_segments_to_polylines_letterbox_direct(self) -> None:
+        """Direct: letterbox scales a (100,0) endpoint correctly."""
+        import math
+
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        left, top, right, bottom = canvas.drawing_area()
+        width = right - left
+        height = bottom - top
+        cx = left + width / 2.0
+        cy = top + height / 2.0
+        scale = min(width / 200.0, height / 200.0)
+
+        segs = [(0.0, 0.0, 100.0, 0.0)]
+        polylines = _tt._segments_to_polylines(segs, canvas, fit_mode="letterbox")
+        assert len(polylines) == 1
+        x0, y0 = polylines[0][0]
+        x1, y1 = polylines[0][1]
+        assert abs(x0 - cx) < 1e-9
+        assert abs(y0 - cy) < 1e-9
+        assert abs(x1 - (cx + 100.0 * scale)) < 1e-9
+        assert abs(y1 - cy) < 1e-9  # y=0 in world → no Y-flip offset
+
+    def test_segments_to_polylines_stretch_direct(self) -> None:
+        """Direct: stretch uses independent x/y scales."""
+        canvas = Canvas(width_mm=400.0, height_mm=200.0, margin_mm=0.0)
+        left, top, right, bottom = canvas.drawing_area()
+        width = right - left    # 400
+        height = bottom - top   # 200
+        cx = left + width / 2.0
+        cy = top + height / 2.0
+        sx = width / 200.0   # 2.0
+        sy = height / 200.0  # 1.0
+
+        segs = [(0.0, 0.0, 50.0, 50.0)]
+        polylines = _tt._segments_to_polylines(segs, canvas, fit_mode="stretch")
+        assert len(polylines) == 1
+        x1, y1 = polylines[0][1]
+        assert abs(x1 - (cx + 50.0 * sx)) < 1e-9, f"stretch x1 mismatch: {x1}"
+        assert abs(y1 - (cy - 50.0 * sy)) < 1e-9, f"stretch y1 mismatch: {y1}"
+
+    def test_segments_to_polylines_fixed_scale_direct(self) -> None:
+        """Direct: fixed_scale applies mm_per_unit uniformly."""
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        left, top, right, bottom = canvas.drawing_area()
+        cx = (left + right) / 2.0
+        cy = (top + bottom) / 2.0
+        scale = 2.5
+
+        segs = [(0.0, 0.0, 40.0, 30.0)]
+        polylines = _tt._segments_to_polylines(segs, canvas, fit_mode="fixed_scale", mm_per_unit=scale)
+        assert len(polylines) == 1
+        x1, y1 = polylines[0][1]
+        assert abs(x1 - (cx + 40.0 * scale)) < 1e-9, f"fixed_scale x1: {x1}"
+        assert abs(y1 - (cy - 30.0 * scale)) < 1e-9, f"fixed_scale y1: {y1}"

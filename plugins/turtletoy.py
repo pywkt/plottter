@@ -37,6 +37,7 @@ except ImportError:
 
 from plottter.generators import register_generator
 from plottter.generators.base import (
+    ChoiceParam,
     FloatParam,
     Generator,
     IntParam,
@@ -606,6 +607,31 @@ class TurtleToyGenerator(Generator):
                 ),
                 multiline=True,
             ),
+            ChoiceParam(
+                name="fit_mode",
+                label="Fit Mode",
+                choices=["letterbox", "stretch", "fixed_scale"],
+                default="letterbox",
+                description=(
+                    "How to map the TurtleToy world (-100..100) to canvas mm. "
+                    "letterbox: preserve aspect ratio (default). "
+                    "stretch: fill canvas independently in x and y (distorts). "
+                    "fixed_scale: use mm_per_unit as a literal scale factor."
+                ),
+            ),
+            FloatParam(
+                name="mm_per_unit",
+                label="mm per unit",
+                min=0.1,
+                max=10.0,
+                step=0.1,
+                default=1.0,
+                description=(
+                    "Scale factor: how many mm correspond to one TurtleToy world unit. "
+                    "Only used when fit_mode is fixed_scale."
+                ),
+                visible_when={"fit_mode": ["fixed_scale"]},
+            ),
             IntParam(
                 name="seed",
                 label="Seed",
@@ -677,6 +703,8 @@ class TurtleToyGenerator(Generator):
         code: str = params.get("code", _STAR_SKETCH)
         max_steps: int = int(params.get("max_steps", 100_000))
         timeout_seconds: float = float(params.get("timeout_seconds", 30.0))
+        fit_mode: str = str(params.get("fit_mode", "letterbox"))
+        mm_per_unit: float = float(params.get("mm_per_unit", 1.0))
 
         seed: int = int(params.get("seed", 0))
         runtime = TurtleRuntime(seed=seed)
@@ -702,4 +730,6 @@ class TurtleToyGenerator(Generator):
                 if not keep_going:
                     break
 
-        return _segments_to_polylines(runtime.segments, canvas)
+        return _segments_to_polylines(
+            runtime.segments, canvas, fit_mode=fit_mode, mm_per_unit=mm_per_unit
+        )
