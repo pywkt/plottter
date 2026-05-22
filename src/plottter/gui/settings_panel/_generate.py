@@ -110,6 +110,10 @@ class _GenerateMixin:
                     prior_run_id = info["_generator_run_id"]
             self._pending_multilayer_regen_run_id = prior_run_id
 
+        # Merge dynamic overrides as a reserved param key so generators
+        # (and future machinery) can inspect them without touching static params.
+        params["_dynamic_overrides"] = dict(self._dynamic_overrides)
+
         self._worker = GeneratorWorker(self._generator, params, canvas)
         self._worker.progress.connect(self._on_progress)
         if getattr(self._generator, "emits_multiple_layers", False):

@@ -100,3 +100,77 @@ class TestLayoutSplitCreatesThreeSubLayouts:
         # Should not raise even when layout is already empty
         panel._rebuild_dynamic_params()
         assert panel._dynamic_params_layout.rowCount() == 0
+
+
+# ---------------------------------------------------------------------------
+# test_overrides_merged_into_params (task 134.2)
+# ---------------------------------------------------------------------------
+
+
+class TestDynamicOverridesMergedIntoParams:
+    """_dynamic_overrides are passed into params under the reserved key."""
+
+    def test_overrides_merged_into_params(self, panel):
+        """When _on_generate fires, params['_dynamic_overrides'] equals the panel's
+        stored _dynamic_overrides dict (a shallow copy)."""
+        from unittest.mock import MagicMock, patch
+
+        # Minimal stub generator — no special flags set
+        mock_gen = MagicMock()
+        mock_gen.name = "MockGen"
+        mock_gen.emits_multiple_layers = False
+        mock_gen.uses_source_image = False
+        panel._generator = mock_gen
+        panel._current_mode = "Math Art"
+
+        # Put some overrides in the panel state
+        panel._dynamic_overrides = {"speed": 7, "density": 0.25}
+
+        captured: dict = {}
+
+        def fake_worker(gen, params, canvas):
+            captured["params"] = dict(params)  # snapshot before .start()
+            w = MagicMock()
+            w.isRunning.return_value = False
+            w.is_cancelled.return_value = False
+            return w
+
+        with patch(
+            "plottter.gui.generator_worker.GeneratorWorker",
+            side_effect=fake_worker,
+        ):
+            panel._on_generate()
+
+        assert "_dynamic_overrides" in captured["params"], (
+            "params must contain the '_dynamic_overrides' key"
+        )
+        assert captured["params"]["_dynamic_overrides"] == {"speed": 7, "density": 0.25}
+
+    def test_empty_overrides_when_no_dynamic_params(self, panel):
+        """A generator that provides no dynamic params receives _dynamic_overrides={}."""
+        from unittest.mock import MagicMock, patch
+
+        mock_gen = MagicMock()
+        mock_gen.name = "StaticGen"
+        mock_gen.emits_multiple_layers = False
+        mock_gen.uses_source_image = False
+        panel._generator = mock_gen
+        panel._current_mode = "Math Art"
+        panel._dynamic_overrides = {}  # empty — as if get_dynamic_parameters() returned []
+
+        captured: dict = {}
+
+        def fake_worker(gen, params, canvas):
+            captured["params"] = dict(params)
+            w = MagicMock()
+            w.isRunning.return_value = False
+            w.is_cancelled.return_value = False
+            return w
+
+        with patch(
+            "plottter.gui.generator_worker.GeneratorWorker",
+            side_effect=fake_worker,
+        ):
+            panel._on_generate()
+
+        assert captured["params"]["_dynamic_overrides"] == {}

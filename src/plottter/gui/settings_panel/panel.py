@@ -87,6 +87,10 @@ class SettingsPanel(
         # Cached user presets for the current generator (refreshed in _rebuild_preset_combo)
         self._user_presets: list = []
 
+        # Dynamic parameter overrides — updated by _rebuild_dynamic_params widgets;
+        # merged into params as params["_dynamic_overrides"] before each generation run.
+        self._dynamic_overrides: dict[str, Any] = {}
+
         # FMM source point pick button (injected by set_generator for ContourGenerator)
         self._pick_fmm_source_btn: object | None = None  # QPushButton or None
         self._pick_fmm_source_label: object | None = None  # QLabel or None
