@@ -93,6 +93,30 @@ class TestPilImageInput:
         assert set(int(v) for v in grid.flat).issubset({0, 1, 2, 3})
 
 
+class TestGrayscaleNumpyInput:
+    """The GUI's image preprocessing pipeline outputs 2D uint8 grayscale —
+    these tests guard against regressions where that shape isn't accepted."""
+
+    def test_2d_grayscale_uint8(self):
+        gray = np.linspace(0, 255, 16 * 16, dtype=np.uint8).reshape(16, 16)
+        palette = get_palette("grayscale_4")
+        grid = image_to_palette_grid(gray, palette, grid_width=16, grid_height=16)
+        assert grid.shape == (16, 16)
+        assert set(int(v) for v in grid.flat).issubset({0, 1, 2, 3})
+
+    def test_single_channel_3d(self):
+        gray = np.linspace(0, 255, 16 * 16, dtype=np.uint8).reshape(16, 16, 1)
+        palette = get_palette("grayscale_4")
+        grid = image_to_palette_grid(gray, palette, grid_width=16, grid_height=16)
+        assert grid.shape == (16, 16)
+
+    def test_unsupported_shape_raises(self):
+        bad = np.zeros((16, 16, 2), dtype=np.uint8)
+        palette = get_palette("grayscale_4")
+        with pytest.raises(ValueError, match="Unsupported image array shape"):
+            image_to_palette_grid(bad, palette, grid_width=16, grid_height=16)
+
+
 class TestGetPalette:
     """Tests for palette registry."""
 

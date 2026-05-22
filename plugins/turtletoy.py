@@ -621,7 +621,7 @@ class TurtleToyGenerator(Generator):
     """
 
     name = "TurtleToy"
-    category = "code"
+    category = "math"
     uses_source_image = False
     emits_multiple_layers = False
 

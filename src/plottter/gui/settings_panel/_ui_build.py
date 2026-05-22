@@ -967,12 +967,22 @@ class _UIBuildMixin:
 
         # Generate / Randomize buttons
         self._generate_btn = QPushButton("Generate")
+        self._generate_btn.setToolTip("Generate (Ctrl+Enter)")
         self._generate_btn.clicked.connect(self._on_generate)
         self._randomize_btn = QPushButton("Randomize")
         self._randomize_btn.clicked.connect(self._on_randomize)
         self._layout.addWidget(self._generate_btn)
         self._layout.addWidget(self._randomize_btn)
         self._layout.addStretch()
+
+        # Ctrl+Return / Ctrl+Enter triggers Generate. Window-scoped so it
+        # fires from anywhere — including from within a multi-line code
+        # textarea (TurtleToy) where the textbox would otherwise eat the key.
+        from PyQt6.QtGui import QKeySequence, QShortcut
+        for keyseq in ("Ctrl+Return", "Ctrl+Enter"):
+            sc = QShortcut(QKeySequence(keyseq), self)
+            sc.setContext(Qt.ShortcutContext.WindowShortcut)
+            sc.activated.connect(self._on_generate)
 
         # Update AI control availability based on current settings
         self.update_ai_availability()

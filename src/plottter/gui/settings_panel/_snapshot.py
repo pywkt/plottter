@@ -80,8 +80,8 @@ class _SnapshotMixin:
             elif isinstance(param, StringParam):
                 if param.multiline:
                     widget = QPlainTextEdit(str(param.default))
-                    widget.setMinimumHeight(200)  # type: ignore[attr-defined]
-                    widget.setMaximumHeight(400)  # type: ignore[attr-defined]
+                    widget.setMinimumHeight(400)  # type: ignore[attr-defined]
+                    widget.setMaximumHeight(800)  # type: ignore[attr-defined]
                     # Use monospace font for code editing (covers TurtleToy and similar)
                     from PyQt6.QtGui import QFontDatabase
                     _mono_font = QFontDatabase.systemFont(

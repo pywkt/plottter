@@ -80,10 +80,22 @@ def image_to_palette_grid(
     """
     # --- 1. Coerce input to PIL Image ---
     if isinstance(image, np.ndarray):
-        if image.ndim == 3 and image.shape[2] == 4:
-            pil_image: Image.Image = Image.fromarray(image, "RGBA")
+        arr = image
+        if arr.dtype != np.uint8:
+            arr = np.clip(arr, 0, 255).astype(np.uint8)
+        if arr.ndim == 2:
+            # Grayscale (H, W) — plottter's image preprocessing pipeline outputs this shape.
+            pil_image: Image.Image = Image.fromarray(arr, "L").convert("RGB")
+        elif arr.ndim == 3 and arr.shape[2] == 1:
+            pil_image = Image.fromarray(arr[:, :, 0], "L").convert("RGB")
+        elif arr.ndim == 3 and arr.shape[2] == 3:
+            pil_image = Image.fromarray(arr, "RGB")
+        elif arr.ndim == 3 and arr.shape[2] == 4:
+            pil_image = Image.fromarray(arr, "RGBA")
         else:
-            pil_image = Image.fromarray(image, "RGB")
+            raise ValueError(
+                f"Unsupported image array shape {arr.shape}; expected (H,W), (H,W,1), (H,W,3), or (H,W,4)."
+            )
     else:
         pil_image = image
 

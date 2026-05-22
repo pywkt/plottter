@@ -217,3 +217,69 @@ class TestPixelArtRegeneration:
         )
 
         assert run_ids[0] != run_ids[1], "Each generation run must get a fresh UUID"
+
+
+class TestPriorRunLookup:
+    """The active-layer-agnostic prior-run lookup in _on_generate.
+
+    Regression: the original implementation only checked the active layer's
+    generator_info, so if the user clicked Generate while still on the empty
+    "Layer 1" the previous run wasn't found and layers were appended instead
+    of replaced. Real fix tags layers with `_generator_name` and scans the
+    whole project for any matching prior run.
+    """
+
+    def test_lookup_finds_prior_run_when_active_layer_is_untagged(self, qtbot):
+        from plottter.gui.project_controller import ProjectController
+
+        proj, original_layer_id = _make_project()
+        ctrl = ProjectController(proj)
+        # Active layer is the original empty "Layer 1" — no generator_info.
+        ctrl.set_active_layer(original_layer_id)
+
+        panel = _build_panel(ctrl, qtbot)
+        panel._generator = PixelArtGenerator()
+
+        specs = _run_pixel_art_sync(proj.canvas)
+        panel._pending_multilayer_regen_run_id = None
+        panel._on_multilayer_generation_finished(specs)
+
+        # The original empty Layer 1 is still active and still untagged.
+        ctrl.set_active_layer(original_layer_id)
+
+        # Simulate the prior-run lookup that _on_generate performs.
+        prior_run_id = None
+        for proj_layer in ctrl.current_project.layers:
+            info = proj_layer.generator_info
+            if (
+                isinstance(info, dict)
+                and info.get("_generator_name") == panel._generator.name
+                and info.get("_generator_run_id")
+            ):
+                prior_run_id = info["_generator_run_id"]
+
+        assert prior_run_id is not None, (
+            "Prior-run lookup must find the previous Pixel Art run even when "
+            "the active layer is the untagged starter layer"
+        )
+
+    def test_layers_tagged_with_generator_name(self, qtbot):
+        from plottter.gui.project_controller import ProjectController
+
+        proj, layer_id = _make_project()
+        ctrl = ProjectController(proj)
+        ctrl.set_active_layer(layer_id)
+
+        panel = _build_panel(ctrl, qtbot)
+        panel._generator = PixelArtGenerator()
+
+        specs = _run_pixel_art_sync(proj.canvas)
+        panel._pending_multilayer_regen_run_id = None
+        panel._on_multilayer_generation_finished(specs)
+
+        tagged = [
+            l for l in ctrl.current_project.layers
+            if isinstance(l.generator_info, dict)
+            and l.generator_info.get("_generator_name") == "Pixel Art"
+        ]
+        assert tagged, "Every generated layer must carry the generator name"

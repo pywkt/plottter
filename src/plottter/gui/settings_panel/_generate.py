@@ -93,17 +93,22 @@ class _GenerateMixin:
         ):
             params["_source_image"] = self._preprocessed_image
 
-        # For multi-layer generators, capture the run ID of the currently-active
-        # layer so _on_multilayer_generation_finished can replace that run instead
-        # of appending duplicate layers.
+        # For multi-layer generators, find any prior run of THIS generator
+        # anywhere in the project (not just on the active layer — the user
+        # may have clicked Generate while still on the original empty
+        # "Layer 1"). _on_multilayer_generation_finished uses the captured
+        # run id to replace that run instead of appending duplicates.
         if getattr(self._generator, "emits_multiple_layers", False):
-            layer = self._controller.get_layer(layer_id)
-            if layer and isinstance(layer.generator_info, dict):
-                self._pending_multilayer_regen_run_id = layer.generator_info.get(
-                    "_generator_run_id"
-                )
-            else:
-                self._pending_multilayer_regen_run_id = None
+            prior_run_id: str | None = None
+            for proj_layer in self._controller.current_project.layers:
+                info = proj_layer.generator_info
+                if (
+                    isinstance(info, dict)
+                    and info.get("_generator_name") == self._generator.name
+                    and info.get("_generator_run_id")
+                ):
+                    prior_run_id = info["_generator_run_id"]
+            self._pending_multilayer_regen_run_id = prior_run_id
 
         self._worker = GeneratorWorker(self._generator, params, canvas)
         self._worker.progress.connect(self._on_progress)
@@ -196,13 +201,19 @@ class _GenerateMixin:
                 for lid in old_ids:
                     self._controller.remove_layer(lid)
 
-            # Add the freshly generated layers, each tagged with the new run ID.
+            # Add the freshly generated layers, each tagged with both the
+            # generator name and the new run id so a future regenerate can
+            # find them without relying on which layer is active.
+            generator_name = getattr(self._generator, "name", "")
             for spec in layer_specs:
                 layer = Layer(
                     name=spec.name,
                     color=spec.color,
                     paths=spec.paths,
-                    generator_info={"_generator_run_id": new_run_id},
+                    generator_info={
+                        "_generator_name": generator_name,
+                        "_generator_run_id": new_run_id,
+                    },
                 )
                 self._controller.add_layer(layer)
         finally:
