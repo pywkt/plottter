@@ -191,3 +191,93 @@ def export_combined_svg(
             dwg.add(_layer_group(dwg, layer, stroke_width))
 
     dwg.save(pretty=True)
+
+
+def export_layer_specs_svg(
+    layer_specs: list,
+    canvas: Canvas,
+    filepath: str,
+    settings: dict,
+) -> None:
+    """Export a list of LayerSpec objects to a single multi-layer SVG file.
+
+    Each spec is written as a ``<g inkscape:groupmode="layer">`` element so
+    Inkscape (and compatible viewers) treats each palette colour as a separate
+    layer.
+
+    Args:
+        layer_specs: Sequence of objects with ``.name`` (str), ``.color`` (hex
+            string), and ``.paths`` (list of polylines).  Compatible with
+            :class:`~plottter.generators.base.LayerSpec`.
+        canvas: Canvas that defines the paper dimensions.
+        filepath: Destination SVG file path (will be created/overwritten).
+        settings: Export options dict (same keys as :func:`export_layer_svg`).
+    """
+    stroke_width: float = float(settings.get("stroke_width", 0.3))
+    reg_marks: bool = bool(settings.get("registration_marks", True))
+    reg_style: str = settings.get("reg_mark_style", "corners")
+
+    # Build SVG as raw XML strings to avoid svgwrite's attribute validator,
+    # which rejects non-SVG-1.1 attributes like inkscape:groupmode.
+    lines: list[str] = [
+        '<?xml version="1.0" encoding="utf-8"?>',
+        (
+            f'<svg xmlns="http://www.w3.org/2000/svg"'
+            f' xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"'
+            f' width="{canvas.width_mm}mm"'
+            f' height="{canvas.height_mm}mm"'
+            f' viewBox="0 0 {canvas.width_mm} {canvas.height_mm}">'
+        ),
+    ]
+
+    if reg_marks:
+        arm = 3.0  # mm — arm half-length
+        sw = 0.1   # mm — stroke width
+        x0, y0, x1, y1 = canvas.drawing_area()
+        lines.append('  <g id="registration">')
+
+        def _cross(cx: float, cy: float) -> None:
+            lines.append(
+                f'    <line x1="{cx - arm:.3f}" y1="{cy:.3f}"'
+                f' x2="{cx + arm:.3f}" y2="{cy:.3f}"'
+                f' stroke="#000000" stroke-width="{sw}mm"/>'
+            )
+            lines.append(
+                f'    <line x1="{cx:.3f}" y1="{cy - arm:.3f}"'
+                f' x2="{cx:.3f}" y2="{cy + arm:.3f}"'
+                f' stroke="#000000" stroke-width="{sw}mm"/>'
+            )
+
+        if reg_style in ("corners", "both"):
+            _cross(x0, y0)
+            _cross(x1, y0)
+            _cross(x0, y1)
+            _cross(x1, y1)
+        if reg_style in ("center", "both"):
+            _cross(canvas.width_mm / 2, canvas.height_mm / 2)
+
+        lines.append("  </g>")
+
+    for spec in layer_specs:
+        safe_id = _safe_filename(spec.name)
+        # Escape XML attribute special characters in the label.
+        label = spec.name.replace("&", "&amp;").replace('"', "&quot;")
+        lines.append(
+            f'  <g id="layer_{safe_id}"'
+            f' inkscape:groupmode="layer"'
+            f' inkscape:label="{label}"'
+            f' stroke="{spec.color}"'
+            f' fill="none"'
+            f' stroke-width="{stroke_width:.3f}mm">'
+        )
+        for path in spec.paths:
+            if len(path) < 2:
+                continue
+            pts = " ".join(f"{x:.3f},{y:.3f}" for x, y in path)
+            lines.append(f'    <polyline points="{pts}"/>')
+        lines.append("  </g>")
+
+    lines.append("</svg>")
+
+    with open(filepath, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))

@@ -299,26 +299,7 @@ def run_cli(argv: list[str] | None = None) -> int:
         bar = "#" * filled + "-" * (bar_len - filled)
         print(f"\r  [{bar}] {pct:.0f}%", end="", flush=True)
 
-    try:
-        paths = gen.generate(params, canvas, progress_callback=_progress)
-    except Exception as exc:
-        print(f"\nError during generation: {exc}", file=sys.stderr)
-        return 1
-
-    print()  # newline after progress bar
-
-    if not paths:
-        print("Warning: generator produced no paths.", file=sys.stderr)
-
-    total_paths = len(paths)
-    total_points = sum(len(p) for p in paths)
-    print(f"  Generated {total_paths} paths, {total_points} points.")
-
-    # --- Create layer ---
-    from plottter.models import Layer
-    layer = Layer(name="Layer 1", color=args.layer_color, paths=paths)
-
-    # --- Export ---
+    # --- Export settings (shared by all paths below) ---
     output_path = args.output
     fmt = args.format
 
@@ -332,19 +313,75 @@ def run_cli(argv: list[str] | None = None) -> int:
         "pen_down_angle": args.pen_down_angle,
     }
 
-    try:
-        if fmt == "svg":
-            from plottter.export.svg import export_layer_svg
-            export_layer_svg(layer, canvas, output_path, export_settings)
-        elif fmt == "hpgl":
-            from plottter.export.hpgl import export_layer_hpgl
-            export_layer_hpgl(layer, canvas, output_path, export_settings)
-        elif fmt == "gcode":
-            from plottter.export.gcode import export_layer_gcode
-            export_layer_gcode(layer, canvas, output_path, export_settings)
-    except Exception as exc:
-        print(f"Error during export: {exc}", file=sys.stderr)
-        return 1
+    if getattr(gen, "emits_multiple_layers", False):
+        # --- Multi-layer generator: one <g> per palette colour ---
+        try:
+            layer_specs = gen.generate_layers(params, canvas, progress_callback=_progress)
+        except Exception as exc:
+            print(f"\nError during generation: {exc}", file=sys.stderr)
+            return 1
+
+        print()  # newline after progress bar
+
+        if not layer_specs:
+            print("Warning: generator produced no layers.", file=sys.stderr)
+
+        total_paths = sum(len(spec.paths) for spec in layer_specs)
+        total_points = sum(len(p) for spec in layer_specs for p in spec.paths)
+        print(f"  Generated {len(layer_specs)} layers, {total_paths} paths, {total_points} points.")
+
+        try:
+            if fmt == "svg":
+                from plottter.export.svg import export_layer_specs_svg
+                export_layer_specs_svg(layer_specs, canvas, output_path, export_settings)
+            else:
+                # For non-SVG formats, flatten all layers into one.
+                from plottter.models import Layer
+                flat_paths = [p for spec in layer_specs for p in spec.paths]
+                layer = Layer(name="Layer 1", color=args.layer_color, paths=flat_paths)
+                if fmt == "hpgl":
+                    from plottter.export.hpgl import export_layer_hpgl
+                    export_layer_hpgl(layer, canvas, output_path, export_settings)
+                elif fmt == "gcode":
+                    from plottter.export.gcode import export_layer_gcode
+                    export_layer_gcode(layer, canvas, output_path, export_settings)
+        except Exception as exc:
+            print(f"Error during export: {exc}", file=sys.stderr)
+            return 1
+
+    else:
+        # --- Single-layer generator ---
+        try:
+            paths = gen.generate(params, canvas, progress_callback=_progress)
+        except Exception as exc:
+            print(f"\nError during generation: {exc}", file=sys.stderr)
+            return 1
+
+        print()  # newline after progress bar
+
+        if not paths:
+            print("Warning: generator produced no paths.", file=sys.stderr)
+
+        total_paths = len(paths)
+        total_points = sum(len(p) for p in paths)
+        print(f"  Generated {total_paths} paths, {total_points} points.")
+
+        from plottter.models import Layer
+        layer = Layer(name="Layer 1", color=args.layer_color, paths=paths)
+
+        try:
+            if fmt == "svg":
+                from plottter.export.svg import export_layer_svg
+                export_layer_svg(layer, canvas, output_path, export_settings)
+            elif fmt == "hpgl":
+                from plottter.export.hpgl import export_layer_hpgl
+                export_layer_hpgl(layer, canvas, output_path, export_settings)
+            elif fmt == "gcode":
+                from plottter.export.gcode import export_layer_gcode
+                export_layer_gcode(layer, canvas, output_path, export_settings)
+        except Exception as exc:
+            print(f"Error during export: {exc}", file=sys.stderr)
+            return 1
 
     print(f"  Exported to '{output_path}'.")
     return 0
