@@ -169,3 +169,131 @@ class TestQuickjsMissing:
             f"Preset should mention 'quickjs', got name={presets[0].name!r}, "
             f"description={presets[0].description!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests: method aliases (spec §4.1 – §4.3)
+# ---------------------------------------------------------------------------
+
+
+def _run_sketch(code: str, canvas: Canvas) -> list[list[tuple[float, float]]]:
+    """Helper: run an arbitrary JS sketch and return the resulting polylines."""
+    gen = TurtleToyGenerator()
+    return gen.generate({"code": code}, canvas)
+
+
+def _seg_count(polylines: list[list[tuple[float, float]]]) -> int:
+    """Total number of segments across all polylines."""
+    return sum(len(pl) - 1 for pl in polylines)
+
+
+class TestAliases:
+    """Every Turtle method alias must run without error and produce the expected geometry."""
+
+    # --- §4.1 Movement aliases ---
+
+    def test_fd_alias(self, canvas: Canvas) -> None:
+        """fd(d) is an alias for forward(d) — produces 1 segment."""
+        polylines = _run_sketch("const t = new Turtle(); t.fd(50);", canvas)
+        assert _seg_count(polylines) == 1
+
+    def test_backward_produces_segment(self, canvas: Canvas) -> None:
+        """backward(d) moves in the opposite direction and produces a segment when pen is down."""
+        polylines = _run_sketch("const t = new Turtle(); t.backward(50);", canvas)
+        assert _seg_count(polylines) == 1
+
+    def test_bk_alias(self, canvas: Canvas) -> None:
+        """bk(d) is an alias for backward(d) — produces 1 segment."""
+        polylines = _run_sketch("const t = new Turtle(); t.bk(50);", canvas)
+        assert _seg_count(polylines) == 1
+
+    def test_back_alias(self, canvas: Canvas) -> None:
+        """back(d) is an alias for backward(d) — produces 1 segment."""
+        polylines = _run_sketch("const t = new Turtle(); t.back(50);", canvas)
+        assert _seg_count(polylines) == 1
+
+    # --- §4.2 Rotation aliases ---
+
+    def test_rt_alias(self, canvas: Canvas) -> None:
+        """rt(deg) is an alias for right(deg) — direction changes, forward still draws."""
+        polylines = _run_sketch("const t = new Turtle(); t.rt(90); t.forward(50);", canvas)
+        assert _seg_count(polylines) == 1
+
+    def test_lt_alias(self, canvas: Canvas) -> None:
+        """lt(deg) is an alias for left(deg) — direction changes, forward still draws."""
+        polylines = _run_sketch("const t = new Turtle(); t.lt(90); t.forward(50);", canvas)
+        assert _seg_count(polylines) == 1
+
+    # --- §4.3 Pen control aliases ---
+
+    def test_pu_alias(self, canvas: Canvas) -> None:
+        """pu() lifts the pen — forward does not draw."""
+        polylines = _run_sketch("const t = new Turtle(); t.pu(); t.forward(50);", canvas)
+        assert _seg_count(polylines) == 0
+
+    def test_up_alias(self, canvas: Canvas) -> None:
+        """up() is an alias for penup() — forward does not draw."""
+        polylines = _run_sketch("const t = new Turtle(); t.up(); t.forward(50);", canvas)
+        assert _seg_count(polylines) == 0
+
+    def test_pd_alias(self, canvas: Canvas) -> None:
+        """pd() re-lowers the pen — forward draws after penup/pd."""
+        polylines = _run_sketch(
+            "const t = new Turtle(); t.penup(); t.pd(); t.forward(50);", canvas
+        )
+        assert _seg_count(polylines) == 1
+
+    def test_down_alias(self, canvas: Canvas) -> None:
+        """down() is an alias for pendown() — forward draws after penup/down."""
+        polylines = _run_sketch(
+            "const t = new Turtle(); t.penup(); t.down(); t.forward(50);", canvas
+        )
+        assert _seg_count(polylines) == 1
+
+    # --- §4.1 Absolute movement aliases ---
+
+    def test_setpos_alias(self, canvas: Canvas) -> None:
+        """setpos(x, y) is an alias for goto(x, y) — draws when pen is down."""
+        polylines = _run_sketch("const t = new Turtle(); t.setpos(10, 10);", canvas)
+        assert _seg_count(polylines) == 1
+
+    def test_setposition_alias(self, canvas: Canvas) -> None:
+        """setposition(x, y) is an alias for goto(x, y) — draws when pen is down."""
+        polylines = _run_sketch("const t = new Turtle(); t.setposition(10, 10);", canvas)
+        assert _seg_count(polylines) == 1
+
+    def test_goto_with_array_arg(self, canvas: Canvas) -> None:
+        """goto([x, y]) (array form, spec §4.1) draws a segment when pen is down."""
+        polylines = _run_sketch("const t = new Turtle(); t.goto([10, 10]);", canvas)
+        assert _seg_count(polylines) == 1
+
+    # --- §4.1 Jump aliases ---
+
+    def test_jmp_alias(self, canvas: Canvas) -> None:
+        """jmp(x, y) is an alias for jump(x, y) — teleports without drawing."""
+        polylines = _run_sketch(
+            "const t = new Turtle(); t.jmp(10, 10); t.forward(20);", canvas
+        )
+        assert _seg_count(polylines) == 1
+
+    def test_jump_with_array_arg(self, canvas: Canvas) -> None:
+        """jump([x, y]) (array form, spec §4.1) teleports without drawing."""
+        polylines = _run_sketch(
+            "const t = new Turtle(); t.jump([10, 10]); t.forward(20);", canvas
+        )
+        assert _seg_count(polylines) == 1
+
+    # --- Combined: backward + jump sketch ---
+
+    def test_backward_and_jump_sketch(self, canvas: Canvas) -> None:
+        """A sketch using backward() and jump() produces the expected segment count."""
+        sketch = (
+            "const t = new Turtle();\n"
+            "t.backward(30);\n"
+            "t.jump(0, 20);\n"
+            "t.bk(30);\n"
+            "t.jmp([0, 40]);\n"
+            "t.back(30);\n"
+        )
+        polylines = _run_sketch(sketch, canvas)
+        assert _seg_count(polylines) == 3

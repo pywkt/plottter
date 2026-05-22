@@ -83,6 +83,9 @@ class Turtle {
     // --- Movement ---
     forward(d)                { _turtleForward(this._id, d); }
     fd(d)                     { _turtleForward(this._id, d); }
+    backward(d)               { _turtleForward(this._id, -d); }
+    bk(d)                     { _turtleForward(this._id, -d); }
+    back(d)                   { _turtleForward(this._id, -d); }
 
     // --- Rotation ---
     right(deg)                { _turtleRight(this._id, deg); }
