@@ -499,3 +499,88 @@ class TestOverridesSurviveLayerSwitch:
             f"got {restored_spin.value()}"
         )
         assert panel._dynamic_overrides.get("speed") == 77
+
+
+# ---------------------------------------------------------------------------
+# TestPresetRoundTrip  (task 136.2)
+# ---------------------------------------------------------------------------
+
+
+class TestPresetRoundTrip:
+    """Verify that saving a preset captures _dynamic_overrides and that loading
+    a preset restores those override values in the dynamic widgets (spec §5.2)."""
+
+    def test_preset_round_trip(self, qtbot, dyn_panel):
+        """Full save→load cycle for a preset that includes a dynamic override.
+
+        Steps:
+          1. Set code with an adjustable variable and wait for the debounce rebuild.
+          2. Set a non-default value on the dynamic spinbox.
+          3. Save as a preset (patching the dialog and user_presets module).
+          4. Confirm the saved preset params contain '_dynamic_overrides'.
+          5. Reset the dynamic widget and overrides dict to defaults.
+          6. Load the preset via _apply_preset_params.
+          7. Confirm the dynamic widget now shows the saved override value.
+        """
+        from unittest.mock import patch
+
+        from PyQt6.QtWidgets import QSpinBox
+
+        # --- Step 1: populate code with an adjustable variable ---
+        code_w = dyn_panel._param_widgets.get("code")
+        assert code_w is not None, "panel must have a 'code' widget"
+        code_w.setPlainText(_make_dyn_code("speed"))
+        qtbot.wait(600)  # let 500 ms debounce fire
+
+        # --- Step 2: set a non-default override value ---
+        spin = dyn_panel._dynamic_param_widgets.get("speed")
+        assert isinstance(spin, QSpinBox), "expected QSpinBox for 'speed'"
+        spin.setValue(55)
+        qtbot.wait(50)
+        assert dyn_panel._dynamic_overrides.get("speed") == 55
+
+        # --- Step 3: save as a preset (mock save + dialog) ---
+        saved_preset_params: dict = {}
+
+        def mock_save(_gen_name, preset):
+            saved_preset_params.update(preset.params)
+
+        with patch(
+            "plottter.presets.user_presets.save_user_preset",
+            side_effect=mock_save,
+        ):
+            with patch(
+                "plottter.gui.settings_panel._presets.QInputDialog"
+            ) as mock_dlg:
+                mock_dlg.getText.return_value = ("My Preset", True)
+                with patch.object(dyn_panel, "_rebuild_preset_combo"):
+                    dyn_panel._save_current_as_preset()
+
+        # --- Step 4: verify _dynamic_overrides captured in preset ---
+        assert "_dynamic_overrides" in saved_preset_params, (
+            "saved preset params must contain '_dynamic_overrides'"
+        )
+        assert saved_preset_params["_dynamic_overrides"].get("speed") == 55, (
+            f"expected speed=55 in saved overrides, "
+            f"got {saved_preset_params['_dynamic_overrides']}"
+        )
+
+        # --- Step 5: reset widget and overrides to simulate a fresh state ---
+        spin.setValue(0)
+        qtbot.wait(50)
+        dyn_panel._dynamic_overrides.clear()
+        assert dyn_panel._dynamic_overrides.get("speed") != 55
+
+        # --- Step 6: load the preset via _apply_preset_params ---
+        dyn_panel._apply_preset_params(saved_preset_params)
+
+        # --- Step 7: verify override value restored in the dynamic widget ---
+        restored_spin = dyn_panel._dynamic_param_widgets.get("speed")
+        assert isinstance(restored_spin, QSpinBox), (
+            "expected QSpinBox for 'speed' after preset load"
+        )
+        assert restored_spin.value() == 55, (
+            f"expected override value 55 after preset load, "
+            f"got {restored_spin.value()}"
+        )
+        assert dyn_panel._dynamic_overrides.get("speed") == 55

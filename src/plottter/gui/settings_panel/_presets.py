@@ -116,6 +116,9 @@ class _PresetsMixin:
 
         name = name.strip()
         params = self._gather_current_params()
+        # Capture dynamic overrides so the preset can restore them (spec §5.2).
+        if self._dynamic_overrides:
+            params["_dynamic_overrides"] = dict(self._dynamic_overrides)
 
         try:
             from plottter.generators.base import Preset
@@ -255,6 +258,11 @@ class _PresetsMixin:
                 return
 
     def _apply_preset_params(self, params: dict[str, Any]) -> None:
+        # Extract dynamic overrides before applying static params.  Using a
+        # copy avoids mutating the caller's dict.
+        params = dict(params)
+        saved_overrides: dict[str, Any] | None = params.pop("_dynamic_overrides", None)
+
         # Reset all expression fields to editable before applying preset values.
         for widget in self._param_widgets.values():
             if isinstance(widget, QLineEdit):
@@ -293,6 +301,29 @@ class _PresetsMixin:
             elif _FPPreset is not None and isinstance(widget, _FPPreset):
                 widget.set_font_path(str(value))
         self._update_param_visibility()
+
+        # Apply dynamic overrides (spec §5.2).  Preset application is a single
+        # discrete event: bypass the 500 ms debounce and rebuild synchronously,
+        # then write saved override values into the new dynamic widgets.
+        if saved_overrides is not None:
+            # Cancel any pending debounce-triggered rebuild.
+            try:
+                self._dynamic_rebuild_timer.stop()
+            except AttributeError:
+                pass
+            # Clear stale overrides so the rebuild starts from a clean slate.
+            self._dynamic_overrides.clear()
+            self._rebuild_dynamic_params()
+            # Write saved override values into the freshly built widgets.
+            self._dynamic_overrides.update(saved_overrides)
+            for _ov_name, _ov_value in saved_overrides.items():
+                _ov_widget = self._dynamic_param_widgets.get(_ov_name)
+                _ov_param = next(
+                    (p for p in self._dynamic_param_specs if p.name == _ov_name),
+                    None,
+                )
+                if _ov_widget is not None and _ov_param is not None:
+                    self._set_dynamic_widget_value(_ov_widget, _ov_param, _ov_value)
 
     def apply_generator_preset(self, gen_cls: type, preset_name: str) -> None:
         """Switch to the given generator and apply the named preset.

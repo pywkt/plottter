@@ -269,3 +269,53 @@ class TestMaskRoundTrip:
 
         restored = loaded.load_mask("big_mask")
         assert restored.shape == (100, 70)
+
+
+class TestDynamicOverridesRoundTrip:
+    """Confirm that _dynamic_overrides inside generator_info survives a
+    project-file save/load cycle (spec §5.3)."""
+
+    def test_dynamic_overrides_in_generator_info_round_trip(self, tmp_path):
+        """A layer with _dynamic_overrides in generator_info preserves those
+        values after save + load."""
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        overrides = {"size": 75, "sides": 8, "style": "smooth"}
+        gen_info = {
+            "_generator_name": "TurtleToy",
+            "code": "const size = 75; // min=10, max=100",
+            "seed": 42,
+            "_dynamic_overrides": overrides,
+        }
+        layer = Layer(name="Turtle Layer", color="#000000", generator_info=gen_info)
+        project = Project(name="Override Test", canvas=canvas, layers=[layer])
+
+        filepath = str(tmp_path / "overrides.plottter")
+        save_project(project, filepath)
+        loaded = load_project(filepath)
+
+        assert len(loaded.layers) == 1
+        info = loaded.layers[0].generator_info
+        assert "_dynamic_overrides" in info, (
+            "_dynamic_overrides must survive project file round-trip"
+        )
+        assert info["_dynamic_overrides"] == overrides, (
+            f"expected {overrides}, got {info['_dynamic_overrides']}"
+        )
+
+    def test_dynamic_overrides_empty_dict_round_trip(self, tmp_path):
+        """An empty _dynamic_overrides dict also round-trips correctly."""
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        gen_info = {
+            "_generator_name": "TurtleToy",
+            "code": "turtle.forward(50);",
+            "_dynamic_overrides": {},
+        }
+        layer = Layer(name="No Overrides", color="#000000", generator_info=gen_info)
+        project = Project(name="Empty Overrides", canvas=canvas, layers=[layer])
+
+        filepath = str(tmp_path / "empty_overrides.plottter")
+        save_project(project, filepath)
+        loaded = load_project(filepath)
+
+        info = loaded.layers[0].generator_info
+        assert info.get("_dynamic_overrides") == {}
