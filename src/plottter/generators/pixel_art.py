@@ -13,6 +13,7 @@ import numpy as np
 
 from plottter.generators import register_generator
 from plottter.generators._pixel_fills import fill_solid_hatch
+from plottter.generators._pixel_shapes import cell_polygon
 from plottter.generators.base import (
     BoolParam,
     ChoiceParam,
@@ -99,6 +100,13 @@ class PixelArtGenerator(Generator):
                 choices=["none", "floyd_steinberg", "ordered", "atkinson"],
                 default="none",
                 description="Dithering algorithm applied during palette quantisation.",
+            ),
+            ChoiceParam(
+                name="cell_shape",
+                label="Cell Shape",
+                choices=["square", "diamond", "octagonal", "circle", "rounded_square"],
+                default="square",
+                description="Shape of each cell (clips the fill to the chosen geometry).",
             ),
             ChoiceParam(
                 name="cell_fill_style",
@@ -213,6 +221,7 @@ class PixelArtGenerator(Generator):
         quantization = str(params.get("quantization", "nearest"))
         color_space = str(params.get("color_space", "rgb"))
         dithering = str(params.get("dithering", "none"))
+        cell_shape = str(params.get("cell_shape", "square"))
         fill_style = str(params.get("cell_fill_style", "solid_hatch"))
         density = float(params.get("fill_density", 0.7))
         cell_border = bool(params.get("cell_border", False))
@@ -273,6 +282,14 @@ class PixelArtGenerator(Generator):
 
                 cell_paths: list = []
 
+                # Build the clip polygon once per cell (None for square).
+                poly_verts = cell_polygon(cell_shape, cell_x, cell_y, effective_cell_mm)
+                if poly_verts is not None:
+                    from shapely.geometry import Polygon as _ShapelyPolygon  # lazy
+                    poly = _ShapelyPolygon(poly_verts)
+                else:
+                    poly = None
+
                 if cell_border:
                     x0, y0 = cell_x, cell_y
                     x1b, y1b = cell_x + effective_cell_mm, cell_y + effective_cell_mm
@@ -282,7 +299,7 @@ class PixelArtGenerator(Generator):
 
                 if fill_style == "solid_hatch":
                     cell_paths.extend(
-                        fill_solid_hatch(cell_x, cell_y, effective_cell_mm, cell_density)
+                        fill_solid_hatch(cell_x, cell_y, effective_cell_mm, cell_density, polygon=poly)
                     )
 
                 if idx not in paths_by_index:
