@@ -124,6 +124,17 @@ class Turtle {
         if (Array.isArray(x)) { _turtleJump(this._id, x[0], x[1]); }
         else                  { _turtleJump(this._id, x, y); }
     }
+
+    // --- Heading control (§4.2) ---
+    setheading(deg)           { _turtleSetheading(this._id, deg); }
+    seth(deg)                 { _turtleSetheading(this._id, deg); }
+
+    // --- Axis-constrained movement (§4.1, draws if pen down) ---
+    setx(x)                   { _turtleSetx(this._id, x); }
+    sety(y)                   { _turtleSety(this._id, y); }
+
+    // --- Home (§4.2, draws if pen down, resets pos + heading) ---
+    home()                    { _turtleHome(this._id); }
 }
 
 // Canvas singleton — v1 records opacity but does not act on it.
@@ -180,6 +191,29 @@ class TurtleState:
         """Teleport to (x, y) without drawing."""
         self.x, self.y = x, y
 
+    def setheading(self, deg: float) -> None:
+        """Set absolute heading in degrees (0=east, 90=north). Never draws."""
+        self.heading_rad = math.radians(deg)
+
+    def setx(self, x: float) -> tuple[float, float, float, float] | None:
+        """Change x coordinate, keeping y. Draws if pen down."""
+        seg = (self.x, self.y, x, self.y) if self.pen_down else None
+        self.x = x
+        return seg
+
+    def sety(self, y: float) -> tuple[float, float, float, float] | None:
+        """Change y coordinate, keeping x. Draws if pen down."""
+        seg = (self.x, self.y, self.x, y) if self.pen_down else None
+        self.y = y
+        return seg
+
+    def home(self) -> tuple[float, float, float, float] | None:
+        """Move to (0, 0) and reset heading to 0. Draws if pen down."""
+        seg = (self.x, self.y, 0.0, 0.0) if self.pen_down else None
+        self.x, self.y = 0.0, 0.0
+        self.heading_rad = 0.0
+        return seg
+
 
 # ---------------------------------------------------------------------------
 # TurtleRuntime — owns the quickjs context, turtle registry, and segment list
@@ -212,6 +246,10 @@ class TurtleRuntime:
         ctx.add_callable("_turtlePendown", self._py_turtle_pendown)
         ctx.add_callable("_turtleGoto", self._py_turtle_goto)
         ctx.add_callable("_turtleJump", self._py_turtle_jump)
+        ctx.add_callable("_turtleSetheading", self._py_turtle_setheading)
+        ctx.add_callable("_turtleSetx", self._py_turtle_setx)
+        ctx.add_callable("_turtleSety", self._py_turtle_sety)
+        ctx.add_callable("_turtleHome", self._py_turtle_home)
         ctx.add_callable("_canvasSetPenOpacity", self._py_canvas_set_pen_opacity)
 
     def _eval_shim(self) -> None:
@@ -264,6 +302,24 @@ class TurtleRuntime:
 
     def _py_turtle_jump(self, tid: int, x: float, y: float) -> None:
         self.turtles[int(tid)].jump(float(x), float(y))
+
+    def _py_turtle_setheading(self, tid: int, deg: float) -> None:
+        self.turtles[int(tid)].setheading(float(deg))
+
+    def _py_turtle_setx(self, tid: int, x: float) -> None:
+        seg = self.turtles[int(tid)].setx(float(x))
+        if seg is not None:
+            self.segments.append(seg)
+
+    def _py_turtle_sety(self, tid: int, y: float) -> None:
+        seg = self.turtles[int(tid)].sety(float(y))
+        if seg is not None:
+            self.segments.append(seg)
+
+    def _py_turtle_home(self, tid: int) -> None:
+        seg = self.turtles[int(tid)].home()
+        if seg is not None:
+            self.segments.append(seg)
 
     def _py_canvas_set_pen_opacity(self, value: float) -> None:
         self.pen_opacity = float(value)

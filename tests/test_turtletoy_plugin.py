@@ -297,3 +297,131 @@ class TestAliases:
         )
         polylines = _run_sketch(sketch, canvas)
         assert _seg_count(polylines) == 3
+
+
+class TestHeadingControl:
+    """Spec §4.1 & §4.2: setheading/seth, setx, sety, home — segment-coord assertions."""
+
+    def test_setx_draws_horizontal_segment(self, canvas: Canvas) -> None:
+        """setx(20) moves from (0,0) to (20,0) and emits one segment when pen is down."""
+        import math
+
+        polylines = _run_sketch("const t = new Turtle(); t.setx(20);", canvas)
+        assert _seg_count(polylines) == 1
+        # Flatten all points; the segment should be (0,0)->(20,0) in world space.
+        # After scaling to canvas the x-coordinates are proportional.
+        pts = [pt for pl in polylines for pt in pl]
+        assert len(pts) == 2
+        x0, y0 = pts[0]
+        x1, y1 = pts[1]
+        # y stays 0; x moves by 20 units in world space (scaled to canvas mm)
+        assert y0 == pytest.approx(y1)
+        assert x1 > x0  # moved in positive-x direction
+
+    def test_sety_draws_vertical_segment(self, canvas: Canvas) -> None:
+        """sety(30) (after setx(20)) moves from (20,0) to (20,30) drawing a vertical line."""
+        polylines = _run_sketch(
+            "const t = new Turtle(); t.setx(20); t.sety(30);", canvas
+        )
+        assert _seg_count(polylines) == 2
+
+    def test_setheading_sets_direction(self, canvas: Canvas) -> None:
+        """setheading(90) points north; forward(10) should produce a vertical segment."""
+        import math
+
+        polylines = _run_sketch(
+            "const t = new Turtle(); t.penup(); t.setheading(90); t.pendown(); t.forward(10);",
+            canvas,
+        )
+        assert _seg_count(polylines) == 1
+        pts = [pt for pl in polylines for pt in pl]
+        x0, y0 = pts[0]
+        x1, y1 = pts[1]
+        # heading 90 = north: x stays same; canvas Y-down means canvas y1 < y0
+        assert x0 == pytest.approx(x1, abs=1e-9)
+        assert y1 < y0
+
+    def test_seth_alias(self, canvas: Canvas) -> None:
+        """seth(deg) is an alias for setheading(deg)."""
+        polylines = _run_sketch(
+            "const t = new Turtle(); t.seth(0); t.forward(10);", canvas
+        )
+        assert _seg_count(polylines) == 1
+
+    def test_home_draws_segment_and_resets(self, canvas: Canvas) -> None:
+        """home() draws back to (0,0) when pen is down, then heading is reset to 0."""
+        # After home() heading=0 (east); forward(10) should be horizontal.
+        import math
+
+        polylines = _run_sketch(
+            "const t = new Turtle(); t.goto(50, 50); t.home(); t.forward(10);",
+            canvas,
+        )
+        # goto(50,50): 1 seg; home(): 1 seg; forward(10): 1 seg
+        assert _seg_count(polylines) == 3
+
+    def test_home_no_draw_when_pen_up(self, canvas: Canvas) -> None:
+        """home() does not draw if pen is up, but still moves to (0,0)."""
+        polylines = _run_sketch(
+            "const t = new Turtle(); t.goto(50, 0); t.penup(); t.home(); t.pendown(); t.forward(10);",
+            canvas,
+        )
+        # goto: 1 seg; home (pen up): 0 segs; forward: 1 seg
+        assert _seg_count(polylines) == 2
+
+    def test_full_heading_control_sketch_segment_coords(self, canvas: Canvas) -> None:
+        """Run the canonical heading-control sketch and assert explicit segment coordinates.
+
+        Sketch: t.setx(20); t.sety(30); t.setheading(45); t.forward(10); t.home();
+        Expected world-space segments (before canvas scaling):
+          seg0: (0, 0) -> (20, 0)       [setx]
+          seg1: (20, 0) -> (20, 30)     [sety]
+          seg2: (20, 30) -> (20+10*cos45, 30+10*sin45)  [forward at 45°]
+          seg3: (20+10*cos45, 30+10*sin45) -> (0, 0)    [home]
+        """
+        import math
+
+        sketch = (
+            "const t = new Turtle();"
+            " t.setx(20);"
+            " t.sety(30);"
+            " t.setheading(45);"
+            " t.forward(10);"
+            " t.home();"
+        )
+        polylines = _run_sketch(sketch, canvas)
+        assert _seg_count(polylines) == 4
+
+        # Collect all segments in order from the flattened polylines.
+        segments: list[tuple[float, float, float, float]] = []
+        for pl in polylines:
+            for i in range(len(pl) - 1):
+                x0, y0 = pl[i]
+                x1, y1 = pl[i + 1]
+                segments.append((x0, y0, x1, y1))
+
+        # Replicate the letterbox mapping from _segments_to_polylines.
+        left, top, right, bottom = canvas.drawing_area()
+        width = right - left
+        height = bottom - top
+        cx = left + width / 2.0
+        cy = top + height / 2.0
+        scale = min(width / 200.0, height / 200.0)
+
+        def w2c(wx: float, wy: float) -> tuple[float, float]:
+            """World → canvas mm (Y-up world → Y-down canvas)."""
+            return cx + wx * scale, cy - wy * scale
+
+        # Expected world-space endpoints
+        fw = 10.0
+        d45 = math.sqrt(2) / 2
+        wx = [0.0, 20.0, 20.0, 20.0 + fw * d45, 0.0]
+        wy = [0.0, 0.0, 30.0, 30.0 + fw * d45, 0.0]
+
+        for i, seg in enumerate(segments):
+            x0_exp, y0_exp = w2c(wx[i], wy[i])
+            x1_exp, y1_exp = w2c(wx[i + 1], wy[i + 1])
+            assert seg[0] == pytest.approx(x0_exp, abs=1e-9), f"seg{i} x0 mismatch"
+            assert seg[1] == pytest.approx(y0_exp, abs=1e-9), f"seg{i} y0 mismatch"
+            assert seg[2] == pytest.approx(x1_exp, abs=1e-9), f"seg{i} x1 mismatch"
+            assert seg[3] == pytest.approx(y1_exp, abs=1e-9), f"seg{i} y1 mismatch"
