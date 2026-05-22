@@ -36,6 +36,7 @@ except ImportError:
     )
 
 from plottter.generators import register_generator
+from plottter.generators._adjustable_vars import AdjustableVar, apply_overrides, parse_adjustable_vars
 from plottter.generators.base import (
     ChoiceParam,
     FloatParam,
@@ -732,6 +733,63 @@ class TurtleToyGenerator(Generator):
             ),
         ]
 
+    # ------------------------------------------------------------------
+    # Dynamic parameters (adjustable variables parsed from the code)
+    # ------------------------------------------------------------------
+
+    def _var_to_param(self, var: AdjustableVar) -> Parameter:
+        """Map one AdjustableVar to the appropriate plottter Parameter type."""
+        if var.kind == "int":
+            return IntParam(
+                name=var.name,
+                label=var.name,
+                default=int(var.default) if var.default is not None else 0,
+                min=int(var.min) if var.min is not None else 0,
+                max=int(var.max) if var.max is not None else 100,
+                step=int(var.step) if var.step is not None else 1,
+                description=var.description,
+                randomizable=True,
+            )
+        if var.kind == "float":
+            return FloatParam(
+                name=var.name,
+                label=var.name,
+                default=float(var.default) if var.default is not None else 0.0,
+                min=float(var.min) if var.min is not None else 0.0,
+                max=float(var.max) if var.max is not None else 1.0,
+                step=float(var.step) if var.step is not None else 0.1,
+                description=var.description,
+                randomizable=True,
+            )
+        if var.kind == "choice":
+            choices = var.choices or []
+            default = str(var.default) if var.default is not None else (choices[0] if choices else "")
+            return ChoiceParam(
+                name=var.name,
+                label=var.name,
+                choices=choices,
+                default=default,
+                description=var.description,
+            )
+        # "string" and "path" both map to StringParam
+        return StringParam(
+            name=var.name,
+            label=var.name,
+            default=str(var.default) if var.default is not None else "",
+            description=var.description,
+        )
+
+    def get_dynamic_parameters(
+        self,
+        static_param_values: dict[str, Any],
+    ) -> list[Parameter]:
+        """Return one Parameter per adjustable variable found in the code."""
+        code: str = static_param_values.get("code", "")
+        if not code:
+            return []
+        vars_ = parse_adjustable_vars(code)
+        return [self._var_to_param(v) for v in vars_]
+
     def generate(
         self,
         params: dict[str, Any],
@@ -753,6 +811,13 @@ class TurtleToyGenerator(Generator):
 
         seed: int = int(params.get("seed", 0))
         runtime = TurtleRuntime(seed=seed)
+
+        # Apply dynamic-parameter overrides (§4.4): rewrite adjustable-variable
+        # declarations in the source before evaluation.  Unknown names are silently
+        # ignored by apply_overrides itself; we only forward non-empty dicts.
+        dynamic_overrides = params.get("_dynamic_overrides")
+        if dynamic_overrides and isinstance(dynamic_overrides, dict):
+            code = apply_overrides(code, dynamic_overrides)
 
         # Eval user code — abort on error
         runtime.ctx.eval(code)
