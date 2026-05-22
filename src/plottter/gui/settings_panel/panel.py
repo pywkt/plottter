@@ -8,8 +8,11 @@ import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtWidgets import (
+    QApplication,
     QLabel,
+    QPlainTextEdit,
     QScrollArea,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -356,6 +359,14 @@ class SettingsPanel(
         # Prevent re-entry from the debounce timer while we are running
         self._dynamic_rebuild_timer.stop()
 
+        # --- Focus preservation (spec §4.3) ---
+        # Save the focused widget (and cursor pos for text edits) before any
+        # layout surgery so we can restore focus afterwards.
+        _focused = QApplication.focusWidget()
+        _cursor_pos: int | None = None
+        if isinstance(_focused, (QPlainTextEdit, QTextEdit)):
+            _cursor_pos = _focused.textCursor().position()
+
         if self._generator is None:
             while self._dynamic_params_layout.rowCount() > 0:
                 self._dynamic_params_layout.removeRow(0)
@@ -417,6 +428,21 @@ class SettingsPanel(
             self._dynamic_param_labels[name] = label
 
         self._dynamic_param_specs = list(new_params)
+
+        # --- Restore focus (spec §4.3) ---
+        if _focused is not None:
+            try:
+                _focused.setFocus()
+                if _cursor_pos is not None and isinstance(
+                    _focused, (QPlainTextEdit, QTextEdit)
+                ):
+                    cursor = _focused.textCursor()
+                    max_pos = len(_focused.toPlainText())
+                    cursor.setPosition(min(_cursor_pos, max_pos))
+                    _focused.setTextCursor(cursor)
+            except RuntimeError:
+                pass  # widget was deleted during rebuild — nothing to restore
+
 
     def _get_static_param_values(self) -> dict[str, Any]:
         """Return values of static param widgets (strips injected keys from get_params)."""

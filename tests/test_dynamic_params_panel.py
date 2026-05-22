@@ -381,3 +381,41 @@ class TestDebounceRebuildDynamicParams:
         new_spin = dyn_panel._dynamic_param_widgets.get("speed")
         assert isinstance(new_spin, QSpinBox)
         assert new_spin.value() == 42, f"expected 42, got {new_spin.value()}"
+
+    def test_textbox_focus_preserved(self, qtbot, dyn_panel):
+        """Focus remains on the code textbox across debounce-triggered rebuilds.
+
+        Pre-populates the code widget with an adjustable-var declaration so
+        the dynamic layout has a row.  Then gives focus to the code QPlainTextEdit
+        and simulates rapid typing via keyClicks.  After the 500 ms debounce
+        timer fires _rebuild_dynamic_params the textbox must still have
+        keyboard focus (spec §4.3).
+        """
+        code_w = self._code_widget(dyn_panel)
+
+        # Show the panel so widgets can receive/report keyboard focus.
+        dyn_panel.show()
+        qtbot.wait(50)
+
+        # Pre-populate with a variable declaration so the first rebuild is
+        # meaningful (adds a row).  Wait for it to settle.
+        code_w.setPlainText(_make_dyn_code("speed"))
+        qtbot.wait(600)
+
+        # Now give focus to the code textbox — this is the UX state we want
+        # to preserve across subsequent rebuilds.
+        code_w.setFocus()
+        qtbot.wait(20)
+        assert code_w.hasFocus(), "Precondition: code_w must have focus before rebuild"
+
+        # Simulate rapid typing: keyClicks adds plain alphabetic text, which
+        # fires textChanged and starts the 500 ms debounce timer.
+        qtbot.keyClicks(code_w, "extra")
+
+        # Wait past the debounce + a comfortable buffer.
+        qtbot.wait(600)
+
+        assert code_w.hasFocus(), (
+            "Code textbox must retain focus after debounce-triggered "
+            "dynamic params rebuild"
+        )
