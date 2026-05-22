@@ -1329,3 +1329,83 @@ class TestFitModes:
         x1, y1 = polylines[0][1]
         assert abs(x1 - (cx + 40.0 * scale)) < 1e-9, f"fixed_scale x1: {x1}"
         assert abs(y1 - (cy - 30.0 * scale)) < 1e-9, f"fixed_scale y1: {y1}"
+
+
+class TestParameterSpec:
+    """Parameter list order, defaults, ranges, and visible_when rules (spec §7.1)."""
+
+    _EXPECTED_ORDER = ["code", "fit_mode", "mm_per_unit", "seed", "max_steps", "timeout_seconds"]
+
+    def test_parameter_order_matches_spec(self) -> None:
+        """get_parameters() returns params in the canonical order from spec §7.1."""
+        gen = TurtleToyGenerator()
+        names = [p.name for p in gen.get_parameters()]
+        assert names == self._EXPECTED_ORDER, (
+            f"Parameter order mismatch.\n"
+            f"  Expected: {self._EXPECTED_ORDER}\n"
+            f"  Got:      {names}"
+        )
+
+    def test_code_param_is_multiline_string(self) -> None:
+        """'code' is a StringParam with multiline=True."""
+        from plottter.generators.base import StringParam
+        gen = TurtleToyGenerator()
+        param = next(p for p in gen.get_parameters() if p.name == "code")
+        assert isinstance(param, StringParam), f"'code' should be StringParam, got {type(param)}"
+        assert param.multiline is True, "'code' StringParam must have multiline=True"
+
+    def test_code_param_has_non_empty_default(self) -> None:
+        """'code' default is a non-empty sketch string."""
+        gen = TurtleToyGenerator()
+        param = next(p for p in gen.get_parameters() if p.name == "code")
+        assert isinstance(param.default, str) and len(param.default) > 0, (
+            "'code' default must be a non-empty string (star sketch)"
+        )
+
+    def test_seed_default_is_zero(self) -> None:
+        """'seed' default value is 0."""
+        gen = TurtleToyGenerator()
+        param = next(p for p in gen.get_parameters() if p.name == "seed")
+        assert param.default == 0, f"seed default should be 0, got {param.default!r}"
+
+    def test_seed_range(self) -> None:
+        """'seed' range is 0..1_000_000 per spec §7.1."""
+        gen = TurtleToyGenerator()
+        param = next(p for p in gen.get_parameters() if p.name == "seed")
+        assert param.min == 0, f"seed.min should be 0, got {param.min}"
+        assert param.max == 1_000_000, f"seed.max should be 1_000_000, got {param.max}"
+
+    def test_max_steps_default_and_range(self) -> None:
+        """'max_steps' default is 100_000 and range is 1..1_000_000."""
+        gen = TurtleToyGenerator()
+        param = next(p for p in gen.get_parameters() if p.name == "max_steps")
+        assert param.default == 100_000, f"max_steps default should be 100_000, got {param.default}"
+        assert param.min == 1, f"max_steps.min should be 1, got {param.min}"
+        assert param.max == 1_000_000, f"max_steps.max should be 1_000_000, got {param.max}"
+
+    def test_timeout_seconds_default_and_range(self) -> None:
+        """'timeout_seconds' default is 30.0 and range is 1.0..120.0."""
+        gen = TurtleToyGenerator()
+        param = next(p for p in gen.get_parameters() if p.name == "timeout_seconds")
+        assert param.default == 30.0, f"timeout_seconds default should be 30.0, got {param.default}"
+        assert param.min == 1.0, f"timeout_seconds.min should be 1.0, got {param.min}"
+        assert param.max == 120.0, f"timeout_seconds.max should be 120.0, got {param.max}"
+
+    def test_mm_per_unit_visible_when_rule(self) -> None:
+        """'mm_per_unit' is hidden unless fit_mode == 'fixed_scale' (spec §7.1)."""
+        gen = TurtleToyGenerator()
+        param = next(p for p in gen.get_parameters() if p.name == "mm_per_unit")
+        assert param.visible_when == {"fit_mode": ["fixed_scale"]}, (
+            f"mm_per_unit.visible_when expected {{'fit_mode': ['fixed_scale']}}, "
+            f"got {param.visible_when!r}"
+        )
+
+    def test_no_other_visible_when_rules(self) -> None:
+        """Only 'mm_per_unit' has a visible_when rule; all other params are always visible."""
+        gen = TurtleToyGenerator()
+        for param in gen.get_parameters():
+            if param.name == "mm_per_unit":
+                continue
+            assert not param.visible_when, (
+                f"Unexpected visible_when on '{param.name}': {param.visible_when!r}"
+            )
