@@ -445,6 +445,7 @@ class _SnapshotMixin:
             "params": params,
             "transforms": transforms,
             "image_source_type": self._image_source_type,
+            "_dynamic_overrides": dict(self._dynamic_overrides),
         }
         # Persist depth map invert state alongside the source type
         try:
@@ -608,6 +609,32 @@ class _SnapshotMixin:
                 if _pp_idx >= 0:
                     _ppwidget.setCurrentIndex(_pp_idx)
         self._update_post_proc_visibility()
+
+        # Restore dynamic overrides and rebuild the dynamic-params section
+        # (spec §4.5 step 3).  The code widget was just restored above,
+        # which armed the 500 ms debounce timer.  We bypass the timer and
+        # rebuild synchronously so the saved override values are visible
+        # immediately.
+        #
+        # Two-step process (per spec: "call _rebuild_dynamic_params then
+        # write the override values into the widgets"):
+        #   1. Clear _dynamic_overrides and rebuild — widgets appear with
+        #      their declared defaults.
+        #   2. Write saved override values directly into the new widgets and
+        #      update _dynamic_overrides so future operations see them.
+        saved_overrides = info.get("_dynamic_overrides")
+        if isinstance(saved_overrides, dict):
+            self._dynamic_overrides.clear()
+            self._rebuild_dynamic_params()
+            self._dynamic_overrides.update(saved_overrides)
+            for _ov_name, _ov_value in saved_overrides.items():
+                _ov_widget = self._dynamic_param_widgets.get(_ov_name)
+                _ov_param = next(
+                    (p for p in self._dynamic_param_specs if p.name == _ov_name),
+                    None,
+                )
+                if _ov_widget is not None and _ov_param is not None:
+                    self._set_dynamic_widget_value(_ov_widget, _ov_param, _ov_value)
 
     def _on_active_layer_changed(self, layer_id: str) -> None:
         """Handle active layer change: save current settings to old layer, restore new."""

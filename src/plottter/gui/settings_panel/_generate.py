@@ -163,6 +163,16 @@ class _GenerateMixin:
                     pass
         self._controller.set_layer_paths(layer_id, paths, "Generate")
 
+        # Persist _dynamic_overrides into generator_info (spec §5.1).
+        # flush_current_snapshot() was already called at the start of
+        # _on_generate(); now we stitch in the current overrides so they
+        # survive project save and layer-switch restore.
+        layer = self._controller.get_layer(layer_id)
+        if layer is not None and isinstance(layer.generator_info, dict):
+            updated_info = dict(layer.generator_info)
+            updated_info["_dynamic_overrides"] = dict(self._dynamic_overrides)
+            self._controller.set_layer_generator_info(layer_id, updated_info)
+
         # Auto-regenerate other 3D layers if enabled (task 62.2)
         if (
             self._current_mode == "3D Scene"

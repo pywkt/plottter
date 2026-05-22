@@ -419,3 +419,83 @@ class TestDebounceRebuildDynamicParams:
             "Code textbox must retain focus after debounce-triggered "
             "dynamic params rebuild"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestOverridesSurviveLayerSwitch  (task 136.1)
+# ---------------------------------------------------------------------------
+
+
+class TestOverridesSurviveLayerSwitch:
+    """Round-trip: set overrides on a TurtleToy-like layer, switch away, switch
+    back, and confirm the override values are restored in the dynamic widgets."""
+
+    @pytest.fixture
+    def two_layer_panel(self, qapp):
+        """Panel with two layers and _TestDynGenerator set on the first."""
+        from plottter.gui.project_controller import ProjectController
+        from plottter.gui.settings_panel import SettingsPanel
+        from plottter.models import Canvas, Layer, Project
+
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        project = Project(name="TwoLayerTest", canvas=canvas)
+        layer1 = Layer(name="Dyn", color="#000000")
+        layer2 = Layer(name="Plain", color="#ff0000")
+        project.add_layer(layer1)
+        project.add_layer(layer2)
+        controller = ProjectController(project)
+
+        p = SettingsPanel(controller)
+        gen = _TestDynGenerator()
+        p._current_mode = "Math Art"
+        p.set_generator(gen)
+
+        # Wire the panel to track layer1 as the current target
+        idx = p._layer_combo.findData(layer1.id)
+        if idx >= 0:
+            p._layer_combo.setCurrentIndex(idx)
+
+        return p, controller, layer1.id, layer2.id
+
+    def test_overrides_survive_layer_switch(self, qtbot, two_layer_panel):
+        """Override values set on a dynamic-params widget must be restored when
+        switching back to the layer after visiting another layer."""
+        from PyQt6.QtWidgets import QSpinBox
+
+        panel, controller, layer1_id, layer2_id = two_layer_panel
+
+        # Populate the code widget with an adjustable variable declaration.
+        code_w = panel._param_widgets.get("code")
+        assert code_w is not None, "panel must have a 'code' widget"
+        code_w.setPlainText(_make_dyn_code("speed"))
+        qtbot.wait(600)  # let 500 ms debounce fire
+
+        # Confirm the dynamic param widget appeared.
+        spin = panel._dynamic_param_widgets.get("speed")
+        assert isinstance(spin, QSpinBox), "expected a QSpinBox for 'speed'"
+
+        # Set a non-default override value.
+        spin.setValue(77)
+        qtbot.wait(50)
+        assert panel._dynamic_overrides.get("speed") == 77
+
+        # Switch to layer2 (simulates the user clicking another layer).
+        # This triggers _on_active_layer_changed which saves a snapshot for layer1
+        # and restores (empty) settings for layer2.
+        controller.set_active_layer(layer2_id)
+        qtbot.wait(100)
+
+        # Now switch back to layer1.
+        controller.set_active_layer(layer1_id)
+        qtbot.wait(600)  # allow synchronous rebuild + any debounce
+
+        # The override value must have been restored.
+        restored_spin = panel._dynamic_param_widgets.get("speed")
+        assert isinstance(restored_spin, QSpinBox), (
+            "expected a QSpinBox for 'speed' after switching back"
+        )
+        assert restored_spin.value() == 77, (
+            f"expected override value 77 to survive layer switch, "
+            f"got {restored_spin.value()}"
+        )
+        assert panel._dynamic_overrides.get("speed") == 77
