@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 
 from plottter.generators import register_generator
-from plottter.generators._pixel_fills import fill_solid_hatch
+from plottter.generators._pixel_fills import fill_dithered_dots, fill_solid_hatch
 from plottter.generators._pixel_shapes import cell_polygon
 from plottter.generators.base import (
     BoolParam,
@@ -111,7 +111,7 @@ class PixelArtGenerator(Generator):
             ChoiceParam(
                 name="cell_fill_style",
                 label="Cell Fill Style",
-                choices=["solid_hatch"],
+                choices=["solid_hatch", "dithered_dots"],
                 default="solid_hatch",
                 description="Fill pattern drawn inside each cell.",
             ),
@@ -191,6 +191,32 @@ class PixelArtGenerator(Generator):
                     "dithering": "none",
                     "cell_fill_style": "solid_hatch",
                     "fill_density": 0.8,
+                    "cell_border": False,
+                    "cell_gap_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="B&W Halftone Dots",
+                params={
+                    "grid_width": 80,
+                    "palette": "grayscale_2",
+                    "dithering": "none",
+                    "cell_shape": "circle",
+                    "cell_fill_style": "dithered_dots",
+                    "fill_density": 0.8,
+                    "cell_border": False,
+                    "cell_gap_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="Diamond Dither",
+                params={
+                    "grid_width": 64,
+                    "palette": "grayscale_4",
+                    "dithering": "floyd_steinberg",
+                    "cell_shape": "diamond",
+                    "cell_fill_style": "solid_hatch",
+                    "fill_density": 0.55,
                     "cell_border": False,
                     "cell_gap_mm": 0.0,
                 },
@@ -300,6 +326,10 @@ class PixelArtGenerator(Generator):
                 if fill_style == "solid_hatch":
                     cell_paths.extend(
                         fill_solid_hatch(cell_x, cell_y, effective_cell_mm, cell_density, polygon=poly)
+                    )
+                elif fill_style == "dithered_dots":
+                    cell_paths.extend(
+                        fill_dithered_dots(cell_x, cell_y, effective_cell_mm, cell_density, polygon=poly)
                     )
 
                 if idx not in paths_by_index:
