@@ -88,6 +88,13 @@ _PATH_RE = re.compile(
     r"^\s*type\s*=\s*path(?:\s*,\s*(?P<desc>.+?))?\s*$",
 )
 
+# Heuristic to detect metadata that *looks* like an attempted adjustable-var
+# declaration but failed to parse (as opposed to a plain informational comment).
+# Used to populate the ``errors_out`` list in parse_adjustable_vars.
+_LOOKS_LIKE_DECLARATION_RE = re.compile(
+    r"(?:\bmin\s*=|\bmax\s*=|\bstep\s*=|\btype\s*=)"
+)
+
 
 # ---------------------------------------------------------------------------
 # Dataclass
@@ -283,11 +290,22 @@ def _parse_metadata(
 # ---------------------------------------------------------------------------
 
 
-def parse_adjustable_vars(code: str) -> list[AdjustableVar]:
+def parse_adjustable_vars(
+    code: str,
+    errors_out: "list[int] | None" = None,
+) -> list[AdjustableVar]:
     """Scan *code* for adjustable-variable declarations. Returns them in source order.
 
     Malformed declarations (e.g. min without max, reserved keyword names) are
     silently skipped — does not raise. Duplicate names: first declaration wins.
+
+    Args:
+        code: JavaScript-like source code to scan.
+        errors_out: Optional list to collect 1-based line numbers of lines that
+            look like adjustable-var declarations but failed to parse (i.e.
+            the metadata contains ``min=``, ``max=``, ``step=``, or ``type=``
+            but does not match any valid metadata grammar).  Caller-supplied
+            list is *appended to*; pass ``[]`` to start fresh.
     """
     results: list[AdjustableVar] = []
     seen: set[str] = set()
@@ -327,7 +345,12 @@ def parse_adjustable_vars(code: str) -> list[AdjustableVar]:
 
         var = _parse_metadata(name, default, metadata, lineno)
         if var is None:
-            continue  # informational comment — not adjustable
+            # If the metadata looks like an attempted declaration (contains a
+            # recognised keyword like min=, max=, type=), report it as a parse
+            # error rather than a silent informational comment.
+            if errors_out is not None and _LOOKS_LIKE_DECLARATION_RE.search(metadata):
+                errors_out.append(lineno)
+            continue  # informational comment or malformed declaration — not adjustable
 
         seen.add(name)
         results.append(var)

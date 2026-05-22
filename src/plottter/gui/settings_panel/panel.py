@@ -355,6 +355,9 @@ class SettingsPanel(
           - same-name + different-kind → replace widget, coerce stored value
           - new name → add widget at end
           - removed name → remove widget, drop from _dynamic_overrides
+
+        Also updates _dynamic_parse_status_label with valid/invalid counts and
+        clamps out-of-range numeric overrides to [min, max] before restoring.
         """
         # Prevent re-entry from the debounce timer while we are running
         self._dynamic_rebuild_timer.stop()
@@ -373,6 +376,8 @@ class SettingsPanel(
             self._dynamic_param_specs = []
             self._dynamic_param_widgets.clear()
             self._dynamic_param_labels.clear()
+            if hasattr(self, "_dynamic_parse_status_label"):
+                self._dynamic_parse_status_label.setText("")
             return
 
         # Collect current static widget values to pass to get_dynamic_parameters
@@ -383,6 +388,33 @@ class SettingsPanel(
             new_params = self._generator.get_dynamic_parameters(static_vals)
         except Exception:
             new_params = []
+
+        # --- Parse-error collection for the status label (spec §6 edge cases) ---
+        # Scan all string static-param values for malformed adjustable-var
+        # declarations (lines that look like declarations but fail to parse).
+        from plottter.generators._adjustable_vars import parse_adjustable_vars as _parse_avars
+        _invalid_lines: list[int] = []
+        for _sv in static_vals.values():
+            if isinstance(_sv, str) and _sv:
+                _parse_avars(_sv, errors_out=_invalid_lines)
+
+        # Update the status label above the dynamic-params section.
+        if hasattr(self, "_dynamic_parse_status_label"):
+            _n = len(new_params)
+            if _n == 0 and not _invalid_lines:
+                self._dynamic_parse_status_label.setText("")
+            else:
+                _vw = "variable" if _n == 1 else "variables"
+                if _invalid_lines:
+                    _ls = ", ".join(str(_l) for _l in _invalid_lines)
+                    self._dynamic_parse_status_label.setText(
+                        f"{_n} adjustable {_vw} found, "
+                        f"{len(_invalid_lines)} invalid (lines {_ls})"
+                    )
+                else:
+                    self._dynamic_parse_status_label.setText(
+                        f"{_n} adjustable {_vw} found"
+                    )
 
         # Save current dynamic widget values into _dynamic_overrides before
         # we destroy the widgets, so coercion/restore can reference them.
@@ -407,6 +439,12 @@ class SettingsPanel(
         self._dynamic_param_widgets.clear()
         self._dynamic_param_labels.clear()
 
+        # Import numeric param types once for the clamping logic below.
+        try:
+            from plottter.generators.base import FloatParam as _FP, IntParam as _IP
+        except ImportError:
+            _FP = _IP = None  # type: ignore[assignment]
+
         # Rebuild rows in new order, restoring values where applicable.
         for param in new_params:
             name = param.name
@@ -417,6 +455,20 @@ class SettingsPanel(
             if old_p is not None:
                 stored = self._dynamic_overrides.get(name)
                 if stored is not None:
+                    # Clamp out-of-range numeric overrides to the current
+                    # param bounds, updating _dynamic_overrides so callers
+                    # (generation, presets) see the corrected value.
+                    if _IP is not None and isinstance(param, (_IP, _FP)):
+                        try:
+                            _lo = param.min if param.min is not None else float("-inf")
+                            _hi = param.max if param.max is not None else float("inf")
+                            _cv: Any = max(_lo, min(_hi, float(stored)))
+                            _cv = int(_cv) if isinstance(param, _IP) else float(_cv)
+                            if _cv != stored:
+                                self._dynamic_overrides[name] = _cv
+                                stored = _cv
+                        except (TypeError, ValueError):
+                            pass
                     # same-kind: restore directly; different-kind: coerce
                     self._set_dynamic_widget_value(widget, param, stored)
 

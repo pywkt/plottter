@@ -584,3 +584,122 @@ class TestPresetRoundTrip:
             f"got {restored_spin.value()}"
         )
         assert dyn_panel._dynamic_overrides.get("speed") == 55
+
+
+# ---------------------------------------------------------------------------
+# TestParseStatusLabel  (task 137.1 — part B)
+# ---------------------------------------------------------------------------
+
+
+class TestParseStatusLabel:
+    """_dynamic_parse_status_label is updated after each rebuild."""
+
+    def test_label_shows_valid_count(self, qtbot, dyn_panel):
+        """When code has N valid declarations, label shows 'N adjustable …'."""
+        code_w = dyn_panel._param_widgets.get("code")
+        code_w.setPlainText(_make_dyn_code("speed") + _make_dyn_code("density", "float"))
+        qtbot.wait(600)
+
+        label = dyn_panel._dynamic_parse_status_label
+        text = label.text()
+        assert "2 adjustable" in text, f"expected '2 adjustable' in {text!r}"
+
+    def test_malformed_declarations_skipped_with_message(self, qtbot, dyn_panel):
+        """When code contains 1 valid and 1 malformed declaration the label
+        reports 'N variables found, M invalid (lines …)'."""
+        code_w = dyn_panel._param_widgets.get("code")
+        # Line 1: valid — min= and max= present
+        # Line 2: malformed — min= present but max= is missing
+        code_w.setPlainText(
+            "const speed = 5; // min=0,max=100\n"
+            "const bad = 3; // min=5\n"
+        )
+        qtbot.wait(600)
+
+        label = dyn_panel._dynamic_parse_status_label
+        text = label.text()
+        assert "1 adjustable variable found" in text, (
+            f"expected '1 adjustable variable found' in {text!r}"
+        )
+        assert "1 invalid" in text, f"expected '1 invalid' in {text!r}"
+        assert "2" in text, f"expected line number 2 in {text!r}"
+
+    def test_label_empty_when_no_dynamic_params(self, qtbot, dyn_panel):
+        """When the code is empty the label text is blank."""
+        code_w = dyn_panel._param_widgets.get("code")
+        code_w.setPlainText("")
+        qtbot.wait(600)
+
+        label = dyn_panel._dynamic_parse_status_label
+        assert label.text() == "", f"expected empty label, got {label.text()!r}"
+
+
+# ---------------------------------------------------------------------------
+# TestOutOfRangeOverrideClamping  (task 137.1 — part C)
+# ---------------------------------------------------------------------------
+
+
+class TestOutOfRangeOverrideClamping:
+    """When a stored override is outside the current param's [min, max],
+    _rebuild_dynamic_params clamps it and updates _dynamic_overrides."""
+
+    def test_out_of_range_overrides_clamp(self, qtbot, dyn_panel):
+        """Reducing the param range clamps the stored override to the new max."""
+        from PyQt6.QtWidgets import QSpinBox
+
+        code_w = dyn_panel._param_widgets.get("code")
+        assert code_w is not None
+
+        # Step 1: wide range — set value well above the narrow range's max
+        code_w.setPlainText("const speed = 5; // min=0,max=1000\n")
+        qtbot.wait(600)
+
+        spin = dyn_panel._dynamic_param_widgets.get("speed")
+        assert isinstance(spin, QSpinBox)
+        spin.setValue(750)
+        qtbot.wait(50)
+        assert dyn_panel._dynamic_overrides.get("speed") == 750
+
+        # Step 2: shrink the range so that 750 is now out of bounds
+        code_w.setPlainText("const speed = 5; // min=0,max=100\n")
+        qtbot.wait(600)
+
+        # Override must be clamped to the new max
+        assert dyn_panel._dynamic_overrides.get("speed") == 100, (
+            f"expected clamped override 100, "
+            f"got {dyn_panel._dynamic_overrides.get('speed')}"
+        )
+        new_spin = dyn_panel._dynamic_param_widgets.get("speed")
+        assert isinstance(new_spin, QSpinBox)
+        assert new_spin.value() == 100, (
+            f"expected widget value 100 after clamping, got {new_spin.value()}"
+        )
+
+    def test_in_range_overrides_unchanged(self, qtbot, dyn_panel):
+        """An in-range override is not changed during rebuild."""
+        from PyQt6.QtWidgets import QSpinBox
+
+        code_w = dyn_panel._param_widgets.get("code")
+        code_w.setPlainText("const speed = 5; // min=0,max=100\n")
+        qtbot.wait(600)
+
+        spin = dyn_panel._dynamic_param_widgets.get("speed")
+        assert isinstance(spin, QSpinBox)
+        spin.setValue(42)
+        qtbot.wait(50)
+        assert dyn_panel._dynamic_overrides.get("speed") == 42
+
+        # Trigger another rebuild with same spec (adds an extra variable)
+        code_w.setPlainText(
+            "const speed = 5; // min=0,max=100\n"
+            "const alpha = 3; // min=0,max=10\n"
+        )
+        qtbot.wait(600)
+
+        assert dyn_panel._dynamic_overrides.get("speed") == 42, (
+            f"in-range override must not change, got "
+            f"{dyn_panel._dynamic_overrides.get('speed')}"
+        )
+        new_spin = dyn_panel._dynamic_param_widgets.get("speed")
+        assert isinstance(new_spin, QSpinBox)
+        assert new_spin.value() == 42

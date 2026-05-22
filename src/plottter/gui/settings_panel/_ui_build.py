@@ -847,6 +847,11 @@ class _UIBuildMixin:
         _params_outer.setSpacing(0)
         self._static_params_layout = QFormLayout()
         _params_outer.addLayout(self._static_params_layout)
+        # Status label between static and dynamic sections: shows
+        # "N adjustable variables found" or "N found, M invalid (lines …)"
+        self._dynamic_parse_status_label = QLabel("")
+        self._dynamic_parse_status_label.setWordWrap(True)
+        _params_outer.addWidget(self._dynamic_parse_status_label)
         self._dynamic_params_layout = QFormLayout()
         _params_outer.addLayout(self._dynamic_params_layout)
         self._layout.addWidget(self._params_group)
