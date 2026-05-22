@@ -114,6 +114,17 @@ class SettingsPanel(
         self._preprocess_timer.setInterval(200)
         self._preprocess_timer.timeout.connect(self._update_image_preview)
 
+        # Debounce timer for dynamic param rebuild (500ms after code change)
+        self._dynamic_rebuild_timer = QTimer(self)
+        self._dynamic_rebuild_timer.setSingleShot(True)
+        self._dynamic_rebuild_timer.setInterval(500)
+        self._dynamic_rebuild_timer.timeout.connect(self._rebuild_dynamic_params)
+
+        # State for dynamic params (rebuilt by _rebuild_dynamic_params)
+        self._dynamic_param_specs: list = []          # previous Parameter list for diffing
+        self._dynamic_param_widgets: dict[str, QWidget] = {}
+        self._dynamic_param_labels: dict[str, QLabel] = {}
+
         self._container = QWidget()
         self._layout = QVBoxLayout(self._container)
         self._layout.setContentsMargins(6, 6, 6, 6)
@@ -334,11 +345,195 @@ class SettingsPanel(
         canvas.camera_projection_toggle_requested.connect(self._on_canvas_projection_toggle)
 
     def _rebuild_dynamic_params(self) -> None:
-        """Clear the dynamic params sub-layout.
+        """Rebuild the dynamic-params sub-layout from get_dynamic_parameters().
 
-        Will be wired up in task 135 to populate adjustable-var widgets.
-        For now it only ensures the layout is empty so the layout split
-        is observable by tests.
+        Implements the diff rules from spec §4.2 / §4.3 / §6:
+          - same-name + same-kind → keep widget value (widget recreated, value restored)
+          - same-name + different-kind → replace widget, coerce stored value
+          - new name → add widget at end
+          - removed name → remove widget, drop from _dynamic_overrides
         """
+        # Prevent re-entry from the debounce timer while we are running
+        self._dynamic_rebuild_timer.stop()
+
+        if self._generator is None:
+            while self._dynamic_params_layout.rowCount() > 0:
+                self._dynamic_params_layout.removeRow(0)
+            self._dynamic_param_specs = []
+            self._dynamic_param_widgets.clear()
+            self._dynamic_param_labels.clear()
+            return
+
+        # Collect current static widget values to pass to get_dynamic_parameters
+        static_vals = self._get_static_param_values()
+
+        # Ask the generator for the new set of dynamic params
+        try:
+            new_params = self._generator.get_dynamic_parameters(static_vals)
+        except Exception:
+            new_params = []
+
+        # Save current dynamic widget values into _dynamic_overrides before
+        # we destroy the widgets, so coercion/restore can reference them.
+        for name, widget in list(self._dynamic_param_widgets.items()):
+            val = self._read_dynamic_widget_value(widget)
+            if val is not None:
+                self._dynamic_overrides[name] = val
+
+        # Drop overrides for names that have been removed from the param set.
+        new_names = {p.name for p in new_params}
+        for name in list(self._dynamic_overrides.keys()):
+            if name in self._dynamic_param_widgets and name not in new_names:
+                del self._dynamic_overrides[name]
+
+        # Remember old param specs for diffing, then clear the layout entirely.
+        # Clearing destroys all existing dynamic widgets; values are already
+        # saved in _dynamic_overrides above.
+        old_by_name = {p.name: p for p in self._dynamic_param_specs}
+
         while self._dynamic_params_layout.rowCount() > 0:
             self._dynamic_params_layout.removeRow(0)
+        self._dynamic_param_widgets.clear()
+        self._dynamic_param_labels.clear()
+
+        # Rebuild rows in new order, restoring values where applicable.
+        for param in new_params:
+            name = param.name
+            old_p = old_by_name.get(name)
+
+            widget, label = self._build_dynamic_widget(param)
+
+            if old_p is not None:
+                stored = self._dynamic_overrides.get(name)
+                if stored is not None:
+                    # same-kind: restore directly; different-kind: coerce
+                    self._set_dynamic_widget_value(widget, param, stored)
+
+            # Connect widget changes → keep _dynamic_overrides up to date
+            self._connect_dynamic_widget_change(widget, name)
+
+            self._dynamic_params_layout.addRow(label, widget)
+            self._dynamic_param_widgets[name] = widget
+            self._dynamic_param_labels[name] = label
+
+        self._dynamic_param_specs = list(new_params)
+
+    def _get_static_param_values(self) -> dict[str, Any]:
+        """Return values of static param widgets (strips injected keys from get_params)."""
+        params = self.get_params()
+        params.pop("_source_image", None)
+        params.pop("_camera", None)
+        return params
+
+    def _build_dynamic_widget(self, param: Any) -> "tuple[Any, Any]":
+        """Create a (widget, label) pair for a single dynamic Parameter."""
+        from PyQt6.QtWidgets import (
+            QCheckBox, QComboBox, QDoubleSpinBox, QLabel, QLineEdit,
+            QPlainTextEdit, QSpinBox,
+        )
+
+        try:
+            from plottter.generators.base import (
+                FloatParam, IntParam, ChoiceParam, BoolParam, StringParam,
+            )
+        except ImportError:
+            FloatParam = IntParam = ChoiceParam = BoolParam = StringParam = None  # type: ignore
+
+        label = QLabel(param.label)
+        widget: Any
+
+        if FloatParam is not None and isinstance(param, FloatParam):
+            widget = QDoubleSpinBox()
+            widget.setMinimum(param.min)
+            widget.setMaximum(param.max)
+            widget.setSingleStep(param.step)
+            widget.setValue(param.default)
+            widget.setDecimals(4)
+        elif IntParam is not None and isinstance(param, IntParam):
+            widget = QSpinBox()
+            widget.setMinimum(param.min)
+            widget.setMaximum(param.max)
+            widget.setSingleStep(param.step)
+            widget.setValue(param.default)
+        elif ChoiceParam is not None and isinstance(param, ChoiceParam):
+            widget = QComboBox()
+            widget.addItems(param.choices)
+            idx = param.choices.index(param.default) if param.default in param.choices else 0
+            widget.setCurrentIndex(idx)
+        elif BoolParam is not None and isinstance(param, BoolParam):
+            widget = QCheckBox()
+            widget.setChecked(param.default)
+        elif StringParam is not None and isinstance(param, StringParam):
+            if getattr(param, "multiline", False):
+                widget = QPlainTextEdit(str(param.default))
+            else:
+                widget = QLineEdit(str(param.default))
+        else:
+            widget = QLineEdit(str(getattr(param, "default", "")))
+
+        if getattr(param, "description", ""):
+            widget.setToolTip(param.description)
+            label.setToolTip(param.description)
+
+        return widget, label
+
+    def _read_dynamic_widget_value(self, widget: Any) -> Any:
+        """Read the current value from a dynamic param widget."""
+        from PyQt6.QtWidgets import (
+            QCheckBox, QComboBox, QDoubleSpinBox, QLineEdit,
+            QPlainTextEdit, QSpinBox,
+        )
+        if isinstance(widget, QDoubleSpinBox):
+            return widget.value()
+        if isinstance(widget, QSpinBox):
+            return widget.value()
+        if isinstance(widget, QPlainTextEdit):
+            return widget.toPlainText()
+        if isinstance(widget, QLineEdit):
+            return widget.text()
+        if isinstance(widget, QComboBox):
+            return widget.currentText()
+        if isinstance(widget, QCheckBox):
+            return widget.isChecked()
+        return None
+
+    def _set_dynamic_widget_value(self, widget: Any, param: Any, value: Any) -> None:
+        """Set a dynamic widget's value, coercing type where needed."""
+        from PyQt6.QtWidgets import (
+            QCheckBox, QComboBox, QDoubleSpinBox, QLineEdit,
+            QPlainTextEdit, QSpinBox,
+        )
+        try:
+            if isinstance(widget, QDoubleSpinBox):
+                widget.setValue(float(value))
+            elif isinstance(widget, QSpinBox):
+                widget.setValue(int(float(value)))
+            elif isinstance(widget, QPlainTextEdit):
+                widget.setPlainText(str(value))
+            elif isinstance(widget, QLineEdit):
+                widget.setText(str(value))
+            elif isinstance(widget, QComboBox):
+                idx = widget.findText(str(value))
+                if idx >= 0:
+                    widget.setCurrentIndex(idx)
+            elif isinstance(widget, QCheckBox):
+                widget.setChecked(bool(value))
+        except (TypeError, ValueError):
+            pass  # coercion failed — leave widget at default
+
+    def _connect_dynamic_widget_change(self, widget: Any, name: str) -> None:
+        """Connect a dynamic widget's change signal to update _dynamic_overrides."""
+        from PyQt6.QtWidgets import (
+            QCheckBox, QComboBox, QDoubleSpinBox, QLineEdit,
+            QPlainTextEdit, QSpinBox,
+        )
+        if isinstance(widget, (QDoubleSpinBox, QSpinBox)):
+            widget.valueChanged.connect(lambda v, n=name: self._dynamic_overrides.__setitem__(n, v))
+        elif isinstance(widget, QPlainTextEdit):
+            widget.textChanged.connect(lambda n=name: self._dynamic_overrides.__setitem__(n, widget.toPlainText()))
+        elif isinstance(widget, QLineEdit):
+            widget.textChanged.connect(lambda v, n=name: self._dynamic_overrides.__setitem__(n, v))
+        elif isinstance(widget, QComboBox):
+            widget.currentTextChanged.connect(lambda v, n=name: self._dynamic_overrides.__setitem__(n, v))
+        elif isinstance(widget, QCheckBox):
+            widget.stateChanged.connect(lambda state, n=name: self._dynamic_overrides.__setitem__(n, bool(state)))

@@ -49,6 +49,13 @@ class _SnapshotMixin:
         self._rebuild_preset_combo()
 
         if generator is None:
+            # Clean up dynamic param state (no generator = no dynamic params)
+            self._dynamic_rebuild_timer.stop()
+            self._dynamic_param_specs = []
+            self._dynamic_param_widgets.clear()
+            self._dynamic_param_labels.clear()
+            self._dynamic_overrides.clear()
+            self._rebuild_dynamic_params()  # clears the dynamic layout
             return
 
         # Build param widgets
@@ -235,6 +242,35 @@ class _SnapshotMixin:
             has_image_input = getattr(generator, "uses_source_image", False)
             self._image_source_group.setVisible(has_image_input)
             self._preprocessing_group.setVisible(has_image_input)
+
+        # --- Task 135.1: wire debounce re-parse trigger for dynamic params ---
+        # Reset dynamic param state for this generator (fresh start)
+        self._dynamic_rebuild_timer.stop()
+        self._dynamic_param_specs = []
+        self._dynamic_param_widgets.clear()
+        self._dynamic_param_labels.clear()
+        self._dynamic_overrides.clear()
+
+        # If the generator overrides get_dynamic_parameters, connect QPlainTextEdit
+        # widgets (e.g. "code" in TurtleToy) to the 500 ms debounce timer.
+        try:
+            from plottter.generators.base import Generator as _GeneratorBase
+            _has_dynamic = (
+                type(generator).get_dynamic_parameters
+                is not _GeneratorBase.get_dynamic_parameters
+            )
+        except ImportError:
+            _has_dynamic = False
+
+        if _has_dynamic:
+            for _dyn_widget in self._param_widgets.values():
+                if isinstance(_dyn_widget, QPlainTextEdit):
+                    _dyn_widget.textChanged.connect(
+                        lambda: self._dynamic_rebuild_timer.start()
+                    )
+
+        # Populate dynamic params immediately (synchronous, no debounce)
+        self._rebuild_dynamic_params()
 
     def _update_param_visibility(self, *_args: Any) -> None:
         """Show/hide parameter rows based on their visible_when conditions."""

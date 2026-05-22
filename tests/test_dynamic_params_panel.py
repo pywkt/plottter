@@ -174,3 +174,210 @@ class TestDynamicOverridesMergedIntoParams:
             panel._on_generate()
 
         assert captured["params"]["_dynamic_overrides"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Helpers / dummy generator for task 135.1 tests
+# ---------------------------------------------------------------------------
+
+def _make_dyn_code(var_name: str, kind: str = "int", default: int = 5) -> str:
+    """Return a one-liner adjustable-var declaration for the given name/kind."""
+    if kind == "int":
+        return f"const {var_name} = {default}; // min=0,max=100\n"
+    if kind == "float":
+        return f"const {var_name} = 0.5; // min=0.0,max=1.0\n"
+    return ""
+
+
+class _TestDynGenerator:
+    """Minimal generator that surfaces adjustable variables from a 'code' field.
+
+    Mirrors what TurtleToyGenerator does: parses the code string with
+    parse_adjustable_vars and maps each AdjustableVar to a Parameter.
+    """
+
+    name = "_TestDynGen"
+    emits_multiple_layers = False
+    uses_source_image = False
+
+    def get_presets(self) -> list:
+        return []
+
+    def get_parameters(self):
+        from plottter.generators.base import StringParam
+
+        return [
+            StringParam(
+                name="code",
+                label="Code",
+                default="",
+                multiline=True,
+            )
+        ]
+
+    def get_dynamic_parameters(self, static_param_values: dict) -> list:
+        from plottter.generators._adjustable_vars import parse_adjustable_vars
+        from plottter.generators.base import FloatParam, IntParam
+
+        code: str = static_param_values.get("code", "")
+        if not code:
+            return []
+        result = []
+        for v in parse_adjustable_vars(code):
+            if v.kind == "int":
+                result.append(
+                    IntParam(
+                        name=v.name,
+                        label=v.name,
+                        default=int(v.default) if v.default is not None else 0,
+                        min=int(v.min) if v.min is not None else 0,
+                        max=int(v.max) if v.max is not None else 100,
+                    )
+                )
+            elif v.kind == "float":
+                result.append(
+                    FloatParam(
+                        name=v.name,
+                        label=v.name,
+                        default=float(v.default) if v.default is not None else 0.0,
+                        min=float(v.min) if v.min is not None else 0.0,
+                        max=float(v.max) if v.max is not None else 1.0,
+                    )
+                )
+        return result
+
+
+@pytest.fixture
+def dyn_panel(qapp):
+    """SettingsPanel with _TestDynGenerator already set."""
+    from plottter.gui.project_controller import ProjectController
+    from plottter.gui.settings_panel import SettingsPanel
+    from plottter.models import Canvas, Layer, Project
+
+    canvas = Canvas.from_preset("A4", margin=10.0)
+    project = Project(name="DynTest", canvas=canvas)
+    project.add_layer(Layer(name="L1", color="#000000"))
+    controller = ProjectController(project)
+    p = SettingsPanel(controller)
+    gen = _TestDynGenerator()
+    p.set_generator(gen)
+    return p
+
+
+# ---------------------------------------------------------------------------
+# TestDebounceRebuildDynamicParams  (task 135.1)
+# ---------------------------------------------------------------------------
+
+
+class TestDebounceRebuildDynamicParams:
+    """Verify that editing the code widget triggers _rebuild_dynamic_params via
+    the 500 ms debounce timer and correctly adds/removes/renames dynamic param
+    widgets in _dynamic_params_layout."""
+
+    def _code_widget(self, panel):
+        """Return the QPlainTextEdit for the 'code' static param."""
+        from PyQt6.QtWidgets import QPlainTextEdit
+
+        w = panel._param_widgets.get("code")
+        assert w is not None, "panel must have a 'code' widget"
+        assert isinstance(w, QPlainTextEdit)
+        return w
+
+    def _row_labels(self, panel) -> list[str]:
+        """Return the label texts currently visible in _dynamic_params_layout."""
+        from PyQt6.QtWidgets import QFormLayout, QLabel
+
+        layout: QFormLayout = panel._dynamic_params_layout
+        labels = []
+        for row in range(layout.rowCount()):
+            item = layout.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            if item is not None:
+                w = item.widget()
+                if isinstance(w, QLabel):
+                    labels.append(w.text())
+        return labels
+
+    # ------------------------------------------------------------------
+
+    def test_initial_dynamic_layout_empty(self, dyn_panel):
+        """After set_generator with empty code, dynamic layout has no rows."""
+        assert dyn_panel._dynamic_params_layout.rowCount() == 0
+
+    def test_variable_added(self, qtbot, dyn_panel):
+        """When the code gains an adjustable var, _rebuild_dynamic_params fires
+        (after 600 ms) and inserts a row for it."""
+        code_w = self._code_widget(dyn_panel)
+        code_w.setPlainText(_make_dyn_code("speed"))
+        qtbot.wait(600)  # let 500 ms debounce fire
+
+        labels = self._row_labels(dyn_panel)
+        assert "speed" in labels, f"expected 'speed' in {labels}"
+        assert dyn_panel._dynamic_params_layout.rowCount() == 1
+
+    def test_variable_removed(self, qtbot, dyn_panel):
+        """When an existing adjustable var is deleted from the code, its row
+        disappears and its override is dropped."""
+        code_w = self._code_widget(dyn_panel)
+        # Add then remove
+        code_w.setPlainText(_make_dyn_code("speed"))
+        qtbot.wait(600)
+        assert dyn_panel._dynamic_params_layout.rowCount() == 1
+
+        code_w.setPlainText("")
+        qtbot.wait(600)
+
+        assert dyn_panel._dynamic_params_layout.rowCount() == 0
+        assert "speed" not in dyn_panel._dynamic_overrides
+
+    def test_variable_renamed(self, qtbot, dyn_panel):
+        """Replacing 'speed' with 'density' removes the old row and adds a new
+        one; neither old widget nor override remains."""
+        code_w = self._code_widget(dyn_panel)
+        code_w.setPlainText(_make_dyn_code("speed"))
+        qtbot.wait(600)
+        assert "speed" in self._row_labels(dyn_panel)
+
+        code_w.setPlainText(_make_dyn_code("density"))
+        qtbot.wait(600)
+
+        labels = self._row_labels(dyn_panel)
+        assert "density" in labels, f"expected 'density' in {labels}"
+        assert "speed" not in labels, f"'speed' should be gone, got {labels}"
+        assert "speed" not in dyn_panel._dynamic_overrides
+
+    def test_two_variables_added(self, qtbot, dyn_panel):
+        """Two variables in the code produce two rows in the dynamic layout."""
+        code_w = self._code_widget(dyn_panel)
+        code = _make_dyn_code("alpha") + _make_dyn_code("beta")
+        code_w.setPlainText(code)
+        qtbot.wait(600)
+
+        labels = self._row_labels(dyn_panel)
+        assert "alpha" in labels
+        assert "beta" in labels
+        assert dyn_panel._dynamic_params_layout.rowCount() == 2
+
+    def test_value_preserved_across_rebuild(self, qtbot, dyn_panel):
+        """A user-set widget value is preserved when the code is changed in a
+        way that keeps the same variable name and type (same-kind diff)."""
+        from PyQt6.QtWidgets import QSpinBox
+
+        code_w = self._code_widget(dyn_panel)
+        code_w.setPlainText(_make_dyn_code("speed"))
+        qtbot.wait(600)
+
+        # Manually set the dynamic spinbox to a non-default value
+        spin = dyn_panel._dynamic_param_widgets.get("speed")
+        assert isinstance(spin, QSpinBox)
+        spin.setValue(42)
+        # Wait for the valueChanged → _dynamic_overrides update
+        qtbot.wait(50)
+        assert dyn_panel._dynamic_overrides.get("speed") == 42
+
+        # Add another variable (speed stays); the rebuild should restore 42
+        code_w.setPlainText(_make_dyn_code("speed") + _make_dyn_code("density"))
+        qtbot.wait(600)
+
+        new_spin = dyn_panel._dynamic_param_widgets.get("speed")
+        assert isinstance(new_spin, QSpinBox)
+        assert new_spin.value() == 42, f"expected 42, got {new_spin.value()}"
