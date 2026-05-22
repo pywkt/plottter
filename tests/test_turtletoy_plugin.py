@@ -586,3 +586,101 @@ class TestStateQueries:
         runtime.ctx.eval("const t = new Turtle();")
         ang = runtime.ctx.eval("t.towards([0, 100])")
         assert abs(ang - 90.0) < 1e-6, f"Expected 90, got {ang}"
+
+
+# ---------------------------------------------------------------------------
+# Tests: circle() — spec §4.4 and §8.2
+# ---------------------------------------------------------------------------
+
+_SPIRAL_SKETCH_82 = """\
+const turtle = new Turtle();
+function walk(i) {
+    turtle.circle(i * 0.5, 30);
+    return i < 200;
+}
+"""
+
+
+class TestCircle:
+    """circle(radius, extent, steps) — spec §4.4, test sketches §8.2."""
+
+    def test_full_circle_segment_count(self, canvas: Canvas) -> None:
+        """t.circle(50) → extent=360, steps=max(8,ceil(360/5))=72 segments."""
+        polylines = _run_sketch("const t = new Turtle(); t.circle(50);", canvas)
+        total = _seg_count(polylines)
+        assert total == 72, (
+            f"circle(50) expected 72 segments (steps=max(8,72)), got {total}"
+        )
+
+    def test_full_circle_is_closed(self, canvas: Canvas) -> None:
+        """A full circle should approximately return to its starting point."""
+        polylines = _run_sketch("const t = new Turtle(); t.circle(50);", canvas)
+        assert len(polylines) >= 1
+        pts = [pt for pl in polylines for pt in pl]
+        x0, y0 = pts[0]
+        xn, yn = pts[-1]
+        assert abs(x0 - xn) < 0.5, f"Full circle not closed in x: {x0:.4f} vs {xn:.4f}"
+        assert abs(y0 - yn) < 0.5, f"Full circle not closed in y: {y0:.4f} vs {yn:.4f}"
+
+    def test_partial_arc_segment_count(self, canvas: Canvas) -> None:
+        """circle(50, 90) → steps=max(8,ceil(90/5))=18 segments."""
+        polylines = _run_sketch("const t = new Turtle(); t.circle(50, 90);", canvas)
+        total = _seg_count(polylines)
+        assert total == 18, (
+            f"circle(50, 90) expected 18 segments, got {total}"
+        )
+
+    def test_explicit_steps(self, canvas: Canvas) -> None:
+        """circle(50, 360, 36) → exactly 36 segments."""
+        polylines = _run_sketch("const t = new Turtle(); t.circle(50, 360, 36);", canvas)
+        total = _seg_count(polylines)
+        assert total == 36, f"circle(50, 360, 36) expected 36 segments, got {total}"
+
+    def test_penup_suppresses_segments(self, canvas: Canvas) -> None:
+        """circle() with pen up produces no segments."""
+        polylines = _run_sketch(
+            "const t = new Turtle(); t.penup(); t.circle(50);", canvas
+        )
+        assert _seg_count(polylines) == 0
+
+    def test_small_steps_default_minimum(self, canvas: Canvas) -> None:
+        """Small extent: steps default = max(8, ceil(10/5)) = max(8,2) = 8."""
+        polylines = _run_sketch("const t = new Turtle(); t.circle(50, 10);", canvas)
+        total = _seg_count(polylines)
+        assert total == 8, (
+            f"circle(50, 10) expected 8 segments (default min), got {total}"
+        )
+
+    def test_negative_radius_cw(self, canvas: Canvas) -> None:
+        """Negative radius traces CW arc — segment count same as positive radius."""
+        poly_pos = _run_sketch("const t = new Turtle(); t.circle(50, 90);", canvas)
+        poly_neg = _run_sketch("const t = new Turtle(); t.circle(-50, 90);", canvas)
+        assert _seg_count(poly_neg) == _seg_count(poly_pos), (
+            "Negative radius should produce same segment count as positive"
+        )
+
+    def test_spiral_sketch_segment_count(self, canvas: Canvas) -> None:
+        """Spec §8.2 spiral: segment count must exceed 1000."""
+        polylines = _run_sketch(_SPIRAL_SKETCH_82, canvas)
+        total = _seg_count(polylines)
+        assert total > 1000, (
+            f"Spiral sketch (§8.2) expected >1000 segments, got {total}"
+        )
+
+    def test_spiral_sketch_has_polylines(self, canvas: Canvas) -> None:
+        """Spiral sketch produces at least one polyline."""
+        polylines = _run_sketch(_SPIRAL_SKETCH_82, canvas)
+        assert len(polylines) >= 1
+
+    def test_circle_runtime_direct(self) -> None:
+        """TurtleRuntime: circle(50) via JS produces 72 segments in runtime.segments."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.circle(50);")
+        assert len(runtime.segments) == 72, (
+            f"Expected 72 segments in runtime.segments, got {len(runtime.segments)}"
+        )
+
+    def test_circle_radius_zero_no_segments(self, canvas: Canvas) -> None:
+        """circle(0) should produce no segments (zero-radius arc)."""
+        polylines = _run_sketch("const t = new Turtle(); t.circle(0);", canvas)
+        assert _seg_count(polylines) == 0

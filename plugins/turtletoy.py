@@ -133,6 +133,14 @@ class Turtle {
     setx(x)                   { _turtleSetx(this._id, x); }
     sety(y)                   { _turtleSety(this._id, y); }
 
+    // --- Curves (§4.4) ---
+    circle(radius, extent, steps) {
+        if (extent === undefined) extent = 360;
+        const absExt = Math.abs(extent);
+        if (steps === undefined) steps = Math.max(8, Math.ceil(absExt / 5));
+        _turtleCircle(this._id, radius, extent, steps);
+    }
+
     // --- Home (§4.2, draws if pen down, resets pos + heading) ---
     home()                    { _turtleHome(this._id); }
 
@@ -234,6 +242,31 @@ class TurtleState:
         self.heading_rad = 0.0
         return seg
 
+    def circle(
+        self, radius: float, extent: float = 360.0, steps: int = 72
+    ) -> list[tuple[float, float, float, float]]:
+        """Trace a circular arc.
+
+        Positive radius = CCW (turn left each step).
+        Negative radius = CW (turn right each step).
+        Returns list of segments emitted (pen-down state applies normally).
+        """
+        if steps <= 0 or radius == 0:
+            return []
+        step_angle_deg = abs(extent) / steps
+        half_step_rad = math.radians(step_angle_deg / 2.0)
+        chord = 2.0 * abs(radius) * math.sin(half_step_rad)
+        segs: list[tuple[float, float, float, float]] = []
+        for _ in range(steps):
+            if radius >= 0:
+                self.left(step_angle_deg)
+            else:
+                self.right(step_angle_deg)
+            seg = self.forward(chord)
+            if seg is not None:
+                segs.append(seg)
+        return segs
+
     # ------------------------------------------------------------------
     # State queries (spec §4.5)
     # ------------------------------------------------------------------
@@ -303,6 +336,7 @@ class TurtleRuntime:
         ctx.add_callable("_turtleSetx", self._py_turtle_setx)
         ctx.add_callable("_turtleSety", self._py_turtle_sety)
         ctx.add_callable("_turtleHome", self._py_turtle_home)
+        ctx.add_callable("_turtleCircle", self._py_turtle_circle)
         ctx.add_callable("_canvasSetPenOpacity", self._py_canvas_set_pen_opacity)
         ctx.add_callable("_turtleXcor", self._py_turtle_xcor)
         ctx.add_callable("_turtleYcor", self._py_turtle_ycor)
@@ -379,6 +413,10 @@ class TurtleRuntime:
         seg = self.turtles[int(tid)].home()
         if seg is not None:
             self.segments.append(seg)
+
+    def _py_turtle_circle(self, tid: int, radius: float, extent: float, steps: int) -> None:
+        segs = self.turtles[int(tid)].circle(float(radius), float(extent), int(steps))
+        self.segments.extend(segs)
 
     def _py_canvas_set_pen_opacity(self, value: float) -> None:
         self.pen_opacity = float(value)
