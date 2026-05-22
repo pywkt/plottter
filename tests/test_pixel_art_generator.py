@@ -642,3 +642,139 @@ class TestHexGrid:
         for x, y in verts:
             dist = math.hypot(x - cx, y - cy)
             assert abs(dist - r) < 1e-9, f"Vertex ({x:.4f},{y:.4f}) not on circle r={r}"
+
+
+# ---------------------------------------------------------------------------
+# Modern + grayscale presets (task 124.2)
+# ---------------------------------------------------------------------------
+
+
+class TestModernAndGrayscalePresets:
+    """Tests for Endesga Modern, Sweetie 16 Sketch, B&W Hatch, Grayscale Fine, Outline Only."""
+
+    def setup_method(self):
+        from plottter.generators.pixel_art import PixelArtGenerator
+
+        self.gen = PixelArtGenerator()
+        self.canvas = make_canvas()
+        self.preset_names = [p.name for p in self.gen.get_presets()]
+
+    # -- Existence checks --
+
+    def test_endesga_modern_preset_exists(self):
+        assert "Endesga Modern" in self.preset_names
+
+    def test_sweetie_16_sketch_preset_exists(self):
+        assert "Sweetie 16 Sketch" in self.preset_names
+
+    def test_bw_hatch_preset_exists(self):
+        assert "B&W Hatch" in self.preset_names
+
+    def test_grayscale_fine_preset_exists(self):
+        assert "Grayscale Fine" in self.preset_names
+
+    def test_outline_only_preset_exists(self):
+        assert "Outline Only" in self.preset_names
+
+    # -- Parameter checks --
+
+    def test_endesga_modern_uses_endesga32_palette(self):
+        preset = next(p for p in self.gen.get_presets() if p.name == "Endesga Modern")
+        assert preset.params["palette"] == "endesga32"
+
+    def test_sweetie_16_sketch_uses_sweetie16_palette(self):
+        preset = next(p for p in self.gen.get_presets() if p.name == "Sweetie 16 Sketch")
+        assert preset.params["palette"] == "sweetie16"
+
+    def test_bw_hatch_uses_grayscale_2_palette(self):
+        preset = next(p for p in self.gen.get_presets() if p.name == "B&W Hatch")
+        assert preset.params["palette"] == "grayscale_2"
+
+    def test_grayscale_fine_uses_grayscale_16_palette(self):
+        preset = next(p for p in self.gen.get_presets() if p.name == "Grayscale Fine")
+        assert preset.params["palette"] == "grayscale_16"
+
+    def test_outline_only_has_cell_border_true(self):
+        preset = next(p for p in self.gen.get_presets() if p.name == "Outline Only")
+        assert preset.params["cell_border"] is True
+
+    def test_outline_only_fill_style_is_none(self):
+        preset = next(p for p in self.gen.get_presets() if p.name == "Outline Only")
+        assert preset.params["cell_fill_style"] == "none"
+
+    def test_cell_fill_style_choices_include_none(self):
+        param = next(p for p in self.gen.get_parameters() if p.name == "cell_fill_style")
+        assert "none" in param.choices
+
+    # -- Outline Only: only closed-rect polylines emitted --
+
+    def test_outline_only_emits_only_5pt_closed_rect_polylines(self):
+        """Outline Only must emit only 5-point closed-rectangle polylines (no fill lines)."""
+        img = make_grayscale_image()
+        params = {
+            "_source_image": img,
+            "grid_width": 8,
+            "palette": "grayscale_4",
+            "dithering": "none",
+            "cell_shape": "square",
+            "cell_fill_style": "none",
+            "fill_density": 0.0,
+            "cell_border": True,
+            "cell_gap_mm": 0.0,
+        }
+        specs = self.gen.generate_layers(params, self.canvas)
+        assert len(specs) > 0, "Expected at least one layer from Outline Only params"
+        all_paths = [path for spec in specs for path in spec.paths]
+        assert len(all_paths) > 0, "Expected at least one polyline"
+        for path in all_paths:
+            assert len(path) == 5, (
+                f"Outline Only should only emit 5-point closed-rect polylines; "
+                f"got a path with {len(path)} points: {path}"
+            )
+            # First and last point must be identical (closed)
+            assert path[0] == path[-1], (
+                f"Path is not closed: first={path[0]}, last={path[-1]}"
+            )
+
+    def test_outline_only_no_fill_lines_with_none_style(self):
+        """With cell_fill_style='none', only border paths (len==5) must appear."""
+        img = make_grayscale_image()
+        params = {
+            "_source_image": img,
+            "grid_width": 6,
+            "palette": "grayscale_4",
+            "dithering": "none",
+            "cell_shape": "square",
+            "cell_fill_style": "none",
+            "fill_density": 0.7,
+            "cell_border": True,
+            "cell_gap_mm": 0.0,
+        }
+        specs = self.gen.generate_layers(params, self.canvas)
+        all_paths = [path for spec in specs for path in spec.paths]
+        non_border = [p for p in all_paths if len(p) != 5]
+        assert non_border == [], (
+            f"Expected only 5-point border polylines with fill_style='none'; "
+            f"got {len(non_border)} non-border paths"
+        )
+
+    def test_endesga_modern_generates_without_error(self):
+        """Endesga Modern preset must run generate_layers without error."""
+        import numpy as np
+
+        rng = np.random.default_rng(7)
+        img = rng.integers(0, 256, (16, 16, 3), dtype=np.uint8)
+        preset = next(p for p in self.gen.get_presets() if p.name == "Endesga Modern")
+        params = {**preset.params, "_source_image": img, "grid_width": 8}
+        specs = self.gen.generate_layers(params, self.canvas)
+        assert isinstance(specs, list)
+
+    def test_bw_hatch_generates_without_error(self):
+        """B&W Hatch preset must run generate_layers without error."""
+        import numpy as np
+
+        img = make_grayscale_image()
+        preset = next(p for p in self.gen.get_presets() if p.name == "B&W Hatch")
+        params = {**preset.params, "_source_image": img, "grid_width": 8}
+        specs = self.gen.generate_layers(params, self.canvas)
+        assert isinstance(specs, list)
