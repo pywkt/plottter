@@ -67,6 +67,36 @@ function walk(i) {
 }
 """
 
+# Spiral sketch — spec §8.2: growing arcs driven by the walk loop.
+_SPIRAL_SKETCH = """\
+const turtle = new Turtle();
+function walk(i) {
+    turtle.circle(i * 0.5, 30);
+    return i < 200;
+}
+"""
+
+# Recursive-tree sketch — spec §8.3: binary tree via clone(), no walk function.
+_TREE_SKETCH = """\
+const turtle = new Turtle();
+turtle.penup();
+turtle.goto(0, -80);
+turtle.setheading(90);
+turtle.pendown();
+
+function branch(t, length, depth) {
+    if (depth === 0) return;
+    t.forward(length);
+    const left = t.clone();
+    left.left(30);
+    branch(left, length * 0.7, depth - 1);
+    t.right(30);
+    branch(t, length * 0.7, depth - 1);
+}
+
+branch(turtle, 30, 6);
+"""
+
 # ---------------------------------------------------------------------------
 # JS shim — eval'd into the quickjs context after callables are registered.
 # Defines the ``Turtle`` class, ``Canvas`` singleton, and ``console`` no-op.
@@ -681,9 +711,24 @@ class TurtleToyGenerator(Generator):
             ]
         return [
             Preset(
+                name="Default",
+                params={"code": _STAR_SKETCH},
+                description="Default sketch: the canonical 5-pointed star (spec §8.1).",
+            ),
+            Preset(
                 name="Five-Point Star",
                 params={"code": _STAR_SKETCH},
-                description="The canonical 5-pointed star from the TurtleToy docs.",
+                description="The canonical 5-pointed star from the TurtleToy docs (spec §8.1).",
+            ),
+            Preset(
+                name="Spiral",
+                params={"code": _SPIRAL_SKETCH},
+                description="Archimedean spiral built from growing circle arcs (spec §8.2).",
+            ),
+            Preset(
+                name="Recursive Tree",
+                params={"code": _TREE_SKETCH},
+                description="Binary recursive tree using clone() (spec §8.3).",
             ),
         ]
 

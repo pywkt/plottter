@@ -172,6 +172,82 @@ class TestQuickjsMissing:
 
 
 # ---------------------------------------------------------------------------
+# Tests: presets — spec §8.1–§8.3 (task 131.1)
+# ---------------------------------------------------------------------------
+
+
+class TestPresets:
+    """get_presets() returns 4 named presets; each runs without error within segment bounds."""
+
+    _EXPECTED_NAMES = {"Default", "Five-Point Star", "Spiral", "Recursive Tree"}
+
+    def test_preset_count(self) -> None:
+        """get_presets() returns exactly 4 presets when quickjs is available."""
+        gen = TurtleToyGenerator()
+        presets = gen.get_presets()
+        assert len(presets) == 4, (
+            f"Expected 4 presets, got {len(presets)}: {[p.name for p in presets]}"
+        )
+
+    def test_preset_names(self) -> None:
+        """All 4 expected preset names are present."""
+        gen = TurtleToyGenerator()
+        names = {p.name for p in gen.get_presets()}
+        assert names == self._EXPECTED_NAMES, (
+            f"Preset names mismatch.\n"
+            f"  Expected: {self._EXPECTED_NAMES}\n"
+            f"  Got:      {names}"
+        )
+
+    def test_all_presets_have_code_param(self) -> None:
+        """Every preset provides a non-empty 'code' string in its params dict."""
+        gen = TurtleToyGenerator()
+        for preset in gen.get_presets():
+            assert "code" in preset.params, (
+                f"Preset {preset.name!r} is missing 'code' in params"
+            )
+            assert isinstance(preset.params["code"], str) and preset.params["code"].strip(), (
+                f"Preset {preset.name!r} has empty or non-string 'code'"
+            )
+
+    def test_default_preset_produces_5_segments(self, canvas: Canvas) -> None:
+        """'Default' preset runs without error and produces exactly 5 segments (star)."""
+        gen = TurtleToyGenerator()
+        preset = next(p for p in gen.get_presets() if p.name == "Default")
+        polylines = gen.generate(preset.params, canvas)
+        total = sum(len(pl) - 1 for pl in polylines)
+        assert total == 5, f"'Default' preset expected 5 segments, got {total}"
+
+    def test_star_preset_produces_5_segments(self, canvas: Canvas) -> None:
+        """'Five-Point Star' preset runs without error and produces exactly 5 segments."""
+        gen = TurtleToyGenerator()
+        preset = next(p for p in gen.get_presets() if p.name == "Five-Point Star")
+        polylines = gen.generate(preset.params, canvas)
+        total = sum(len(pl) - 1 for pl in polylines)
+        assert total == 5, f"'Five-Point Star' preset expected 5 segments, got {total}"
+
+    def test_spiral_preset_produces_many_segments(self, canvas: Canvas) -> None:
+        """'Spiral' preset runs without error and produces > 1000 segments."""
+        gen = TurtleToyGenerator()
+        preset = next(p for p in gen.get_presets() if p.name == "Spiral")
+        polylines = gen.generate(preset.params, canvas)
+        total = sum(len(pl) - 1 for pl in polylines)
+        assert total > 1000, (
+            f"'Spiral' preset expected >1000 segments, got {total}"
+        )
+
+    def test_tree_preset_produces_enough_segments(self, canvas: Canvas) -> None:
+        """'Recursive Tree' preset runs without error and produces >= 60 segments."""
+        gen = TurtleToyGenerator()
+        preset = next(p for p in gen.get_presets() if p.name == "Recursive Tree")
+        polylines = gen.generate(preset.params, canvas)
+        total = sum(len(pl) - 1 for pl in polylines)
+        assert total >= 60, (
+            f"'Recursive Tree' preset expected >=60 segments, got {total}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Tests: method aliases (spec §4.1 – §4.3)
 # ---------------------------------------------------------------------------
 
