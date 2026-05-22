@@ -333,3 +333,74 @@ def parse_adjustable_vars(code: str) -> list[AdjustableVar]:
         results.append(var)
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Override preprocessor (spec §3.2)
+# ---------------------------------------------------------------------------
+
+
+def _format_override_value(value: Any) -> str:
+    """Serialise *value* to a JS literal suitable for injection into source code.
+
+    Mapping:
+      bool  -> ``true`` / ``false``   (must precede int -- bool subclasses int)
+      int   -> decimal numeric literal
+      float -> decimal numeric literal (Python str representation)
+      str   -> single-quoted JS string with ``\\`` and ``'`` escaped
+      list  -> JSON.stringify-equivalent (double-quoted JSON array)
+      other -> ``str(value)``
+    """
+    import json
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return str(value)
+    if isinstance(value, str):
+        escaped = value.replace("\\", "\\\\").replace("'", "\\'")
+        return f"'{escaped}'"
+    if isinstance(value, list):
+        return json.dumps(value)
+    return str(value)
+
+
+def apply_overrides(code: str, overrides: dict[str, Any]) -> str:
+    """Rewrite adjustable-variable RHS values in *code* with *overrides*.
+
+    For each line that matches an adjustable-variable declaration (spec §2)
+    and whose variable name is present in *overrides*, the default value on
+    the RHS of the ``=`` is replaced by the formatted override value.
+    Everything else on the line -- leading whitespace, semicolon, trailing
+    comment, line ending -- is preserved verbatim.
+
+    Lines that do not match the declaration pattern (or whose name is not in
+    *overrides*) pass through unmodified.  The total newline count of the
+    returned string is identical to that of the input.
+    """
+    if not overrides:
+        return code
+
+    lines = code.splitlines(keepends=True)
+    out: list[str] = []
+    for raw_line in lines:
+        stripped = raw_line.strip()
+        # Quick pre-check (mirrors the parser's fast path)
+        if stripped.startswith(("const ", "let ")):
+            m = _LINE_RE.match(stripped)
+            if m is not None:
+                name = m.group(1)
+                if name in overrides and name not in _JS_RESERVED:
+                    # Compute the offset of *stripped* within *raw_line*.
+                    # raw_line.lstrip() shares the same character positions
+                    # as *stripped* for the matched region, so adding the
+                    # leading-whitespace length translates group positions.
+                    lead = len(raw_line) - len(raw_line.lstrip())
+                    start = lead + m.start(2)
+                    end = lead + m.end(2)
+                    formatted = _format_override_value(overrides[name])
+                    raw_line = raw_line[:start] + formatted + raw_line[end:]
+        out.append(raw_line)
+    return "".join(out)
