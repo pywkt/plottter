@@ -10,7 +10,7 @@ Usage:
 from typing import Dict, List, Type
 
 from plottter.pixel_art.palettes.c64 import C64Palette, Commodore64Palette
-from plottter.pixel_art.palettes.cga import CGAPalette
+from plottter.pixel_art.palettes.cga import CGAMode4Palette, CGAPalette
 from plottter.pixel_art.palettes.ega import EGAPalette
 from plottter.pixel_art.palettes.gameboy import (
     GameBoyColorGrayscalePalette,
@@ -70,6 +70,8 @@ PRESET_REGISTRY: Dict[str, Type[Palette]] = {
     "megadrive": GenesisPalette,
     # IBM PC
     "cga": CGAPalette,
+    "cga_mode4": CGAMode4Palette,
+    "cga-mode4": CGAMode4Palette,
     "ega": EGAPalette,
     # Commodore
     "c64": C64Palette,
@@ -157,6 +159,7 @@ __all__ = [
     "SNESPalette",
     "GenesisPalette",
     "CGAPalette",
+    "CGAMode4Palette",
     "EGAPalette",
     "C64Palette",
     "PICO8Palette",
