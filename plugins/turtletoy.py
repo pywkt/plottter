@@ -135,9 +135,11 @@ class Turtle {
 
     // --- Curves (§4.4) ---
     circle(radius, extent, steps) {
-        if (extent === undefined) extent = 360;
-        const absExt = Math.abs(extent);
-        if (steps === undefined) steps = Math.max(8, Math.ceil(absExt / 5));
+        const fc = _turtleFullCircle(this._id);
+        if (extent === undefined) extent = fc;
+        // Compute degree-equivalent for the steps default (5° per segment)
+        const absExtDeg = Math.abs(extent) * 360 / fc;
+        if (steps === undefined) steps = Math.max(8, Math.ceil(absExtDeg / 5));
         _turtleCircle(this._id, radius, extent, steps);
     }
 
@@ -162,6 +164,19 @@ class Turtle {
     towards(x, y) {
         if (Array.isArray(x)) { return _turtleTowards(this._id, x[0], x[1]); }
         else                  { return _turtleTowards(this._id, x, y); }
+    }
+
+    // --- Angular units (§4.6) ---
+    degrees(n)                { if (n === undefined) n = 360; _turtleDegrees(this._id, n); }
+    radians()                 { _turtleRadians(this._id); }
+    fullCircle()              { return _turtleFullCircle(this._id); }
+
+    // --- Clone (§4.7) ---
+    // Uses Object.create to avoid calling _createTurtle in the constructor.
+    clone() {
+        const t = Object.create(Turtle.prototype);
+        t._id = _cloneTurtle(this._id);
+        return t;
     }
 }
 
@@ -188,6 +203,7 @@ class TurtleState:
         self.y: float = 0.0
         self.heading_rad: float = 0.0  # 0 = East, Y-up
         self.pen_down: bool = True
+        self.units_per_rotation: float = 360.0  # angular unit: 360 = degrees, 2π = radians
 
     def forward(self, distance: float) -> tuple[float, float, float, float] | None:
         """Move forward; return segment tuple if pen is down, else None."""
@@ -197,11 +213,11 @@ class TurtleState:
         self.x, self.y = nx, ny
         return seg
 
-    def right(self, deg: float) -> None:
-        self.heading_rad -= math.radians(deg)
+    def right(self, angle: float) -> None:
+        self.heading_rad -= angle * (2.0 * math.pi / self.units_per_rotation)
 
-    def left(self, deg: float) -> None:
-        self.heading_rad += math.radians(deg)
+    def left(self, angle: float) -> None:
+        self.heading_rad += angle * (2.0 * math.pi / self.units_per_rotation)
 
     def penup(self) -> None:
         self.pen_down = False
@@ -219,9 +235,9 @@ class TurtleState:
         """Teleport to (x, y) without drawing."""
         self.x, self.y = x, y
 
-    def setheading(self, deg: float) -> None:
-        """Set absolute heading in degrees (0=east, 90=north). Never draws."""
-        self.heading_rad = math.radians(deg)
+    def setheading(self, angle: float) -> None:
+        """Set absolute heading in user units (0=east, quarter_turn=north). Never draws."""
+        self.heading_rad = angle * (2.0 * math.pi / self.units_per_rotation)
 
     def setx(self, x: float) -> tuple[float, float, float, float] | None:
         """Change x coordinate, keeping y. Draws if pen down."""
@@ -243,25 +259,30 @@ class TurtleState:
         return seg
 
     def circle(
-        self, radius: float, extent: float = 360.0, steps: int = 72
+        self, radius: float, extent: float | None = None, steps: int = 72
     ) -> list[tuple[float, float, float, float]]:
         """Trace a circular arc.
 
         Positive radius = CCW (turn left each step).
         Negative radius = CW (turn right each step).
+        ``extent`` is in current user angular units (default = full circle).
         Returns list of segments emitted (pen-down state applies normally).
         """
+        if extent is None:
+            extent = self.units_per_rotation
         if steps <= 0 or radius == 0:
             return []
-        step_angle_deg = abs(extent) / steps
-        half_step_rad = math.radians(step_angle_deg / 2.0)
+        step_angle_user = abs(extent) / steps
+        # Convert step angle to radians for chord-length geometry
+        step_angle_rad = step_angle_user * (2.0 * math.pi / self.units_per_rotation)
+        half_step_rad = step_angle_rad / 2.0
         chord = 2.0 * abs(radius) * math.sin(half_step_rad)
         segs: list[tuple[float, float, float, float]] = []
         for _ in range(steps):
             if radius >= 0:
-                self.left(step_angle_deg)
+                self.left(step_angle_user)
             else:
-                self.right(step_angle_deg)
+                self.right(step_angle_user)
             seg = self.forward(chord)
             if seg is not None:
                 segs.append(seg)
@@ -283,9 +304,10 @@ class TurtleState:
         """Return current y coordinate."""
         return self.y
 
-    def heading_deg(self) -> float:
-        """Heading in degrees (0=east, 90=north), normalised to [0, 360)."""
-        return math.degrees(self.heading_rad) % 360
+    def heading_user(self) -> float:
+        """Heading in current user units, normalised to [0, units_per_rotation)."""
+        degrees = math.degrees(self.heading_rad) % 360
+        return degrees * self.units_per_rotation / 360.0
 
     def isdown(self) -> bool:
         """Return True if the pen is currently down."""
@@ -296,8 +318,9 @@ class TurtleState:
         return math.hypot(tx - self.x, ty - self.y)
 
     def towards(self, tx: float, ty: float) -> float:
-        """Angle in degrees (0=east) toward (tx, ty), normalised to [0, 360)."""
-        return math.degrees(math.atan2(ty - self.y, tx - self.x)) % 360
+        """Angle in user units toward (tx, ty), normalised to [0, units_per_rotation)."""
+        deg = math.degrees(math.atan2(ty - self.y, tx - self.x)) % 360
+        return deg * self.units_per_rotation / 360.0
 
 
 
@@ -325,6 +348,7 @@ class TurtleRuntime:
     def _register_callables(self) -> None:
         ctx = self.ctx
         ctx.add_callable("_createTurtle", self._py_create_turtle)
+        ctx.add_callable("_cloneTurtle", self._py_clone_turtle)
         ctx.add_callable("_turtleForward", self._py_turtle_forward)
         ctx.add_callable("_turtleRight", self._py_turtle_right)
         ctx.add_callable("_turtleLeft", self._py_turtle_left)
@@ -344,6 +368,9 @@ class TurtleRuntime:
         ctx.add_callable("_turtleIsdown", self._py_turtle_isdown)
         ctx.add_callable("_turtleDistance", self._py_turtle_distance)
         ctx.add_callable("_turtleTowards", self._py_turtle_towards)
+        ctx.add_callable("_turtleDegrees", self._py_turtle_degrees)
+        ctx.add_callable("_turtleRadians", self._py_turtle_radians)
+        ctx.add_callable("_turtleFullCircle", self._py_turtle_full_circle)
 
     def _eval_shim(self) -> None:
         # Inject seeded Math.random first (seed value is templated via f-string)
@@ -432,7 +459,7 @@ class TurtleRuntime:
         return self.turtles[int(tid)].y
 
     def _py_turtle_heading(self, tid: int) -> float:
-        return self.turtles[int(tid)].heading_deg()
+        return self.turtles[int(tid)].heading_user()
 
     def _py_turtle_isdown(self, tid: int) -> bool:
         return self.turtles[int(tid)].isdown()
@@ -442,6 +469,36 @@ class TurtleRuntime:
 
     def _py_turtle_towards(self, tid: int, x: float, y: float) -> float:
         return self.turtles[int(tid)].towards(float(x), float(y))
+
+    # ------------------------------------------------------------------
+    # Clone (spec §4.7)
+    # ------------------------------------------------------------------
+
+    def _py_clone_turtle(self, tid: int) -> int:
+        src = self.turtles[int(tid)]
+        new_tid = self.next_id
+        self.next_id += 1
+        new_state = TurtleState()
+        new_state.x = src.x
+        new_state.y = src.y
+        new_state.heading_rad = src.heading_rad
+        new_state.pen_down = src.pen_down
+        new_state.units_per_rotation = src.units_per_rotation
+        self.turtles[new_tid] = new_state
+        return new_tid
+
+    # ------------------------------------------------------------------
+    # Angular units (spec §4.6)
+    # ------------------------------------------------------------------
+
+    def _py_turtle_degrees(self, tid: int, n: float = 360.0) -> None:
+        self.turtles[int(tid)].units_per_rotation = float(n)
+
+    def _py_turtle_radians(self, tid: int) -> None:
+        self.turtles[int(tid)].units_per_rotation = 2.0 * math.pi
+
+    def _py_turtle_full_circle(self, tid: int) -> float:
+        return self.turtles[int(tid)].units_per_rotation
 
 
 

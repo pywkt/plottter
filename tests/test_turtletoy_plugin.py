@@ -684,3 +684,184 @@ class TestCircle:
         """circle(0) should produce no segments (zero-radius arc)."""
         polylines = _run_sketch("const t = new Turtle(); t.circle(0);", canvas)
         assert _seg_count(polylines) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: clone() — spec §4.7 and §8.3
+# ---------------------------------------------------------------------------
+
+_TREE_SKETCH_83 = """\
+const turtle = new Turtle();
+turtle.penup();
+turtle.goto(0, -80);
+turtle.setheading(90);
+turtle.pendown();
+
+function branch(t, length, depth) {
+    if (depth === 0) return;
+    t.forward(length);
+    const left = t.clone();
+    left.left(30);
+    branch(left, length * 0.7, depth - 1);
+    t.right(30);
+    branch(t, length * 0.7, depth - 1);
+}
+
+branch(turtle, 30, 6);
+"""
+
+
+class TestClone:
+    """clone() creates an independent turtle copying all state (spec §4.7, §8.3)."""
+
+    def test_tree_sketch_segment_count(self, canvas: Canvas) -> None:
+        """Spec §8.3 tree sketch (no walk function): must capture ≥ 60 segments."""
+        polylines = _run_sketch(_TREE_SKETCH_83, canvas)
+        total = _seg_count(polylines)
+        assert total >= 60, (
+            f"Tree sketch (§8.3) expected ≥60 segments, got {total}"
+        )
+
+    def test_clone_is_independent(self) -> None:
+        """Moving the clone does not affect the original turtle's position."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval(
+            "const t = new Turtle(); t.forward(10);"
+            "const c = t.clone(); c.forward(50);"
+        )
+        # original turtle x should still be 10
+        x_orig = runtime.ctx.eval("t.x()")
+        x_clone = runtime.ctx.eval("c.x()")
+        assert abs(x_orig - 10.0) < 1e-6, f"Original x expected 10, got {x_orig}"
+        assert abs(x_clone - 60.0) < 1e-6, f"Clone x expected 60, got {x_clone}"
+
+    def test_clone_inherits_position(self) -> None:
+        """Clone starts at the same position as the source."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.goto(25, 40);")
+        runtime.ctx.eval("const c = t.clone();")
+        cx = runtime.ctx.eval("c.x()")
+        cy = runtime.ctx.eval("c.y()")
+        assert abs(cx - 25.0) < 1e-6, f"Clone x expected 25, got {cx}"
+        assert abs(cy - 40.0) < 1e-6, f"Clone y expected 40, got {cy}"
+
+    def test_clone_inherits_heading(self) -> None:
+        """Clone has the same heading as the source at the time of cloning."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.setheading(45);")
+        runtime.ctx.eval("const c = t.clone();")
+        h = runtime.ctx.eval("c.heading()")
+        assert abs(h - 45.0) < 1e-6, f"Clone heading expected 45, got {h}"
+
+    def test_clone_inherits_pen_state(self) -> None:
+        """Clone inherits pen-up/pen-down state from source."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.penup();")
+        runtime.ctx.eval("const c = t.clone();")
+        assert runtime.ctx.eval("c.isdown()") is False
+
+    def test_clone_segments_go_to_global_list(self) -> None:
+        """Segments drawn by the clone are captured in the shared segment list."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval(
+            "const t = new Turtle(); t.penup();"
+            "const c = t.clone(); c.pendown(); c.forward(30);"
+        )
+        assert len(runtime.segments) == 1, (
+            f"Expected 1 segment from clone, got {len(runtime.segments)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests: angular units — spec §4.6
+# ---------------------------------------------------------------------------
+
+
+class TestAngularUnits:
+    """degrees(), radians(), fullCircle() adjust the angular unit (spec §4.6)."""
+
+    def test_full_circle_default_is_360(self) -> None:
+        """fullCircle() returns 360 by default (degrees mode)."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle();")
+        fc = runtime.ctx.eval("t.fullCircle()")
+        assert abs(fc - 360.0) < 1e-9, f"Default fullCircle expected 360, got {fc}"
+
+    def test_degrees_sets_full_circle(self) -> None:
+        """degrees(100) sets fullCircle() to 100."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.degrees(100);")
+        fc = runtime.ctx.eval("t.fullCircle()")
+        assert abs(fc - 100.0) < 1e-9, f"fullCircle expected 100 after degrees(100), got {fc}"
+
+    def test_radians_sets_full_circle_to_2pi(self) -> None:
+        """radians() sets fullCircle() to 2π."""
+        import math
+
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.radians();")
+        fc = runtime.ctx.eval("t.fullCircle()")
+        assert abs(fc - 2 * math.pi) < 1e-9, (
+            f"fullCircle expected 2π after radians(), got {fc}"
+        )
+
+    def test_degrees_default_arg_is_360(self) -> None:
+        """degrees() with no argument defaults to 360."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.radians(); t.degrees();")
+        fc = runtime.ctx.eval("t.fullCircle()")
+        assert abs(fc - 360.0) < 1e-9, (
+            f"fullCircle expected 360 after degrees(), got {fc}"
+        )
+
+    def test_right_uses_user_units(self) -> None:
+        """degrees(100): right(25) = quarter-turn CW; heading() = 315/360*100 = 75 user units."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.degrees(100); t.right(25);")
+        h = runtime.ctx.eval("t.heading()")
+        # right(25) in user units [100/circle] = 90 deg CW from east (0)
+        # heading in user units: 270 deg → 270/360*100 = 75
+        assert abs(h - 75.0) < 1e-6, (
+            f"After degrees(100) + right(25), heading expected 75, got {h}"
+        )
+
+    def test_left_uses_user_units(self) -> None:
+        """degrees(100): left(25) = quarter-turn CCW; heading() = 25 user units."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.degrees(100); t.left(25);")
+        h = runtime.ctx.eval("t.heading()")
+        # left(25) from 0 = +90 deg CCW = heading 90 → 90/360*100 = 25
+        assert abs(h - 25.0) < 1e-6, (
+            f"After degrees(100) + left(25), heading expected 25, got {h}"
+        )
+
+    def test_radians_mode_half_turn(self) -> None:
+        """radians() mode: left(π) = half turn; heading ≈ π (180 degrees)."""
+        import math
+
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.radians(); t.left(Math.PI);")
+        h = runtime.ctx.eval("t.heading()")
+        assert abs(h - math.pi) < 1e-9, (
+            f"After radians() + left(π), heading expected π, got {h}"
+        )
+
+    def test_circle_uses_user_units_for_extent(self, canvas: Canvas) -> None:
+        """degrees(100): circle(50) uses fullCircle()=100 as default extent → 72 segs."""
+        # fullCircle=100, steps = max(8, ceil(|100|*360/100/5)) = max(8, ceil(72)) = 72
+        polylines = _run_sketch(
+            "const t = new Turtle(); t.degrees(100); t.circle(50);", canvas
+        )
+        total = _seg_count(polylines)
+        assert total == 72, (
+            f"circle(50) with degrees(100) expected 72 segments, got {total}"
+        )
+
+    def test_clone_inherits_angular_units(self) -> None:
+        """A clone inherits the source turtle's angular unit setting."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.degrees(100); const c = t.clone();")
+        fc = runtime.ctx.eval("c.fullCircle()")
+        assert abs(fc - 100.0) < 1e-9, (
+            f"Clone fullCircle expected 100 (inherited from source), got {fc}"
+        )
