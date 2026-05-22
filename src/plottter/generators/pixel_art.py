@@ -185,6 +185,18 @@ class PixelArtGenerator(Generator):
                 },
             ),
             Preset(
+                name="Game Boy Tiny",
+                params={
+                    "grid_width": 32,
+                    "palette": "gameboy",
+                    "dithering": "none",
+                    "cell_fill_style": "solid_hatch",
+                    "fill_density": 0.7,
+                    "cell_border": False,
+                    "cell_gap_mm": 0.0,
+                },
+            ),
+            Preset(
                 name="NES Pixel",
                 params={
                     "grid_width": 32,
