@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 
 from plottter.generators import register_generator
-from plottter.generators._pixel_fills import fill_dithered_dots, fill_solid_hatch
+from plottter.generators._pixel_fills import fill_cross_hatch, fill_dithered_dots, fill_solid_hatch
 from plottter.generators._pixel_shapes import cell_polygon, hex_polygon
 from plottter.generators.base import (
     BoolParam,
@@ -112,7 +112,7 @@ class PixelArtGenerator(Generator):
             ChoiceParam(
                 name="cell_fill_style",
                 label="Cell Fill Style",
-                choices=["solid_hatch", "dithered_dots"],
+                choices=["solid_hatch", "cross_hatch", "dithered_dots"],
                 default="solid_hatch",
                 description="Fill pattern drawn inside each cell.",
             ),
@@ -231,6 +231,58 @@ class PixelArtGenerator(Generator):
                     "cell_shape": "hex",
                     "cell_fill_style": "solid_hatch",
                     "fill_density": 0.6,
+                    "cell_border": False,
+                    "cell_gap_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="NES Color",
+                params={
+                    "grid_width": 40,
+                    "palette": "nes",
+                    "dithering": "none",
+                    "cell_shape": "square",
+                    "cell_fill_style": "solid_hatch",
+                    "fill_density": 0.55,
+                    "cell_border": False,
+                    "cell_gap_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="NES Crosshatched",
+                params={
+                    "grid_width": 36,
+                    "palette": "nes",
+                    "dithering": "ordered",
+                    "cell_shape": "square",
+                    "cell_fill_style": "cross_hatch",
+                    "fill_density": 0.30,
+                    "cell_border": False,
+                    "cell_gap_mm": 0.1,
+                },
+            ),
+            Preset(
+                name="SNES Detail",
+                params={
+                    "grid_width": 80,
+                    "palette": "sweetie16",
+                    "dithering": "floyd_steinberg",
+                    "cell_shape": "square",
+                    "cell_fill_style": "solid_hatch",
+                    "fill_density": 0.7,
+                    "cell_border": False,
+                    "cell_gap_mm": 0.0,
+                },
+            ),
+            Preset(
+                name="Genesis Detail",
+                params={
+                    "grid_width": 80,
+                    "palette": "endesga32",
+                    "dithering": "floyd_steinberg",
+                    "cell_shape": "square",
+                    "cell_fill_style": "solid_hatch",
+                    "fill_density": 0.7,
                     "cell_border": False,
                     "cell_gap_mm": 0.0,
                 },
@@ -355,6 +407,10 @@ class PixelArtGenerator(Generator):
                 if fill_style == "solid_hatch":
                     cell_paths.extend(
                         fill_solid_hatch(cell_x, cell_y, effective_cell_mm, cell_density, polygon=poly)
+                    )
+                elif fill_style == "cross_hatch":
+                    cell_paths.extend(
+                        fill_cross_hatch(cell_x, cell_y, effective_cell_mm, cell_density, polygon=poly)
                     )
                 elif fill_style == "dithered_dots":
                     cell_paths.extend(
@@ -488,6 +544,8 @@ class PixelArtGenerator(Generator):
 
             if fill_style == "solid_hatch":
                 cell_paths.extend(fill_solid_hatch(box_x, box_y, box_size, cell_density, polygon=poly))
+            elif fill_style == "cross_hatch":
+                cell_paths.extend(fill_cross_hatch(box_x, box_y, box_size, cell_density, polygon=poly))
             elif fill_style == "dithered_dots":
                 cell_paths.extend(fill_dithered_dots(box_x, box_y, box_size, cell_density, polygon=poly))
 
