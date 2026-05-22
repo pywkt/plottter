@@ -607,6 +607,19 @@ class TurtleToyGenerator(Generator):
                 multiline=True,
             ),
             IntParam(
+                name="seed",
+                label="Seed",
+                min=0,
+                max=2**31 - 1,
+                step=1,
+                default=0,
+                description=(
+                    "Random seed for Math.random. "
+                    "Same seed + same sketch always produces identical output."
+                ),
+                randomizable=False,
+            ),
+            IntParam(
                 name="max_steps",
                 label="Max Steps",
                 min=1,
@@ -665,7 +678,8 @@ class TurtleToyGenerator(Generator):
         max_steps: int = int(params.get("max_steps", 100_000))
         timeout_seconds: float = float(params.get("timeout_seconds", 30.0))
 
-        runtime = TurtleRuntime(seed=0)
+        seed: int = int(params.get("seed", 0))
+        runtime = TurtleRuntime(seed=seed)
 
         # Eval user code — abort on error
         runtime.ctx.eval(code)

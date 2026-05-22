@@ -959,3 +959,98 @@ class TestWalkLoop:
         assert total >= 60, (
             f"No-walk sketch with max_steps=1 should still return ≥60 segments, got {total}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Sketch constants for seeding + console tests
+# ---------------------------------------------------------------------------
+
+# Sketch that draws 10 forward steps using Math.random for distance.
+_RANDOM_SKETCH = """\
+const t = new Turtle();
+for (let i = 0; i < 10; i++) {
+    t.forward(Math.random() * 100);
+}
+"""
+
+# Sketch that calls console.log — should not crash.
+_CONSOLE_LOG_SKETCH = """\
+console.log("hello from turtletoy");
+console.log(42, true, null);
+const t = new Turtle();
+t.forward(50);
+"""
+
+
+class TestSeedDeterminism:
+    """Math.random seeding (spec §5): same seed → identical output; different seed → different."""
+
+    def test_same_seed_produces_identical_segments(self, canvas: Canvas) -> None:
+        """Running the same sketch twice with the same seed yields bit-identical polylines."""
+        gen = TurtleToyGenerator()
+        params = {"code": _RANDOM_SKETCH, "seed": 12345}
+        result_a = gen.generate(params, canvas)
+        result_b = gen.generate(params, canvas)
+
+        assert len(result_a) == len(result_b), (
+            "Same seed must produce the same number of polylines"
+        )
+        for pl_a, pl_b in zip(result_a, result_b):
+            assert pl_a == pl_b, (
+                "Same seed must produce identical point coordinates"
+            )
+
+    def test_different_seeds_produce_different_segments(self, canvas: Canvas) -> None:
+        """Different seeds must produce different output for a Math.random-using sketch."""
+        gen = TurtleToyGenerator()
+        result_a = gen.generate({"code": _RANDOM_SKETCH, "seed": 1}, canvas)
+        result_b = gen.generate({"code": _RANDOM_SKETCH, "seed": 2}, canvas)
+
+        # Flatten to a list of all coordinates for easy comparison.
+        coords_a = [pt for pl in result_a for pt in pl]
+        coords_b = [pt for pl in result_b for pt in pl]
+
+        assert coords_a != coords_b, (
+            "Different seeds should yield different coordinates for a random sketch"
+        )
+
+    def test_seed_zero_is_deterministic(self, canvas: Canvas) -> None:
+        """Seed=0 (default) is still deterministic across two runs."""
+        gen = TurtleToyGenerator()
+        params = {"code": _RANDOM_SKETCH, "seed": 0}
+        result_a = gen.generate(params, canvas)
+        result_b = gen.generate(params, canvas)
+
+        assert result_a == result_b, "Seed=0 must also be deterministic"
+
+    def test_seed_param_in_get_parameters(self) -> None:
+        """The generator exposes a 'seed' IntParam with default 0."""
+        gen = TurtleToyGenerator()
+        param_names = [p.name for p in gen.get_parameters()]
+        assert "seed" in param_names, "get_parameters() must include a 'seed' parameter"
+        seed_param = next(p for p in gen.get_parameters() if p.name == "seed")
+        assert seed_param.default == 0, "seed default should be 0"
+
+
+class TestConsoleLog:
+    """console.log stub (spec §5): sketches that call console.log must not crash."""
+
+    def test_console_log_does_not_raise(self, canvas: Canvas) -> None:
+        """A sketch calling console.log() runs without error."""
+        gen = TurtleToyGenerator()
+        # Should not raise any exception.
+        polylines = gen.generate({"code": _CONSOLE_LOG_SKETCH}, canvas)
+        # The sketch still draws a forward segment.
+        total = sum(len(pl) - 1 for pl in polylines)
+        assert total >= 1, "Sketch with console.log should still produce segments"
+
+    def test_console_log_with_multiple_args(self, canvas: Canvas) -> None:
+        """console.log with multiple args of different types does not raise."""
+        sketch = """\
+console.log(1, "two", true, null, undefined, {a: 1});
+const t = new Turtle();
+t.forward(10);
+"""
+        gen = TurtleToyGenerator()
+        polylines = gen.generate({"code": sketch}, canvas)
+        assert len(polylines) >= 1
