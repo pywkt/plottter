@@ -7,13 +7,14 @@ that appears in the quantised grid.
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
 
 from plottter.generators import register_generator
 from plottter.generators._pixel_fills import fill_dithered_dots, fill_solid_hatch
-from plottter.generators._pixel_shapes import cell_polygon
+from plottter.generators._pixel_shapes import cell_polygon, hex_polygon
 from plottter.generators.base import (
     BoolParam,
     ChoiceParam,
@@ -104,7 +105,7 @@ class PixelArtGenerator(Generator):
             ChoiceParam(
                 name="cell_shape",
                 label="Cell Shape",
-                choices=["square", "diamond", "octagonal", "circle", "rounded_square"],
+                choices=["square", "diamond", "octagonal", "circle", "rounded_square", "hex"],
                 default="square",
                 description="Shape of each cell (clips the fill to the chosen geometry).",
             ),
@@ -254,6 +255,21 @@ class PixelArtGenerator(Generator):
         cell_gap_mm = float(params.get("cell_gap_mm", 0.0))
 
         palette = get_palette(palette_name)
+
+        if cell_shape == "hex":
+            return self._generate_hex_layers(
+                source=source,
+                grid_width=grid_width,
+                palette=palette,
+                fill_style=fill_style,
+                density=density,
+                cell_border=cell_border,
+                cell_gap_mm=cell_gap_mm,
+                canvas=canvas,
+                progress_callback=progress_callback,
+                cancelled_callback=cancelled_callback,
+            )
+
         indices = image_to_palette_grid(
             source,
             palette,
@@ -344,6 +360,136 @@ class PixelArtGenerator(Generator):
             progress_callback(100)
 
         # Emit one LayerSpec per used index (sorted for determinism).
+        return [
+            LayerSpec(
+                name=f"Pixel {idx}",
+                color=hex_colors[idx],
+                paths=paths_by_index[idx],
+            )
+            for idx in sorted(paths_by_index)
+        ]
+
+    def _generate_hex_layers(
+        self,
+        source: np.ndarray,
+        grid_width: int,
+        palette: Any,
+        fill_style: str,
+        density: float,
+        cell_border: bool,
+        cell_gap_mm: float,
+        canvas: Canvas,
+        progress_callback: Any = None,
+        cancelled_callback: Any = None,
+    ) -> list[LayerSpec]:
+        """Hex grid path: sample the source image at flat-topped hexagon centres.
+
+        Circumradius *s* is derived from canvas width and *grid_width* columns so
+        that exactly *grid_width* hexes span the drawing area horizontally.
+        Odd-numbered columns are offset downward by half a row height (even-q
+        offset layout).
+        """
+        from shapely.geometry import Polygon as _ShapelyPolygon  # lazy
+
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        draw_w = draw_x2 - draw_x1
+        draw_h = draw_y2 - draw_y1
+
+        # Circumradius: n_cols flat-top hexes spanning draw_w.
+        # Total x-extent = s*(2 + 1.5*(n_cols-1)) = s*(0.5 + 1.5*n_cols)
+        s = draw_w / (0.5 + 1.5 * grid_width)
+        hex_h = s * math.sqrt(3)  # centre-to-centre row spacing
+
+        palette_colors = palette.colors  # list of (R, G, B) tuples
+        hex_colors = palette.to_hex_list()
+        n_colors = len(hex_colors)
+
+        # Perceptual brightness per colour (0=black → dense fill, 1=white → sparse).
+        color_brightness: list[float] = []
+        for pr, pg, pb in palette_colors:
+            lum = (0.2126 * pr + 0.7152 * pg + 0.0722 * pb) / 255.0
+            color_brightness.append(max(0.0, min(1.0, lum)))
+
+        img_h, img_w = source.shape[:2]
+
+        # Build all hex centres using even-q offset layout.
+        hex_centers: list[tuple[float, float]] = []
+        for q in range(grid_width):
+            cx = draw_x1 + s + q * 1.5 * s
+            y_offset = hex_h / 2.0 if (q % 2 == 1) else 0.0
+            r = 0
+            while True:
+                cy = draw_y1 + hex_h / 2.0 + y_offset + r * hex_h
+                if cy > draw_y2 + hex_h / 2.0:
+                    break
+                hex_centers.append((cx, cy))
+                r += 1
+
+        paths_by_index: dict[int, list] = {}
+        total_cells = len(hex_centers)
+        report_every = max(1, total_cells // 20)
+        processed = 0
+
+        for cx, cy in hex_centers:
+            if cancelled_callback and cancelled_callback():
+                break
+
+            # Sample source image at hex centre (nearest-neighbour).
+            px = int((cx - draw_x1) / draw_w * img_w)
+            py = int((cy - draw_y1) / draw_h * img_h)
+            px = max(0, min(img_w - 1, px))
+            py = max(0, min(img_h - 1, py))
+            pixel = source[py, px, :3]
+
+            # Nearest palette colour.
+            best_idx = 0
+            best_dist = float("inf")
+            for j, (pr, pg, pb) in enumerate(palette_colors):
+                d = (int(pixel[0]) - pr) ** 2 + (int(pixel[1]) - pg) ** 2 + (int(pixel[2]) - pb) ** 2
+                if d < best_dist:
+                    best_dist = d
+                    best_idx = j
+            idx = best_idx
+            if idx < 0 or idx >= n_colors:
+                processed += 1
+                continue
+
+            # Apply gap by shrinking the circumradius.
+            effective_s = max(0.01, s - cell_gap_mm / 2.0)
+            eff_hex_h = effective_s * math.sqrt(3)
+
+            hex_verts = hex_polygon(cx, cy, effective_s)
+            poly = _ShapelyPolygon(hex_verts)
+
+            cell_density = density * (1.0 - color_brightness[idx])
+            cell_paths: list = []
+
+            if cell_border:
+                # Draw the hex outline as a closed polyline.
+                cell_paths.append(hex_verts + [hex_verts[0]])
+
+            # Fill bounding box covers the full hex width/height; polygon clips it.
+            box_x = cx - effective_s
+            box_y = cy - eff_hex_h / 2.0
+            box_size = 2.0 * effective_s
+
+            if fill_style == "solid_hatch":
+                cell_paths.extend(fill_solid_hatch(box_x, box_y, box_size, cell_density, polygon=poly))
+            elif fill_style == "dithered_dots":
+                cell_paths.extend(fill_dithered_dots(box_x, box_y, box_size, cell_density, polygon=poly))
+
+            if cell_paths:
+                if idx not in paths_by_index:
+                    paths_by_index[idx] = []
+                paths_by_index[idx].extend(cell_paths)
+
+            processed += 1
+            if progress_callback and processed % report_every == 0:
+                progress_callback(int(processed / total_cells * 100))
+
+        if progress_callback:
+            progress_callback(100)
+
         return [
             LayerSpec(
                 name=f"Pixel {idx}",

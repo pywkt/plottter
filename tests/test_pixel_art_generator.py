@@ -483,3 +483,162 @@ class TestQuantizationAndColorSpaceParams:
         specs = self.gen.generate_layers(params, canvas)
         assert isinstance(specs, list)
         assert len(specs) > 0
+
+
+# ---------------------------------------------------------------------------
+# Hex grid layout (task 122.1)
+# ---------------------------------------------------------------------------
+
+
+def _compute_hex_centers(
+    grid_width: int,
+    canvas: Canvas,
+) -> tuple[list[tuple[float, float]], float, float]:
+    """Replicate the hex-centre computation from _generate_hex_layers.
+
+    Returns (centers, s, hex_h).
+    """
+    import math
+
+    draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+    draw_w = draw_x2 - draw_x1
+    draw_h = draw_y2 - draw_y1
+    s = draw_w / (0.5 + 1.5 * grid_width)
+    hex_h = s * math.sqrt(3)
+
+    centers: list[tuple[float, float]] = []
+    for q in range(grid_width):
+        cx = draw_x1 + s + q * 1.5 * s
+        y_offset = hex_h / 2.0 if (q % 2 == 1) else 0.0
+        r = 0
+        while True:
+            cy = draw_y1 + hex_h / 2.0 + y_offset + r * hex_h
+            if cy > draw_y2 + hex_h / 2.0:
+                break
+            centers.append((cx, cy))
+            r += 1
+    return centers, s, hex_h
+
+
+class TestHexGrid:
+    """Unit and integration tests for hex grid layout."""
+
+    def test_hex_shape_in_cell_shape_choices(self):
+        from plottter.generators.pixel_art import PixelArtGenerator
+
+        gen = PixelArtGenerator()
+        param = next(p for p in gen.get_parameters() if p.name == "cell_shape")
+        assert "hex" in param.choices
+
+    def test_hex_centers_no_gaps_greater_than_05mm(self):
+        """Every sampled canvas point has a hex centre within circumradius + 0.5 mm.
+
+        For a perfect flat-topped tiling the maximum interior distance from a
+        hex centre is the circumradius *s* (at the vertices).  We add a 0.5 mm
+        tolerance to allow boundary effects at the canvas edges.
+        """
+        import math
+
+        canvas = make_canvas()
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        centers, s, _hex_h = _compute_hex_centers(grid_width=8, canvas=canvas)
+
+        max_gap = 0.0
+        for tx in range(10):
+            for ty in range(10):
+                px = draw_x1 + (tx + 0.5) / 10 * (draw_x2 - draw_x1)
+                py = draw_y1 + (ty + 0.5) / 10 * (draw_y2 - draw_y1)
+                min_dist = min(math.hypot(px - cx, py - cy) for cx, cy in centers)
+                max_gap = max(max_gap, min_dist)
+
+        assert max_gap <= s + 0.5, (
+            f"Gap of {max_gap:.3f} mm exceeds s={s:.3f} mm + 0.5 mm threshold"
+        )
+
+    def test_hex_centers_no_overlaps(self):
+        """No two hex centres are closer than 2 × apothem = s·√3 − ε.
+
+        Centres closer than that would produce overlapping hexagons.
+        """
+        import math
+
+        canvas = make_canvas()
+        centers, s, _hex_h = _compute_hex_centers(grid_width=8, canvas=canvas)
+        min_allowed = s * math.sqrt(3) - 0.01  # small tolerance for float rounding
+
+        for i, (cx1, cy1) in enumerate(centers):
+            for j, (cx2, cy2) in enumerate(centers):
+                if i >= j:
+                    continue
+                dist = math.hypot(cx1 - cx2, cy1 - cy2)
+                assert dist >= min_allowed - 1e-9, (
+                    f"Hex centres {i} and {j} are {dist:.4f} mm apart, "
+                    f"below min_allowed={min_allowed:.4f} mm (hexagons would overlap)"
+                )
+
+    def test_hex_generates_layers_gameboy_no_error(self):
+        """Integration: hex cell_shape + gameboy palette must render without error."""
+        from plottter.generators.pixel_art import PixelArtGenerator
+
+        gen = PixelArtGenerator()
+        canvas = make_canvas()
+        img = make_gameboy_image()
+        params = {
+            "_source_image": img,
+            "grid_width": 8,
+            "palette": "gameboy",
+            "cell_shape": "hex",
+            "cell_fill_style": "solid_hatch",
+            "fill_density": 0.7,
+            "cell_border": False,
+            "cell_gap_mm": 0.0,
+        }
+        specs = gen.generate_layers(params, canvas)
+        assert isinstance(specs, list)
+        assert len(specs) > 0
+        for spec in specs:
+            assert spec.color.startswith("#"), f"Bad color: {spec.color!r}"
+            assert isinstance(spec.paths, list)
+
+    def test_hex_cell_border_draws_7pt_hex_outline(self):
+        """With cell_border=True each hex cell includes a 7-point closed polyline."""
+        from plottter.generators.pixel_art import PixelArtGenerator
+
+        gen = PixelArtGenerator()
+        canvas = make_canvas()
+        img = make_grayscale_image()
+        params = {
+            "_source_image": img,
+            "grid_width": 6,
+            "palette": "grayscale_4",
+            "cell_shape": "hex",
+            "cell_fill_style": "solid_hatch",
+            "fill_density": 0.5,
+            "cell_border": True,
+            "cell_gap_mm": 0.0,
+        }
+        specs = gen.generate_layers(params, canvas)
+        all_paths = [p for spec in specs for p in spec.paths]
+        seven_pt = [p for p in all_paths if len(p) == 7]
+        assert len(seven_pt) > 0, "Expected 7-point closed hex border polylines with cell_border=True"
+
+    def test_hex_polygon_helper_returns_6_vertices(self):
+        from plottter.generators._pixel_shapes import hex_polygon
+
+        verts = hex_polygon(10.0, 10.0, 3.0)
+        assert len(verts) == 6
+        for x, y in verts:
+            assert isinstance(x, float)
+            assert isinstance(y, float)
+
+    def test_hex_polygon_circumradius_correct(self):
+        """All 6 vertices must lie exactly on the circumscribed circle."""
+        import math
+
+        from plottter.generators._pixel_shapes import hex_polygon
+
+        cx, cy, r = 15.0, 20.0, 4.5
+        verts = hex_polygon(cx, cy, r)
+        for x, y in verts:
+            dist = math.hypot(x - cx, y - cy)
+            assert abs(dist - r) < 1e-9, f"Vertex ({x:.4f},{y:.4f}) not on circle r={r}"

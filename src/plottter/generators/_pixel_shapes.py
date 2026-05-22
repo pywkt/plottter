@@ -166,3 +166,39 @@ def _rounded_square(
             verts.append((acx + r * math.cos(angle_rad), acy + r * math.sin(angle_rad)))
 
     return verts
+
+
+# ---------------------------------------------------------------------------
+# Hex shape (public — used directly by the hex grid code path)
+# ---------------------------------------------------------------------------
+
+
+def hex_polygon(
+    cx_mm: float,
+    cy_mm: float,
+    radius_mm: float,
+) -> list[tuple[float, float]]:
+    """6-vertex flat-topped hexagon centred at *(cx_mm, cy_mm)*.
+
+    Parameters
+    ----------
+    cx_mm, cy_mm:
+        Centre of the hexagon in mm.
+    radius_mm:
+        Circumradius (centre-to-vertex distance) in mm.
+
+    Returns
+    -------
+    6 vertices starting from the rightmost vertex (angle 0°), suitable for
+    use as a :class:`shapely.geometry.Polygon`.
+
+    Flat-topped means the top and bottom edges are horizontal.  Vertex
+    angles are 0°, 60°, 120°, 180°, 240°, 300° (y-down screen coordinates).
+    """
+    verts: list[tuple[float, float]] = []
+    for i in range(6):
+        angle = math.radians(i * 60)
+        verts.append(
+            (cx_mm + radius_mm * math.cos(angle), cy_mm + radius_mm * math.sin(angle))
+        )
+    return verts
