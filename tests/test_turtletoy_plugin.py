@@ -865,3 +865,97 @@ class TestAngularUnits:
         assert abs(fc - 100.0) < 1e-9, (
             f"Clone fullCircle expected 100 (inherited from source), got {fc}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests: walk loop — max_steps cap and error handling (spec §3, task 129.1)
+# ---------------------------------------------------------------------------
+
+_INFINITE_WALK_SKETCH = """\
+const t = new Turtle();
+function walk(i) {
+    t.forward(0.1);
+    return true;
+}
+"""
+
+_ERROR_AT_STEP_5_SKETCH = """\
+const t = new Turtle();
+function walk(i) {
+    t.forward(1);
+    if (i >= 5) { throw new Error("injected error at step " + i); }
+    return true;
+}
+"""
+
+
+class TestWalkLoop:
+    """Walk loop: max_steps cap, timeout, and error-injection (spec §3)."""
+
+    def test_infinite_walk_terminates_by_max_steps(self, canvas: Canvas) -> None:
+        """An infinite walk (always returns true) must stop at max_steps."""
+        gen = TurtleToyGenerator()
+        polylines = gen.generate(
+            {"code": _INFINITE_WALK_SKETCH, "max_steps": 50},
+            canvas,
+        )
+        # Each walk(i) call does forward(0.1) → 1 segment per step.
+        # With max_steps=50 the loop must stop and return exactly 50 segments.
+        total = sum(len(pl) - 1 for pl in polylines)
+        assert total == 50, (
+            f"Infinite walk with max_steps=50 expected 50 segments, got {total}"
+        )
+
+    def test_infinite_walk_returns_partial_output(self, canvas: Canvas) -> None:
+        """Partial output from an infinite walk is non-empty (not discarded)."""
+        gen = TurtleToyGenerator()
+        polylines = gen.generate(
+            {"code": _INFINITE_WALK_SKETCH, "max_steps": 10},
+            canvas,
+        )
+        assert len(polylines) >= 1, "Partial output should contain at least one polyline"
+        total = sum(len(pl) - 1 for pl in polylines)
+        assert total > 0, "Partial output must not be empty"
+
+    def test_error_in_walk_preserves_partial_output(self, canvas: Canvas) -> None:
+        """walk() raising an error stops the loop but keeps already-captured segments."""
+        gen = TurtleToyGenerator()
+        polylines = gen.generate(
+            {"code": _ERROR_AT_STEP_5_SKETCH, "max_steps": 100_000},
+            canvas,
+        )
+        # Steps 0–5 each do forward(1) before throwing at step 5.
+        # Segments for steps 0–4 (5 segments) are captured before the error.
+        # Step 5 draws forward(1) first THEN throws, so we get 6 segments total.
+        total = sum(len(pl) - 1 for pl in polylines)
+        assert total >= 5, (
+            f"Error at step 5 should preserve ≥5 segments, got {total}"
+        )
+
+    def test_max_steps_param_is_respected(self, canvas: Canvas) -> None:
+        """generate() honours the max_steps param passed in params dict."""
+        gen = TurtleToyGenerator()
+        for cap in (1, 5, 20):
+            polylines = gen.generate(
+                {"code": _INFINITE_WALK_SKETCH, "max_steps": cap},
+                canvas,
+            )
+            total = sum(len(pl) - 1 for pl in polylines)
+            assert total == cap, (
+                f"max_steps={cap} expected {cap} segments, got {total}"
+            )
+
+    def test_no_walk_function_returns_top_level_output(self, canvas: Canvas) -> None:
+        """Sketch with no walk function: top-level segments are returned immediately."""
+        # The tree sketch (§8.3) has no walk function — segments come from top-level code.
+        gen = TurtleToyGenerator()
+        polylines = gen.generate(
+            {"code": _TREE_SKETCH_83, "max_steps": 1},
+            canvas,
+        )
+        total = sum(len(pl) - 1 for pl in polylines)
+        # Tree sketch produces ≥60 segments (verified in TestClone) even with max_steps=1
+        # because the walk loop never runs when typeof walk !== 'function'.
+        assert total >= 60, (
+            f"No-walk sketch with max_steps=1 should still return ≥60 segments, got {total}"
+        )

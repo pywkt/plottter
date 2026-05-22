@@ -37,7 +37,9 @@ except ImportError:
 
 from plottter.generators import register_generator
 from plottter.generators.base import (
+    FloatParam,
     Generator,
+    IntParam,
     Parameter,
     Preset,
     StringParam,
@@ -604,6 +606,26 @@ class TurtleToyGenerator(Generator):
                 ),
                 multiline=True,
             ),
+            IntParam(
+                name="max_steps",
+                label="Max Steps",
+                min=1,
+                max=1_000_000,
+                step=1000,
+                default=100_000,
+                description="Maximum number of walk() iterations before the loop is stopped.",
+                randomizable=False,
+            ),
+            FloatParam(
+                name="timeout_seconds",
+                label="Timeout (s)",
+                min=1.0,
+                max=120.0,
+                step=1.0,
+                default=30.0,
+                description="Wall-clock time limit for the walk loop in seconds.",
+                randomizable=False,
+            ),
         ]
 
     def get_presets(self) -> list[Preset]:
@@ -640,8 +662,8 @@ class TurtleToyGenerator(Generator):
             )
 
         code: str = params.get("code", _STAR_SKETCH)
-        max_steps: int = 100_000
-        timeout_seconds: float = 30.0
+        max_steps: int = int(params.get("max_steps", 100_000))
+        timeout_seconds: float = float(params.get("timeout_seconds", 30.0))
 
         runtime = TurtleRuntime(seed=0)
 
