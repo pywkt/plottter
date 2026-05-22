@@ -177,20 +177,28 @@ class TestQuickjsMissing:
 
 
 class TestPresets:
-    """get_presets() returns 4 named presets; each runs without error within segment bounds."""
+    """get_presets() returns 7 named presets; each runs without error within segment bounds."""
 
-    _EXPECTED_NAMES = {"Default", "Five-Point Star", "Spiral", "Recursive Tree"}
+    _EXPECTED_NAMES = {
+        "Default",
+        "Five-Point Star",
+        "Spiral",
+        "Recursive Tree",
+        "Adjustable Polygon",
+        "Adjustable Spiral",
+        "Adjustable Recursive Tree",
+    }
 
     def test_preset_count(self) -> None:
-        """get_presets() returns exactly 4 presets when quickjs is available."""
+        """get_presets() returns exactly 7 presets when quickjs is available."""
         gen = TurtleToyGenerator()
         presets = gen.get_presets()
-        assert len(presets) == 4, (
-            f"Expected 4 presets, got {len(presets)}: {[p.name for p in presets]}"
+        assert len(presets) == 7, (
+            f"Expected 7 presets, got {len(presets)}: {[p.name for p in presets]}"
         )
 
     def test_preset_names(self) -> None:
-        """All 4 expected preset names are present."""
+        """All 7 expected preset names are present."""
         gen = TurtleToyGenerator()
         names = {p.name for p in gen.get_presets()}
         assert names == self._EXPECTED_NAMES, (
@@ -1485,3 +1493,103 @@ class TestParameterSpec:
             assert not param.visible_when, (
                 f"Unexpected visible_when on '{param.name}': {param.visible_when!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Tests: adjustable-variable demo presets (task 137.3)
+# ---------------------------------------------------------------------------
+
+
+class TestAdjustableDemoPresets:
+    """Each adjustable-variable demo preset executes without error and produces output."""
+
+    _ADJUSTABLE_NAMES = (
+        "Adjustable Polygon",
+        "Adjustable Spiral",
+        "Adjustable Recursive Tree",
+    )
+
+    def test_adjustable_demo_presets_run(self, canvas: Canvas) -> None:
+        """Each adjustable demo preset runs without error and produces ≥1 segment."""
+        gen = TurtleToyGenerator()
+        presets_by_name = {p.name: p for p in gen.get_presets()}
+
+        for name in self._ADJUSTABLE_NAMES:
+            assert name in presets_by_name, f"Missing preset: {name!r}"
+            preset = presets_by_name[name]
+
+            # Verify preset has a code param
+            assert "code" in preset.params, (
+                f"Preset {name!r} missing 'code' in params"
+            )
+            assert isinstance(preset.params["code"], str) and preset.params["code"].strip(), (
+                f"Preset {name!r} has empty 'code'"
+            )
+
+            # Verify _dynamic_overrides is present and is a dict
+            assert "_dynamic_overrides" in preset.params, (
+                f"Preset {name!r} missing '_dynamic_overrides' in params"
+            )
+            overrides = preset.params["_dynamic_overrides"]
+            assert isinstance(overrides, dict) and overrides, (
+                f"Preset {name!r} has empty or non-dict '_dynamic_overrides'"
+            )
+
+            # Run the preset and confirm it produces output without error
+            polylines = gen.generate(preset.params, canvas)
+            total = sum(len(pl) - 1 for pl in polylines)
+            assert total >= 1, (
+                f"Preset {name!r} produced no segments (got {total})"
+            )
+
+    def test_adjustable_polygon_has_correct_overrides(self) -> None:
+        """'Adjustable Polygon' _dynamic_overrides contains 'sides' and 'size'."""
+        gen = TurtleToyGenerator()
+        preset = next(p for p in gen.get_presets() if p.name == "Adjustable Polygon")
+        overrides = preset.params["_dynamic_overrides"]
+        assert "sides" in overrides, "Missing 'sides' in _dynamic_overrides"
+        assert "size" in overrides, "Missing 'size' in _dynamic_overrides"
+
+    def test_adjustable_spiral_has_correct_overrides(self) -> None:
+        """'Adjustable Spiral' _dynamic_overrides contains 'growthRate' and 'angleStep'."""
+        gen = TurtleToyGenerator()
+        preset = next(p for p in gen.get_presets() if p.name == "Adjustable Spiral")
+        overrides = preset.params["_dynamic_overrides"]
+        assert "growthRate" in overrides, "Missing 'growthRate' in _dynamic_overrides"
+        assert "angleStep" in overrides, "Missing 'angleStep' in _dynamic_overrides"
+
+    def test_adjustable_tree_has_correct_overrides(self) -> None:
+        """'Adjustable Recursive Tree' _dynamic_overrides has branchLength, branchRatio, treeDepth."""
+        gen = TurtleToyGenerator()
+        preset = next(p for p in gen.get_presets() if p.name == "Adjustable Recursive Tree")
+        overrides = preset.params["_dynamic_overrides"]
+        assert "branchLength" in overrides, "Missing 'branchLength' in _dynamic_overrides"
+        assert "branchRatio" in overrides, "Missing 'branchRatio' in _dynamic_overrides"
+        assert "treeDepth" in overrides, "Missing 'treeDepth' in _dynamic_overrides"
+
+    def test_adjustable_polygon_dynamic_params(self) -> None:
+        """'Adjustable Polygon' exposes 'sides' and 'size' as dynamic parameters."""
+        gen = TurtleToyGenerator()
+        preset = next(p for p in gen.get_presets() if p.name == "Adjustable Polygon")
+        dyn_params = gen.get_dynamic_parameters({"code": preset.params["code"]})
+        names = [p.name for p in dyn_params]
+        assert "sides" in names, f"Dynamic params missing 'sides': {names}"
+        assert "size" in names, f"Dynamic params missing 'size': {names}"
+
+    def test_adjustable_polygon_produces_n_segments(self, canvas: Canvas) -> None:
+        """Polygon with sides=6 produces exactly 6 segments."""
+        gen = TurtleToyGenerator()
+        preset = next(p for p in gen.get_presets() if p.name == "Adjustable Polygon")
+        polylines = gen.generate(preset.params, canvas)
+        total = sum(len(pl) - 1 for pl in polylines)
+        assert total == 6, f"6-sided polygon should produce 6 segments, got {total}"
+
+    def test_adjustable_polygon_sides_override(self, canvas: Canvas) -> None:
+        """Polygon with sides override=4 produces exactly 4 segments."""
+        gen = TurtleToyGenerator()
+        preset = next(p for p in gen.get_presets() if p.name == "Adjustable Polygon")
+        params = dict(preset.params)
+        params["_dynamic_overrides"] = {"sides": 4, "size": 60}
+        polylines = gen.generate(params, canvas)
+        total = sum(len(pl) - 1 for pl in polylines)
+        assert total == 4, f"4-sided polygon should produce 4 segments, got {total}"

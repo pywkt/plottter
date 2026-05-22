@@ -99,6 +99,61 @@ branch(turtle, 30, 6);
 """
 
 # ---------------------------------------------------------------------------
+# Demo presets with adjustable variables — spec §137.3
+# ---------------------------------------------------------------------------
+
+# Adjustable polygon: N-gon whose side count and size are exposed as sliders.
+_ADJUSTABLE_POLYGON_SKETCH = """\
+const sides = 6; // min=3, max=12, Number of sides
+const size = 60; // min=10, max=100, step=5, Side length
+
+const turtle = new Turtle();
+const angle = 360 / sides;
+for (let i = 0; i < sides; i++) {
+    turtle.forward(size);
+    turtle.right(angle);
+}
+"""
+
+# Adjustable spiral: radius growth rate and angle step exposed as sliders.
+_ADJUSTABLE_SPIRAL_SKETCH = """\
+const growthRate = 2.0; // min=0.5, max=5.0, step=0.5, Radius growth per step
+const angleStep = 15; // min=5, max=45, step=5, Angle step per iteration (degrees)
+
+const turtle = new Turtle();
+function walk(i) {
+    turtle.forward(i * growthRate * 0.05);
+    turtle.right(angleStep);
+    return i < 300;
+}
+"""
+
+# Adjustable recursive tree: branch length, shrink ratio and depth as sliders.
+_ADJUSTABLE_TREE_SKETCH = """\
+const branchLength = 30; // min=10, max=60, step=5, Initial branch length
+const branchRatio = 0.7; // min=0.5, max=0.9, step=0.05, Branch shrink ratio
+const treeDepth = 6; // min=2, max=8, Tree recursion depth
+
+const turtle = new Turtle();
+turtle.penup();
+turtle.goto(0, -80);
+turtle.setheading(90);
+turtle.pendown();
+
+function branch(t, length, d) {
+    if (d === 0) return;
+    t.forward(length);
+    const left = t.clone();
+    left.left(30);
+    branch(left, length * branchRatio, d - 1);
+    t.right(30);
+    branch(t, length * branchRatio, d - 1);
+}
+
+branch(turtle, branchLength, treeDepth);
+"""
+
+# ---------------------------------------------------------------------------
 # JS shim — eval'd into the quickjs context after callables are registered.
 # Defines the ``Turtle`` class, ``Canvas`` singleton, and ``console`` no-op.
 # The seeded Math.random is installed separately (see TurtleRuntime._eval_shim).
@@ -730,6 +785,43 @@ class TurtleToyGenerator(Generator):
                 name="Recursive Tree",
                 params={"code": _TREE_SKETCH},
                 description="Binary recursive tree using clone() (spec §8.3).",
+            ),
+            Preset(
+                name="Adjustable Polygon",
+                params={
+                    "code": _ADJUSTABLE_POLYGON_SKETCH,
+                    "_dynamic_overrides": {"sides": 6, "size": 60},
+                },
+                description=(
+                    "Regular N-gon with adjustable side count (3–12) and "
+                    "side length (10–100 mm, step 5)."
+                ),
+            ),
+            Preset(
+                name="Adjustable Spiral",
+                params={
+                    "code": _ADJUSTABLE_SPIRAL_SKETCH,
+                    "_dynamic_overrides": {"growthRate": 2.0, "angleStep": 15},
+                },
+                description=(
+                    "Expanding spiral with adjustable growth rate (0.5–5.0) "
+                    "and angle step (5–45°, step 5)."
+                ),
+            ),
+            Preset(
+                name="Adjustable Recursive Tree",
+                params={
+                    "code": _ADJUSTABLE_TREE_SKETCH,
+                    "_dynamic_overrides": {
+                        "branchLength": 30,
+                        "branchRatio": 0.7,
+                        "treeDepth": 6,
+                    },
+                },
+                description=(
+                    "Binary recursive tree with adjustable branch length (10–60), "
+                    "shrink ratio (0.5–0.9) and depth (2–8)."
+                ),
             ),
         ]
 
