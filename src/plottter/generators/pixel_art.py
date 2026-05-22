@@ -222,6 +222,19 @@ class PixelArtGenerator(Generator):
                     "cell_gap_mm": 0.0,
                 },
             ),
+            Preset(
+                name="Hex Honeycomb",
+                params={
+                    "grid_width": 32,
+                    "palette": "gameboy",
+                    "dithering": "none",
+                    "cell_shape": "hex",
+                    "cell_fill_style": "solid_hatch",
+                    "fill_density": 0.6,
+                    "cell_border": False,
+                    "cell_gap_mm": 0.0,
+                },
+            ),
 
         ]
 
