@@ -135,6 +135,26 @@ class Turtle {
 
     // --- Home (§4.2, draws if pen down, resets pos + heading) ---
     home()                    { _turtleHome(this._id); }
+
+    // --- State queries (§4.5) ---
+    // position() builds the array in JS — quickjs cannot marshal Python lists to JS arrays.
+    position()                { return [_turtleXcor(this._id), _turtleYcor(this._id)]; }
+    pos()                     { return [_turtleXcor(this._id), _turtleYcor(this._id)]; }
+    xcor()                    { return _turtleXcor(this._id); }
+    x()                       { return _turtleXcor(this._id); }
+    ycor()                    { return _turtleYcor(this._id); }
+    y()                       { return _turtleYcor(this._id); }
+    heading()                 { return _turtleHeading(this._id); }
+    h()                       { return _turtleHeading(this._id); }
+    isdown()                  { return _turtleIsdown(this._id); }
+    distance(x, y) {
+        if (Array.isArray(x)) { return _turtleDistance(this._id, x[0], x[1]); }
+        else                  { return _turtleDistance(this._id, x, y); }
+    }
+    towards(x, y) {
+        if (Array.isArray(x)) { return _turtleTowards(this._id, x[0], x[1]); }
+        else                  { return _turtleTowards(this._id, x, y); }
+    }
 }
 
 // Canvas singleton — v1 records opacity but does not act on it.
@@ -214,6 +234,39 @@ class TurtleState:
         self.heading_rad = 0.0
         return seg
 
+    # ------------------------------------------------------------------
+    # State queries (spec §4.5)
+    # ------------------------------------------------------------------
+
+    def position(self) -> list[float]:
+        """Return current position as [x, y]."""
+        return [self.x, self.y]
+
+    def xcor(self) -> float:
+        """Return current x coordinate."""
+        return self.x
+
+    def ycor(self) -> float:
+        """Return current y coordinate."""
+        return self.y
+
+    def heading_deg(self) -> float:
+        """Heading in degrees (0=east, 90=north), normalised to [0, 360)."""
+        return math.degrees(self.heading_rad) % 360
+
+    def isdown(self) -> bool:
+        """Return True if the pen is currently down."""
+        return self.pen_down
+
+    def distance(self, tx: float, ty: float) -> float:
+        """Euclidean distance from current position to (tx, ty)."""
+        return math.hypot(tx - self.x, ty - self.y)
+
+    def towards(self, tx: float, ty: float) -> float:
+        """Angle in degrees (0=east) toward (tx, ty), normalised to [0, 360)."""
+        return math.degrees(math.atan2(ty - self.y, tx - self.x)) % 360
+
+
 
 # ---------------------------------------------------------------------------
 # TurtleRuntime — owns the quickjs context, turtle registry, and segment list
@@ -251,6 +304,12 @@ class TurtleRuntime:
         ctx.add_callable("_turtleSety", self._py_turtle_sety)
         ctx.add_callable("_turtleHome", self._py_turtle_home)
         ctx.add_callable("_canvasSetPenOpacity", self._py_canvas_set_pen_opacity)
+        ctx.add_callable("_turtleXcor", self._py_turtle_xcor)
+        ctx.add_callable("_turtleYcor", self._py_turtle_ycor)
+        ctx.add_callable("_turtleHeading", self._py_turtle_heading)
+        ctx.add_callable("_turtleIsdown", self._py_turtle_isdown)
+        ctx.add_callable("_turtleDistance", self._py_turtle_distance)
+        ctx.add_callable("_turtleTowards", self._py_turtle_towards)
 
     def _eval_shim(self) -> None:
         # Inject seeded Math.random first (seed value is templated via f-string)
@@ -323,6 +382,29 @@ class TurtleRuntime:
 
     def _py_canvas_set_pen_opacity(self, value: float) -> None:
         self.pen_opacity = float(value)
+
+    # ------------------------------------------------------------------
+    # State query callables (spec §4.5)
+    # ------------------------------------------------------------------
+
+    def _py_turtle_xcor(self, tid: int) -> float:
+        return self.turtles[int(tid)].x
+
+    def _py_turtle_ycor(self, tid: int) -> float:
+        return self.turtles[int(tid)].y
+
+    def _py_turtle_heading(self, tid: int) -> float:
+        return self.turtles[int(tid)].heading_deg()
+
+    def _py_turtle_isdown(self, tid: int) -> bool:
+        return self.turtles[int(tid)].isdown()
+
+    def _py_turtle_distance(self, tid: int, x: float, y: float) -> float:
+        return self.turtles[int(tid)].distance(float(x), float(y))
+
+    def _py_turtle_towards(self, tid: int, x: float, y: float) -> float:
+        return self.turtles[int(tid)].towards(float(x), float(y))
+
 
 
 # ---------------------------------------------------------------------------

@@ -425,3 +425,164 @@ class TestHeadingControl:
             assert seg[1] == pytest.approx(y0_exp, abs=1e-9), f"seg{i} y0 mismatch"
             assert seg[2] == pytest.approx(x1_exp, abs=1e-9), f"seg{i} x1 mismatch"
             assert seg[3] == pytest.approx(y1_exp, abs=1e-9), f"seg{i} y1 mismatch"
+
+
+# ---------------------------------------------------------------------------
+# Tests: state query methods (spec §4.5 + §8.4)
+# ---------------------------------------------------------------------------
+
+_QUERY_SKETCH_84 = """\
+const t = new Turtle();
+t.forward(50);
+t.left(90);
+t.forward(30);
+
+// Set into a global the test can read
+result = [t.x(), t.y(), t.heading(), t.distance(0, 0)];
+"""
+
+
+class TestStateQueries:
+    """State-query methods return correct values from JS (spec §4.5 and §8.4)."""
+
+    # ------------------------------------------------------------------
+    # §8.4 sketch — runs the canonical query sketch and reads result[] back
+    # from the JS context via runtime.ctx.eval("result").
+    # ------------------------------------------------------------------
+
+    def test_query_sketch_returns_four_values(self) -> None:
+        """The §8.4 sketch populates a JS global `result` with 4 elements."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval(_QUERY_SKETCH_84)
+        length = runtime.ctx.eval("result.length")
+        assert length == 4, f"Expected result.length == 4, got {length}"
+
+    def test_query_sketch_xcor(self) -> None:
+        """result[0] = x() ≈ 50 after forward(50) then left(90) then forward(30)."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval(_QUERY_SKETCH_84)
+        x = runtime.ctx.eval("result[0]")
+        assert abs(x - 50.0) < 1e-6, f"x() expected 50, got {x}"
+
+    def test_query_sketch_ycor(self) -> None:
+        """result[1] = y() ≈ 30 after left(90) + forward(30) (Y-up)."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval(_QUERY_SKETCH_84)
+        y = runtime.ctx.eval("result[1]")
+        assert abs(y - 30.0) < 1e-6, f"y() expected 30, got {y}"
+
+    def test_query_sketch_heading(self) -> None:
+        """result[2] = heading() ≈ 90 after left(90) from heading=0 (east)."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval(_QUERY_SKETCH_84)
+        h = runtime.ctx.eval("result[2]")
+        assert abs(h - 90.0) < 1e-6, f"heading() expected 90, got {h}"
+
+    def test_query_sketch_distance(self) -> None:
+        """result[3] = distance(0,0) ≈ sqrt(50²+30²) ≈ 58.309..."""
+        import math
+
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval(_QUERY_SKETCH_84)
+        d = runtime.ctx.eval("result[3]")
+        expected = math.hypot(50, 30)
+        assert abs(d - expected) < 1e-6, (
+            f"distance(0,0) expected {expected:.6f}, got {d}"
+        )
+
+    # ------------------------------------------------------------------
+    # Per-method unit tests
+    # ------------------------------------------------------------------
+
+    def test_position_returns_array(self, canvas: Canvas) -> None:
+        """position() returns a 2-element JS array with current x and y."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.forward(10);")
+        px = runtime.ctx.eval("t.position()[0]")
+        py = runtime.ctx.eval("t.position()[1]")
+        assert abs(px - 10.0) < 1e-6, f"position()[0] expected 10, got {px}"
+        assert abs(py - 0.0) < 1e-6, f"position()[1] expected 0, got {py}"
+
+    def test_pos_alias(self) -> None:
+        """pos() is an alias for position() — returns same array."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.forward(20);")
+        px = runtime.ctx.eval("t.pos()[0]")
+        assert abs(px - 20.0) < 1e-6, f"pos()[0] expected 20, got {px}"
+
+    def test_xcor_and_x(self) -> None:
+        """xcor() and x() both return the current x coordinate."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.forward(15);")
+        assert abs(runtime.ctx.eval("t.xcor()") - 15.0) < 1e-6
+        assert abs(runtime.ctx.eval("t.x()") - 15.0) < 1e-6
+
+    def test_ycor_and_y(self) -> None:
+        """ycor() and y() both return the current y coordinate."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.setheading(90); t.forward(25);")
+        assert abs(runtime.ctx.eval("t.ycor()") - 25.0) < 1e-6
+        assert abs(runtime.ctx.eval("t.y()") - 25.0) < 1e-6
+
+    def test_heading_and_h(self) -> None:
+        """heading() and h() return degrees in [0, 360)."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.left(45);")
+        assert abs(runtime.ctx.eval("t.heading()") - 45.0) < 1e-6
+        assert abs(runtime.ctx.eval("t.h()") - 45.0) < 1e-6
+
+    def test_heading_wraps_to_zero_to_360(self) -> None:
+        """Heading after right(45) from 0 is 315 (not -45)."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.right(45);")
+        h = runtime.ctx.eval("t.heading()")
+        assert abs(h - 315.0) < 1e-6, f"Expected 315, got {h}"
+
+    def test_isdown_pen_down(self) -> None:
+        """isdown() returns true when pen is down (default)."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle();")
+        assert runtime.ctx.eval("t.isdown()") is True
+
+    def test_isdown_pen_up(self) -> None:
+        """isdown() returns false after penup()."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.penup();")
+        assert runtime.ctx.eval("t.isdown()") is False
+
+    def test_distance_scalar_args(self) -> None:
+        """distance(x, y) returns Euclidean distance from current position."""
+        import math
+
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.forward(3); t.setheading(90); t.forward(4);")
+        d = runtime.ctx.eval("t.distance(0, 0)")
+        assert abs(d - 5.0) < 1e-6, f"Expected 5.0, got {d}"
+
+    def test_distance_array_arg(self) -> None:
+        """distance([x, y]) (array form) also works."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle(); t.forward(3); t.setheading(90); t.forward(4);")
+        d = runtime.ctx.eval("t.distance([0, 0])")
+        assert abs(d - 5.0) < 1e-6, f"Expected 5.0, got {d}"
+
+    def test_towards_east(self) -> None:
+        """towards(100, 0) from origin = 0 degrees (east)."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle();")
+        ang = runtime.ctx.eval("t.towards(100, 0)")
+        assert abs(ang - 0.0) < 1e-6, f"Expected 0, got {ang}"
+
+    def test_towards_north(self) -> None:
+        """towards(0, 100) from origin = 90 degrees (north)."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle();")
+        ang = runtime.ctx.eval("t.towards(0, 100)")
+        assert abs(ang - 90.0) < 1e-6, f"Expected 90, got {ang}"
+
+    def test_towards_array_arg(self) -> None:
+        """towards([x, y]) (array form) also works."""
+        runtime = _tt.TurtleRuntime(seed=0)
+        runtime.ctx.eval("const t = new Turtle();")
+        ang = runtime.ctx.eval("t.towards([0, 100])")
+        assert abs(ang - 90.0) < 1e-6, f"Expected 90, got {ang}"
