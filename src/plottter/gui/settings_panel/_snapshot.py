@@ -42,8 +42,8 @@ class _SnapshotMixin:
         self._param_labels.clear()
 
         # Clear params form
-        while self._params_form.rowCount() > 0:
-            self._params_form.removeRow(0)
+        while self._static_params_layout.rowCount() > 0:
+            self._static_params_layout.removeRow(0)
 
         # Populate preset combo
         self._rebuild_preset_combo()
@@ -152,7 +152,7 @@ class _SnapshotMixin:
                     label.setToolTip(param.description)
                 self._param_widgets[param.name] = line_edit
                 self._param_labels[param.name] = label
-                self._params_form.addRow(label, container)
+                self._static_params_layout.addRow(label, container)
                 continue
             elif isinstance(param, FileParam):
                 from PyQt6.QtWidgets import QFileDialog, QHBoxLayout, QPushButton
@@ -183,7 +183,7 @@ class _SnapshotMixin:
                     label.setToolTip(param.description)
                 self._param_widgets[param.name] = line_edit
                 self._param_labels[param.name] = label
-                self._params_form.addRow(label, container)
+                self._static_params_layout.addRow(label, container)
                 continue
             else:
                 widget = QLineEdit(str(getattr(param, "default", "")))
@@ -200,7 +200,7 @@ class _SnapshotMixin:
 
             self._param_widgets[param.name] = widget
             self._param_labels[param.name] = label
-            self._params_form.addRow(label, widget)
+            self._static_params_layout.addRow(label, widget)
 
         # If the generator has fmm_source_x_pct / fmm_source_y_pct parameters, inject
         # a "Pick on Canvas" button so the user can click to set the FMM source point.
@@ -216,7 +216,7 @@ class _SnapshotMixin:
             lbl = QLabel("")
             self._pick_fmm_source_btn = btn
             self._pick_fmm_source_label = lbl
-            self._params_form.addRow(lbl, btn)
+            self._static_params_layout.addRow(lbl, btn)
 
             # Keep the canvas marker in sync when the user edits spinboxes directly.
             x_widget = self._param_widgets.get("fmm_source_x_pct")

@@ -836,10 +836,19 @@ class _UIBuildMixin:
         layer_layout.addWidget(self._layer_combo)
         self._layout.addWidget(self._layer_group)
 
-        # Params container (rebuilt when generator is set)
+        # Params container (rebuilt when generator is set).
+        # Three named sub-layouts within the group:
+        #   _static_params_layout  — static per-generator params (rebuilt by set_generator)
+        #   _dynamic_params_layout — adjustable-vars widgets (rebuilt by _rebuild_dynamic_params)
+        #   _post_proc_layout      — shared post-processing params (built once here)
         self._params_group = QGroupBox("Parameters")
-        self._params_form = QFormLayout()
-        self._params_group.setLayout(self._params_form)
+        _params_outer = QVBoxLayout(self._params_group)
+        _params_outer.setContentsMargins(0, 0, 0, 0)
+        _params_outer.setSpacing(0)
+        self._static_params_layout = QFormLayout()
+        _params_outer.addLayout(self._static_params_layout)
+        self._dynamic_params_layout = QFormLayout()
+        _params_outer.addLayout(self._dynamic_params_layout)
         self._layout.addWidget(self._params_group)
 
         # Shared post-generation transforms group
@@ -904,8 +913,8 @@ class _UIBuildMixin:
 
         # Post-Processing group (brush effects, same for all generators)
         self._post_proc_group = QGroupBox("Post-Processing")
-        self._post_proc_form = QFormLayout()
-        self._post_proc_group.setLayout(self._post_proc_form)
+        self._post_proc_layout = QFormLayout()
+        self._post_proc_group.setLayout(self._post_proc_layout)
 
         try:
             from plottter.generators.base import (
@@ -947,7 +956,7 @@ class _UIBuildMixin:
                     _pp_label.setToolTip(_pp_param.description)
                 self._post_proc_widgets[_pp_param.name] = _pp_widget
                 self._post_proc_labels[_pp_param.name] = _pp_label
-                self._post_proc_form.addRow(_pp_label, _pp_widget)
+                self._post_proc_layout.addRow(_pp_label, _pp_widget)
         except ImportError:
             pass
 

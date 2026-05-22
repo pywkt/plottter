@@ -328,3 +328,13 @@ class SettingsPanel(
         canvas.camera_orbit_changed.connect(self._on_canvas_camera_orbit_changed)
         canvas.camera_pan_changed.connect(self._on_canvas_camera_pan_changed)
         canvas.camera_projection_toggle_requested.connect(self._on_canvas_projection_toggle)
+
+    def _rebuild_dynamic_params(self) -> None:
+        """Clear the dynamic params sub-layout.
+
+        Will be wired up in task 135 to populate adjustable-var widgets.
+        For now it only ensures the layout is empty so the layout split
+        is observable by tests.
+        """
+        while self._dynamic_params_layout.rowCount() > 0:
+            self._dynamic_params_layout.removeRow(0)
