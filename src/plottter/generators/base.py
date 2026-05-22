@@ -150,6 +150,18 @@ class Generator(ABC):
     def get_parameters(self) -> list[Parameter]:
         """Return the list of parameters for this generator."""
 
+    def get_dynamic_parameters(
+        self,
+        static_param_values: dict[str, Any],
+    ) -> list[Parameter]:
+        """Return dynamic parameters derived from the current static param values.
+
+        Generators that surface dynamic controls (e.g. adjustable variables
+        parsed from a code field) override this method.  The default returns
+        ``[]`` so all existing generators are unaffected.
+        """
+        return []
+
     @abstractmethod
     def generate(
         self,
