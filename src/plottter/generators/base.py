@@ -141,6 +141,10 @@ class Generator(ABC):
     #: Set to True in generators that accept a preprocessed image via
     #: ``params["_source_image"]`` (numpy array injected by the settings panel).
     uses_source_image: bool = False
+    #: Set to True in generators that want the RGB preprocessed image
+    #: (H×W×3 uint8) instead of the default grayscale (H×W) version.
+    #: Only meaningful when ``uses_source_image`` is also True.
+    uses_color_source: bool = False
     #: Set to True in generators that emit multiple named layers via
     #: ``generate_layers()`` instead of a single ``list[Polyline]`` via
     #: ``generate()``.

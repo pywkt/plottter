@@ -486,6 +486,7 @@ class _ImageMixin:
     def _update_image_preview(self) -> None:
         if self._raw_image is None:
             self._preprocessed_image = None
+            self._preprocessed_color = None
             self._thumbnail_label.clear()
             self.image_preprocessed.emit(None)
             self.image_rect_changed.emit(None)
@@ -510,6 +511,11 @@ class _ImageMixin:
             preprocessed = preprocess(source, params)
             gray = to_grayscale(preprocessed)
             self._preprocessed_image = gray
+            # Keep the pre-grayscale image for generators that opt in to colour
+            # (PixelArt's palette quantizer, etc.).  preprocess() may emit a 2D
+            # array when threshold is enabled; in that case there's no colour
+            # info to preserve so we fall back to None.
+            self._preprocessed_color = preprocessed if preprocessed.ndim == 3 else None
         except Exception as exc:
             QMessageBox.warning(self, "Preprocessing Error", str(exc))
             return

@@ -58,6 +58,7 @@ class PixelArtGenerator(Generator):
     name = "Pixel Art"
     category = "image"
     uses_source_image = True
+    uses_color_source = True
     emits_multiple_layers = True
 
     # ------------------------------------------------------------------
@@ -140,6 +141,16 @@ class PixelArtGenerator(Generator):
                 step=0.1,
                 default=0.0,
                 description="Gap between adjacent cells in mm.",
+            ),
+            BoolParam(
+                name="force_grayscale",
+                label="Force Grayscale",
+                default=False,
+                description=(
+                    "Desaturate the source image before quantizing. "
+                    "On colour palettes this restricts output to the "
+                    "palette's gray axis (the legacy behaviour)."
+                ),
             ),
         ]
 
@@ -448,6 +459,14 @@ class PixelArtGenerator(Generator):
         density = float(params.get("fill_density", 0.7))
         cell_border = bool(params.get("cell_border", False))
         cell_gap_mm = float(params.get("cell_gap_mm", 0.0))
+        force_grayscale = bool(params.get("force_grayscale", False))
+
+        # The hex path samples source[py, px, :3], so it needs 3 channels even
+        # in the grayscale case.  Broadcast the luminance back to RGB.
+        if force_grayscale and source.ndim == 3:
+            from plottter.io.image_import import to_grayscale
+            gray = to_grayscale(source)
+            source = np.repeat(gray[:, :, None], 3, axis=2)
 
         palette = get_palette(palette_name)
 

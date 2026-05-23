@@ -365,9 +365,19 @@ class _SnapshotMixin:
             elif _FontPicker is not None and isinstance(widget, _FontPicker):
                 result[name] = widget.font_path()
 
-        # Inject preprocessed image for image generators
+        # Inject preprocessed image for image generators.  Generators that opt
+        # in via ``uses_color_source = True`` receive the RGB version when
+        # available (e.g. PixelArt's palette quantizer needs colour info);
+        # everything else gets the grayscale version for back-compat.
         if self._current_mode == "Image to Lines" and self._preprocessed_image is not None:
-            result["_source_image"] = self._preprocessed_image
+            wants_color = bool(
+                self._generator is not None
+                and getattr(self._generator, "uses_color_source", False)
+                and self._preprocessed_color is not None
+            )
+            result["_source_image"] = (
+                self._preprocessed_color if wants_color else self._preprocessed_image
+            )
             result.update(self._get_preprocessing_params())
 
         # Inject shared camera for 3D Scene generators

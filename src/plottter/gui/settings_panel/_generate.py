@@ -86,12 +86,20 @@ class _GenerateMixin:
         if isinstance(self._generator, (Scene3DGenerator, MeshSlicerGenerator)):
             params["_sibling_3d_shapes"] = self._build_sibling_3d_shapes(layer_id)
 
-        # Inject preprocessed image for Math Art generators that use source image
+        # Inject preprocessed image for Math Art generators that use source image.
+        # Generators that set ``uses_color_source = True`` receive the RGB
+        # version when available; others get the grayscale version.
         if (
             self._current_mode == "Math Art"
             and getattr(self._generator, "uses_source_image", False)
         ):
-            params["_source_image"] = self._preprocessed_image
+            wants_color = (
+                getattr(self._generator, "uses_color_source", False)
+                and self._preprocessed_color is not None
+            )
+            params["_source_image"] = (
+                self._preprocessed_color if wants_color else self._preprocessed_image
+            )
 
         # For multi-layer generators, find any prior run of THIS generator
         # anywhere in the project (not just on the active layer — the user

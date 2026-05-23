@@ -69,6 +69,7 @@ class SettingsPanel(
         self._current_mode: str = "Math Art"
         self._raw_image: np.ndarray | None = None
         self._preprocessed_image: np.ndarray | None = None
+        self._preprocessed_color: np.ndarray | None = None  # RGB version (H×W×3) for color-aware generators
         self._canvas_ref = None  # set via set_canvas()
         self._ai_bg_rgba: np.ndarray | None = None  # cached RGBA result from remove_background()
         self._ai_bg_worker: _AiBgWorker | None = None
