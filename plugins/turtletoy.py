@@ -6,9 +6,6 @@ the JS context, and runs user-pasted JavaScript verbatim — a sketch copied fro
 
 Optional dependency: ``quickjs`` from PyPI.  If not installed, the plugin
 registers a stub generator that raises a clear error on use.
-
-Plugin phases: 126–131 (see IMPLEMENTATION_PLAN.md).
-Spec: ``specs/turtletoy-plugin.md`` (developer-only, gitignored).
 """
 
 from __future__ import annotations
