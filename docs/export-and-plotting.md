@@ -226,11 +226,13 @@ a file first.
 
 ### Requirements
 
-Install the official pyaxidraw Python package:
+Install the official AxiDraw Python API. It is **not** distributed on PyPI — install it directly from Evil Mad Scientist Labs' hosted zip:
 
 ```bash
-pip install pyaxidraw
+pip install https://cdn.evilmadscientist.com/dl/ad/public/AxiDraw_API.zip
 ```
+
+(See <https://axidraw.com/doc/py_api/> for the upstream documentation.)
 
 Connect your AxiDraw via USB and power it on.
 

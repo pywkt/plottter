@@ -48,7 +48,7 @@ pip install -e .
 ```bash
 pip install -e ".[fmm]"    # Fast Marching Method for topographic contours
 pip install -e ".[audio]"  # MP3/FLAC/OGG audio import (requires ffmpeg)
-pip install pyaxidraw       # Direct AxiDraw USB control
+pip install https://cdn.evilmadscientist.com/dl/ad/public/AxiDraw_API.zip  # Direct AxiDraw USB control
 ```
 
 AI features (depth maps, background removal, segmentation) require a Replicate.com API key configured in Preferences.

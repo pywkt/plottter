@@ -50,6 +50,26 @@ class _PlotWorker(QThread):
             self.error.emit(str(exc))
 
 
+class _ManualCommandWorker(QThread):
+    """Runs a one-off manual AxiDraw command (raise/lower pen, release motors)."""
+
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+
+    def __init__(self, command: str, settings: dict, parent=None):
+        super().__init__(parent)
+        self._command = command
+        self._settings = settings
+
+    def run(self) -> None:
+        try:
+            from plottter.export.axidraw import run_manual_command
+            run_manual_command(self._command, self._settings)
+            self.finished.emit()
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
 # ---------------------------------------------------------------------------
 # Main dialog
 # ---------------------------------------------------------------------------
@@ -169,6 +189,52 @@ class AxiDrawDialog(QDialog):
         self._pen_delay_up.setSuffix(" ms")
         pen_layout.addRow("Delay after pen-up:", self._pen_delay_up)
 
+        # --- Manual controls: useful for locking in the pen position ---
+        manual_label = QLabel(
+            "Manual controls (use these to position the pen before plotting):"
+        )
+        manual_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        pen_layout.addRow(manual_label)
+
+        manual_btn_row = QHBoxLayout()
+        self._raise_pen_btn = QPushButton("Raise Pen")
+        self._raise_pen_btn.setToolTip(
+            "Lift the pen to the pen-up position. Uses the current Pen-up "
+            "position setting above."
+        )
+        self._raise_pen_btn.clicked.connect(
+            lambda: self._run_manual("raise_pen")
+        )
+        manual_btn_row.addWidget(self._raise_pen_btn)
+
+        self._lower_pen_btn = QPushButton("Lower Pen")
+        self._lower_pen_btn.setToolTip(
+            "Lower the pen to the pen-down position. Useful for checking "
+            "where the pen will contact the paper before locking it in. "
+            "Uses the current Pen-down position setting above."
+        )
+        self._lower_pen_btn.clicked.connect(
+            lambda: self._run_manual("lower_pen")
+        )
+        manual_btn_row.addWidget(self._lower_pen_btn)
+
+        self._release_motors_btn = QPushButton("Release Motors")
+        self._release_motors_btn.setToolTip(
+            "Disengage the X/Y stepper motors so you can move the carriage "
+            "by hand. The motors re-engage automatically on the next plot."
+        )
+        self._release_motors_btn.clicked.connect(
+            lambda: self._run_manual("disable_xy")
+        )
+        manual_btn_row.addWidget(self._release_motors_btn)
+        pen_layout.addRow(manual_btn_row)
+
+        self._manual_buttons = [
+            self._raise_pen_btn,
+            self._lower_pen_btn,
+            self._release_motors_btn,
+        ]
+
         form_root.addStretch()
 
         # --- Progress ---
@@ -205,7 +271,8 @@ class AxiDrawDialog(QDialog):
         else:
             self._status_label.setText(
                 "pyaxidraw is NOT installed.\n"
-                "Install it with:  pip install pyaxidraw\n"
+                "Install it with:\n"
+                "  pip install https://cdn.evilmadscientist.com/dl/ad/public/AxiDraw_API.zip\n"
                 "You can still use Preview mode to test settings without a device."
             )
             self._status_label.setStyleSheet("color: #cc4400;")
@@ -236,6 +303,7 @@ class AxiDrawDialog(QDialog):
         settings = self._build_settings()
 
         self._plot_btn.setEnabled(False)
+        self._set_manual_buttons_enabled(False)
         self._progress_bar.setValue(0)
         self._progress_bar.setVisible(True)
         self.plot_started.emit()
@@ -246,9 +314,42 @@ class AxiDrawDialog(QDialog):
         self._worker.error.connect(self._on_plot_error)
         self._worker.start()
 
+    # ------------------------------------------------------------------
+    # Manual pen / motor controls
+    # ------------------------------------------------------------------
+
+    def _set_manual_buttons_enabled(self, enabled: bool) -> None:
+        for btn in getattr(self, "_manual_buttons", []):
+            btn.setEnabled(enabled)
+
+    def _run_manual(self, command: str) -> None:
+        """Fire a one-off manual AxiDraw command in a background thread."""
+        if self._worker and self._worker.isRunning():
+            return
+        # Disable all manual buttons during the command so the user can't
+        # queue up two commands while one is in flight.
+        self._set_manual_buttons_enabled(False)
+        self._plot_btn.setEnabled(False)
+
+        settings = self._build_settings()
+        self._manual_worker = _ManualCommandWorker(command, settings, parent=None)
+        self._manual_worker.finished.connect(self._on_manual_finished)
+        self._manual_worker.error.connect(self._on_manual_error)
+        self._manual_worker.start()
+
+    def _on_manual_finished(self) -> None:
+        self._set_manual_buttons_enabled(True)
+        self._plot_btn.setEnabled(True)
+
+    def _on_manual_error(self, msg: str) -> None:
+        self._set_manual_buttons_enabled(True)
+        self._plot_btn.setEnabled(True)
+        QMessageBox.warning(self, "Manual Command Failed", msg)
+
     def _on_plot_finished(self) -> None:
         self._progress_bar.setValue(100)
         self._plot_btn.setEnabled(True)
+        self._set_manual_buttons_enabled(True)
         self.plot_finished.emit()
         QMessageBox.information(
             self,
@@ -259,6 +360,7 @@ class AxiDrawDialog(QDialog):
     def _on_plot_error(self, msg: str) -> None:
         self._progress_bar.setVisible(False)
         self._plot_btn.setEnabled(True)
+        self._set_manual_buttons_enabled(True)
         QMessageBox.critical(self, "Plot Error", msg)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]

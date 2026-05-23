@@ -235,10 +235,12 @@ To manage the cache:
 
 ### "pyaxidraw is NOT installed"
 
-**Fix:**
+The AxiDraw Python API is not on PyPI — install it directly from Evil Mad Scientist Labs' hosted zip:
+
 ```bash
-pip install pyaxidraw
+pip install https://cdn.evilmadscientist.com/dl/ad/public/AxiDraw_API.zip
 ```
+
 For more information: <https://axidraw.com/doc/py_api/>
 
 ---

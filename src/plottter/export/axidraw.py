@@ -56,6 +56,54 @@ def check_axidraw_available() -> bool:
         return False
 
 
+def run_manual_command(
+    command: str,
+    settings: dict[str, Any],
+) -> None:
+    """Run a one-off manual AxiDraw command (raise pen, lower pen, release motors, …).
+
+    Used by the dialog's manual-control buttons so the user can position the
+    pen carriage by hand before locking the pen in.
+
+    Parameters
+    ----------
+    command:
+        One of: ``"raise_pen"``, ``"lower_pen"``, ``"disable_xy"`` (release motors),
+        ``"enable_xy"`` (re-engage motors). These are pyaxidraw's documented
+        manual-mode command names.
+    settings:
+        Same shape as :func:`plot_svg_string`'s settings. Pen positions
+        (``pen_pos_up`` / ``pen_pos_down``), ``model``, ``port``, and
+        ``preview`` are honored; other fields are ignored.
+    """
+    axidraw_module = _require_axidraw()
+    ad = axidraw_module.AxiDraw()
+    ad.plot_setup()  # No SVG needed for manual mode
+
+    ad.options.mode = "manual"
+    ad.options.manual_cmd = command
+    ad.options.model = int(settings.get("model", 2))
+    ad.options.pen_pos_up = int(settings.get("pen_pos_up", 60))
+    ad.options.pen_pos_down = int(settings.get("pen_pos_down", 40))
+
+    port = settings.get("port")
+    if port:
+        ad.options.port = port
+    if bool(settings.get("preview", False)):
+        ad.options.preview = True
+
+    try:
+        ad.plot_run()
+    except Exception as exc:
+        msg = str(exc)
+        if "unable to find" in msg.lower() or "no axidraw" in msg.lower():
+            raise AxiDrawConnectionError(
+                "AxiDraw device not found. Make sure the device is connected via USB "
+                "and powered on."
+            ) from exc
+        raise
+
+
 def plot_svg_string(
     svg_data: str,
     settings: dict[str, Any],
