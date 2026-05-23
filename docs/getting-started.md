@@ -11,9 +11,11 @@ suitable for any pen plotter such as the AxiDraw, HP plotters, or CNC machines w
 | Requirement | Version |
 |-------------|---------|
 | Python | 3.12 or later |
+| pip | 21.3+ (PEP 660 editable installs) |
 | Operating system | Linux, macOS, Windows |
 | Qt runtime (bundled via PyQt6) | Qt 6 |
-| Optional: pyaxidraw | Latest (for direct AxiDraw USB control) |
+| Optional: pyaxidraw | Latest (for direct AxiDraw USB control — see [Export & Plotting](export-and-plotting.md#direct-axidraw-control-usb)) |
+| Optional: quickjs | Any (enables the TurtleToy plugin — see [Math Art Guide](math-art-guide.md#turtletoy-plugin-code-driven-art)) |
 
 On Linux you may also need:
 
@@ -98,7 +100,7 @@ To start from a specific paper size:
 1. In the left panel, confirm **Math Art** mode is selected
 2. Choose a generator from the dropdown, for example **Parametric Curves**
 3. Select a preset from the dropdown at the top of the right panel — try **Lissajous**
-4. Click **Generate** (or `Ctrl+G`)
+4. Click **Generate** (or `Ctrl+G`, or `Ctrl+Enter`)
 
 The canvas shows the generated paths. Zoom with the scroll wheel; pan by holding the middle mouse
 button (or `Ctrl` + drag). See [Canvas Navigation](interface-overview.md#canvas-navigation) for the

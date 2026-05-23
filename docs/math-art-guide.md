@@ -827,3 +827,103 @@ status bar for reproducibility.
 
 **Generate › Surprise Me** picks a random math generator, randomizes all its parameters,
 and generates immediately. Use this for rapid inspiration or happy accidents.
+
+---
+
+## TurtleToy Plugin (code-driven art)
+
+The **TurtleToy** generator ships as a plugin (`plugins/turtletoy.py`) and lets you paste
+JavaScript turtle-graphics sketches directly from [turtletoy.net](https://turtletoy.net).
+Code from the website runs unchanged inside plottter and produces plotter-ready paths.
+
+### Setup
+
+Install the optional `quickjs` package, which embeds a small JavaScript engine in the app:
+
+```bash
+pip install quickjs
+```
+
+Restart plottter. The **TurtleToy** generator appears in the **Math Art** dropdown alongside
+the other math generators. If `quickjs` is missing, the generator is registered as a stub
+that explains how to install it — no crash.
+
+### Writing or pasting a sketch
+
+The TurtleToy parameter panel includes a large monospaced code editor. The full TurtleToy
+API is supported — every `Turtle` method (forward, right, left, goto, jump, circle, clone,
+position, heading, distance, towards, …), the `Canvas.setpenopacity()` global, and the
+`walk(i)` callback that loops until it returns false.
+
+Example — a 5-pointed star (also bundled as the "Five-Point Star" preset):
+
+```javascript
+Canvas.setpenopacity(1);
+const turtle = new Turtle();
+turtle.penup();
+turtle.goto(-50, -20);
+turtle.pendown();
+
+function walk(i) {
+    turtle.forward(100);
+    turtle.right(144);
+    return i < 4;
+}
+```
+
+The TurtleToy world is `-100..+100` on both axes. plottter maps it to the canvas's
+printable area in mm using one of three fit modes:
+
+| Fit mode | Behavior |
+|----------|----------|
+| `letterbox` (default) | Preserve aspect — fits world into the canvas with empty bars on the long side if needed |
+| `stretch` | Independent X/Y scaling — fills the canvas but distorts artwork on non-square canvases |
+| `fixed_scale` | Use a specific `mm_per_unit` ratio. Can produce coordinates outside the canvas |
+
+### Adjustable variables
+
+The TurtleToy plugin supports the website's adjustable-variable comment syntax. Add a
+`// min=…, max=…` comment to any `const` or `let` declaration and that variable appears
+as a live slider in the settings panel:
+
+```javascript
+const sides = 6;     // min=3, max=12, Number of polygon sides
+const size = 60;     // min=10, max=100, step=5, Side length
+const style = 'curvy'; // (curvy, jagged) Drawing style
+const message = 'Hi'; // type=string, Greeting text
+```
+
+Supported comment forms:
+- `// min=X, max=Y, step=Z, Description` — numeric slider (int if no decimals, float otherwise)
+- `// (option1, option2, option3) Description` — dropdown
+- `// type=string, Description` — text input
+- `// type=path, Description` — multi-line text input (for SVG path data)
+
+As you edit the code, the slider/dropdown panel auto-rebuilds (debounced 500ms) to reflect
+the current variables — added vars appear, removed ones disappear, existing ones keep their
+adjusted values. Hit **Generate** (`Ctrl+G` or `Ctrl+Enter`) to apply the current overrides.
+
+Overrides persist with the layer's `generator_info` so projects round-trip correctly, and
+the bundled "Adjustable Polygon" / "Adjustable Spiral" / "Adjustable Recursive Tree"
+presets demonstrate the feature.
+
+### Plugin parameters
+
+| Param | Description |
+|-------|-------------|
+| `code` | Multi-line JavaScript code editor (Ctrl+Enter triggers Generate) |
+| `fit_mode` | World-to-canvas mapping: `letterbox` (default), `stretch`, `fixed_scale` |
+| `mm_per_unit` | Only used when `fit_mode = fixed_scale` |
+| `seed` | Seed for `Math.random()`. Same seed + same code = identical output |
+| `max_steps` | Maximum walk-loop iterations (default 100 000) |
+| `timeout_seconds` | Wall-clock cap on execution (default 30s) |
+
+### Tips and limitations
+
+- Sketches that don't define `walk()` still execute top-level code once — useful for static
+  drawings like a recursive tree built with `clone()` (the "Recursive Tree" preset is one).
+- `Math.random()` is replaced by a seeded LCG; reruns with the same seed are identical.
+- `console.log()` is stubbed to a no-op so debug-print statements don't crash anything.
+- `Canvas.setpenopacity()` is accepted but ignored — opacity is set per-layer in plottter.
+- The npm-package `return walk` syntax is NOT supported; only the website's `function walk(i)` form.
+- TurtleToy's `Image` global is not implemented in this version.

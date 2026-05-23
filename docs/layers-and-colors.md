@@ -217,6 +217,28 @@ Saved masks are persisted in the `.plottter` project file and survive save/reloa
 
 ---
 
+## Generators that produce multiple layers automatically
+
+Most generators add their output to one target layer. A few produce **multiple layers in a
+single Generate run** — one per palette color — and replace those layers (rather than
+appending) on subsequent re-generations:
+
+| Generator | Layers per run |
+|-----------|----------------|
+| **Pixel Art** (Image-to-Lines) | One layer per palette color used in the rendered image |
+
+When you regenerate a multi-layer-emitting generator, plottter scans the project for any
+prior run of that generator and replaces those layers before adding the new ones. This is
+tagged via `_generator_name` in `Layer.generator_info` so it works even when the currently
+active layer isn't one of the generator's prior outputs.
+
+If you want to keep an old version of the output before re-running the generator, **save
+the project to a new file** (File › Save As) and regenerate in the copy. Layer renames and
+duplicates within the same project don't protect against the replacement — the hidden
+`_generator_name` tag in `generator_info` is what matches, not the user-visible name.
+
+---
+
 ## Tips for Multi-Layer Workflows
 
 - Use **K-Means with 3–4 clusters** for most full-color photos
@@ -226,3 +248,6 @@ Saved masks are persisted in the `.plottter` project file and survive save/reloa
   dark colors (black) to layers that will use more pressure
 - Export all layers to separate SVGs and load them into Inkscape for final layout adjustments
   before sending to the plotter
+- **Pixel Art** is a built-in multi-color workflow — the generator outputs one layer per
+  palette color directly, no separation step required. See the
+  [Image-to-Lines Guide](image-to-lines-guide.md#pixel-art) for details.

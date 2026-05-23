@@ -6,12 +6,13 @@ A free, open-source desktop application for generating pen-plotter-ready vector 
 
 ## Features
 
-**33 generators** across math art, image-to-lines, 3D, and audio:
+**35 generators** across math art, image-to-lines, 3D, audio, and code-driven art:
 
 - **Math Art** — Parametric curves, polar curves, modular multiplication, Perlin noise flow fields (with quantized and rectilinear modes), superformula fields, L-system fractals, grid patterns, concentric rings, dot grids, geometric grids, Voronoi/Delaunay tessellation, Penrose aperiodic tiling, and text rendering
-- **Image to Lines** — Edge detection (Canny), hatching (with oscillation mode), flow field/squiggle, Voronoi stippling (with TSP single-line mode), contour lines, XDoG, FDoG (coherent lines), hedcut portraits, scanline halftone, circular scribble, LIC, TAM, dot grid halftone, spiral portraits, sketch (iterative darkest-trace-erase with hybrid marks), mosaic hatching (triangles/Voronoi/rectangles/hexagons/quadtree/superpixels), and ASCII art
+- **Image to Lines** — Edge detection (Canny), hatching (with oscillation mode), flow field/squiggle, Voronoi stippling (with TSP single-line mode), contour lines, XDoG, FDoG (coherent lines), hedcut portraits, scanline halftone, circular scribble, LIC, TAM, dot grid halftone, spiral portraits, sketch (iterative darkest-trace-erase with hybrid marks), mosaic hatching (triangles/Voronoi/rectangles/hexagons/quadtree/superpixels), ASCII art, and **Pixel Art** (multi-layer pixel-as-shape rendering with 15+ retro palettes — NES, Game Boy, SNES, PICO-8, C64, EGA/CGA, Endesga32, grayscale — plus square / diamond / circle / hex cell shapes and dithering)
 - **3D Scene** — Wireframe, hatched/shaded, and perspective-hatched rendering with hidden line removal, 10+ primitive shapes, OBJ/STL mesh import and slicing, camera controls, and shadow effects
 - **Audio** — Import WAV, MP3, FLAC, or OGG files and generate plotter-ready visualizations: Joy Division-style ridgeline spectrograms with hidden line removal, circular and spiral waveforms, spectrogram contour maps, frequency band separation, and stereo Lissajous figures
+- **Code-driven (plugin)** — **TurtleToy** plugin lets you paste JavaScript from [turtletoy.net](https://turtletoy.net) and run it 1:1, including adjustable-variable comment syntax (`const x = 5; // min=0, max=10`) that surfaces as live sliders/dropdowns. Requires the optional `quickjs` package.
 
 **Multi-layer system** with per-layer pen colors and opacity, drag reorder, visibility/lock controls, and color separation (K-Means, Luminance, RGB, CMYK).
 
@@ -48,6 +49,7 @@ pip install -e .
 ```bash
 pip install -e ".[fmm]"    # Fast Marching Method for topographic contours
 pip install -e ".[audio]"  # MP3/FLAC/OGG audio import (requires ffmpeg)
+pip install quickjs        # Enables the TurtleToy plugin (run JavaScript sketches)
 pip install https://cdn.evilmadscientist.com/dl/ad/public/AxiDraw_API.zip  # Direct AxiDraw USB control
 ```
 

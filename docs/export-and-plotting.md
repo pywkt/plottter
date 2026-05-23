@@ -261,6 +261,29 @@ Connect your AxiDraw via USB and power it on.
 **Preview mode** runs the full plot job without sending any commands to the device.
 It is enabled automatically if pyaxidraw is not installed.
 
+### Manual pen controls
+
+The Pen section of the dialog includes three manual-control buttons. Use these to position
+the pen before locking it into the holder:
+
+| Button | Action |
+|--------|--------|
+| **Raise Pen** | Lifts the carriage's pen mechanism to the current "Pen-up position" |
+| **Lower Pen** | Lowers it to the current "Pen-down position" — useful for checking the depth before clamping the pen |
+| **Release Motors** | Disengages the X/Y stepper motors so you can slide the carriage by hand to a starting location. The motors re-engage automatically on the next plot |
+
+**Typical pen-setup workflow:**
+
+1. Click **Raise Pen** to lift the holder
+2. Click **Release Motors** and slide the carriage to a convenient working spot
+3. Insert your pen into the holder, leaving it loose for now
+4. Click **Lower Pen** — the pen drops to the configured depth
+5. Slide the pen down inside the holder until it just touches the paper, then tighten the holder screw
+6. Click **Raise Pen** again, double-check the lifted height clears the paper, then **Plot Now**
+
+Buttons disable themselves during a plot job (and during another in-flight manual command)
+so you can't queue conflicting commands.
+
 ### Plot scope
 
 The AxiDraw dialog always plots all visible layers as a single combined SVG job. To plot

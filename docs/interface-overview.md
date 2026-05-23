@@ -315,6 +315,7 @@ New · Open · Save · Export · | · Undo · Redo
 | `Ctrl+-` | Zoom out |
 | `Ctrl+0` | Fit to window |
 | `Ctrl+G` | Generate |
+| `Ctrl+Enter` / `Ctrl+Return` | Generate (works from anywhere, including inside the TurtleToy code editor) |
 | `Ctrl+R` | Randomize |
 | `G` | Toggle grid |
 | `T` | Toggle travel lines |

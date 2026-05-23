@@ -231,6 +231,46 @@ To manage the cache:
 
 ---
 
+## TurtleToy Plugin Issues
+
+### "quickjs not installed" / TurtleToy generator not listed
+
+**Cause:** The TurtleToy plugin ships in `plugins/turtletoy.py` but it requires the optional
+`quickjs` Python package to embed a JavaScript engine.
+
+**Fix:**
+```bash
+pip install quickjs
+```
+
+Restart plottter. The TurtleToy generator should now appear in the **Math Art** dropdown.
+
+### TurtleToy adjustable sliders don't appear
+
+**Symptom:** I added `// min=0, max=10` comments but the panel still only shows the static
+parameters (code, seed, …).
+
+**Possible causes and fixes:**
+
+1. **The 500 ms debounce hasn't elapsed yet** — wait a moment after typing for the panel to
+   rebuild. Sliders appear automatically.
+
+2. **Comment syntax is invalid** — supported forms are:
+   - `// min=X, max=Y, step=Z, Description` (numeric)
+   - `// (option1, option2, …) Description` (choice)
+   - `// type=string, Description` (text)
+   - `// type=path, Description` (multi-line text)
+
+   A comment like `// 0 to 10` or `// range=0-10` is *not* recognised and will be silently
+   skipped.
+
+3. **The declaration isn't `const` or `let`** — `var` declarations are also skipped.
+
+4. **Parse error in the code** — if the JS has a syntax error before the declaration, the
+   parser may stop. Click Generate to see the JS error message.
+
+---
+
 ## AxiDraw USB Issues
 
 ### "pyaxidraw is NOT installed"

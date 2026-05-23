@@ -2,9 +2,9 @@
 
 Image-to-Lines mode converts raster images (photos, illustrations, scans) into plotter-ready
 polyline paths. The workflow has two stages: **preprocessing** (adjusting the image) and
-**line generation** (choosing an algorithm to trace paths). There are **18 image algorithms**
-available, ranging from edge detection and hatching to stippling, halftone, and flow-based
-streamline art.
+**line generation** (choosing an algorithm to trace paths). There are **19 image algorithms**
+available, ranging from edge detection and hatching to stippling, halftone, flow-based
+streamline art, and multi-layer pixel-art rendering.
 
 ---
 
@@ -620,6 +620,60 @@ Places single-stroke Hershey font characters on a grid, with character selection
 - **Scattered Type** — random rotation per character
 - **Contour Text** — characters rotated to follow image edges (gradient mode)
 - **Large Print** — bigger cells, bold characters
+
+---
+
+## Pixel Art
+
+**Generator:** Pixel Art
+
+Renders a raster image as a grid of discrete cells in a fixed retro palette — Game Boy, NES, SNES, PICO-8, C64, EGA/CGA, Endesga32, grayscale, and others. Each palette color is emitted on its own layer, so a multi-pen plotter can produce a full-color pixel-art print in one job.
+
+Unlike the other image-to-lines algorithms, Pixel Art's output is *structured*: the canvas is divided into an NxM grid, every cell of one color contains the same fill strokes, and the cells themselves can be drawn as squares, diamonds, circles, rounded squares, octagons, or a staggered hex grid.
+
+### Key Parameters
+
+| Parameter | Effect |
+|-----------|--------|
+| `grid_width` | Number of pixels across (8–256). Smaller = chunkier, more abstract |
+| `palette` | Color palette: `grayscale_4`, `gameboy`, `nes`, `snes`, `pico8`, `c64`, `ega`, `endesga32`, `sweetie16`, and more |
+| `quantization` | How pixel colors are mapped to the palette: `nearest`, `kmeans`, `median_cut`, `octree` |
+| `color_space` | `rgb` (fast) or `lab` (perceptually uniform — better for portraits) |
+| `dithering` | `none`, `floyd_steinberg`, `ordered`, `atkinson` — adds patterned tone variation |
+| `cell_shape` | `square` (default), `diamond`, `octagonal`, `circle`, `rounded_square`, or `hex` |
+| `cell_fill_style` | How the cell interior is stroked: `solid_hatch`, `cross_hatch`, `diagonal`, `x_mark`, `outline`, `dithered_dots`, `leave_empty` |
+| `fill_density` | 0–1 — line spacing within each cell |
+| `cell_border` | Draw a thin outline around each cell |
+| `cell_gap_mm` | Small gap between adjacent cells |
+
+### Multi-layer output
+
+Pixel Art is the first built-in generator to produce **multiple layers in a single run**. After clicking Generate, one layer appears per palette color used in the image — each named after its color (e.g. "NES color #04"). For a multi-pen plot, set the pen for each layer and the plotter draws them in sequence.
+
+If you regenerate after adjusting parameters, Pixel Art **replaces** its previous layers rather than appending new ones. The replacement is tracked by a hidden `_generator_name` tag in each layer's `generator_info`, so it works regardless of which layer is currently active.
+
+### Presets
+
+- **Default** — grayscale_4, square cells, solid hatching
+- **Game Boy Portrait** — the classic 4-shade Game Boy aesthetic with Floyd-Steinberg dithering
+- **Game Boy Tiny** — chunky 32-wide grid, no dithering
+- **NES Color** / **NES Crosshatched** — 54-color NES palette, solid or cross-hatched fills
+- **SNES Detail** / **Genesis Detail** — higher-fidelity palettes for portrait sources
+- **PICO-8 Sketch** — 16 colors with ordered (Bayer) dithering for that retro fantasy-console look
+- **C64 Classic** / **CGA 4-Color** / **EGA 16-Color** — period-accurate PC palettes
+- **B&W Halftone Dots** — pure black-and-white with circular cells filled with dot grids
+- **B&W Hatch** / **Grayscale Fine** — monochrome with linework fills
+- **Endesga Modern** / **Sweetie 16 Sketch** — modern fantasy-art palettes
+- **Hex Honeycomb** — Game Boy palette in a staggered hex grid
+- **Diamond Dither** — grayscale with diamond-inscribed cells
+- **Outline Only** — pure cell-border line art, no fills
+
+### Tips
+
+- **Smaller grid + LAB color space** produces the cleanest portraits — try `grid_width=64, color_space=lab, quantization=kmeans`
+- For maximum tonal range with a small palette, enable **Floyd-Steinberg dithering** — it scatters intermediate shades to give an impression of more colors
+- Set `cell_gap_mm = 0.3` to visually separate adjacent cells of different pen colors, which helps the eye read the pixel structure
+- For a single-pen plot, hide all but one palette layer or merge them after generation
 
 ---
 

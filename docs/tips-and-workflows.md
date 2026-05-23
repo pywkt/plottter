@@ -26,6 +26,8 @@ real paper.
 | Woodcut-style | Hatching (contour mode) | Lines follow image edges |
 | Generative / pattern | Voronoi / Delaunay | Cell diagrams and triangulation meshes from point distributions |
 | Generative / pattern | Penrose Tiling | Aperiodic rhombus tiling; arc decorations produce continuous curves |
+| Retro / pixel art | Pixel Art | Multi-pen retro palette rendering (NES, Game Boy, PICO-8, …) with hatched or stippled cells |
+| Code-driven / generative | TurtleToy (plugin) | Paste JavaScript from turtletoy.net; supports adjustable-variable comment sliders |
 
 ---
 
@@ -170,6 +172,7 @@ If you have a very dense project (>50 000 paths):
 | `Ctrl+-` | Zoom out |
 | `Ctrl+0` | Fit to window |
 | `Ctrl+G` | Generate |
+| `Ctrl+Enter` / `Ctrl+Return` | Generate (works from anywhere, including inside the TurtleToy code editor) |
 | `Ctrl+R` | Randomize |
 | `G` | Toggle grid overlay |
 | `T` | Toggle pen-up travel lines |
