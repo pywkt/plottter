@@ -291,6 +291,39 @@ one layer at a time, hide all other layers before opening the dialog.
 
 ---
 
+## Calibration Plots
+
+**Tools › Calibration Plots** opens a submenu of small, purpose-built test plots that
+generate paths into a new layer of the current project. Use these to dial in pen choice,
+servo positions, paper alignment, and the geometric accuracy of your plotter before
+plotting a real piece.
+
+| Test | What it produces | What it tells you |
+|------|------------------|-------------------|
+| **Line Spacing Test** | Parallel line groups at 2.0, 1.5, 1.0, 0.75, 0.5, and 0.25 mm spacings | The smallest spacing at which your pen still draws distinct lines without bleed-together |
+| **Circle & Arc Test** | Concentric rings (upper region) + reference circles and quarter-arcs at standard diameters (lower region) | Motor backlash, belt slack, and curve fidelity — circles should be round, not faceted |
+| **Angle Test** | Radial lines every 15° with labels, plus diagonals and concentric squares | Whether the X and Y axes are square, and whether step-loss occurs at oblique angles |
+| **Fill Density Test** | 4×4 grid of hatched swatches at spacings 2.0 / 1.0 / 0.5 / 0.25 mm and angles 0° / 45° / 90° / 135° | The hatching density that produces solid coverage with your specific pen and paper |
+| **Registration Test** | Outer border, corner crosshairs, centre crosshair with circle, and edge tick marks | Multi-pen alignment after paper reload — print once, then re-print and check overlap |
+| **Paper Size Alignment ›** | Outlines for one specific paper size (or all that fit the canvas) with labelled corners | A master template to place under your actual paper to align it consistently each time |
+
+After running a test, it appears as a new layer on your canvas. Plot it on a scrap sheet to
+read the result, then return to your real project. The calibration generators ignore the
+project's other layers, so you can use the same project for both work and calibration.
+
+**Typical first-time calibration workflow:**
+
+1. **Line Spacing Test** → identify your pen's minimum spacing (sets the floor for hatching
+   densities)
+2. **Fill Density Test** → confirm the spacing at which fills appear solid (helps tune the
+   Hatching / TAM / Halftone generators)
+3. **Circle & Arc Test** → if circles look faceted, reduce plotter speed and check belt
+   tension
+4. **Registration Test** → if you plan multi-pen plots, run this twice with different pens
+   and compare crosshair overlap
+
+---
+
 ## Tips for Common Plotters
 
 ### AxiDraw (V2, V3, SE series)

@@ -278,6 +278,7 @@ The status bar at the bottom of the window shows:
 | Taper Paths | Vary stroke width along paths — fade in/out at endpoints for an organic brush feel |
 | Offset Paths | Generate parallel offset curves at a distance — enables multi-pen-width effects and outline doubling |
 | Apply Brush to Layer | Apply stylized brush effects (stippled, multi-stroke, calligraphic) |
+| Calibration Plots › | Submenu of pre-built test plots for tuning a plotter — see [Export & Plotting](export-and-plotting.md#calibration-plots) |
 | Plot with AxiDraw… | Send to AxiDraw plotter via USB |
 | Manage Plugins… | Load custom generator plugins |
 
