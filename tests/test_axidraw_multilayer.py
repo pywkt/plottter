@@ -74,6 +74,47 @@ class TestLayerSvgList:
 # project_to_svg_string explicit-overrides-visibility rule
 # ---------------------------------------------------------------------------
 
+class TestPlotOrientation:
+    def test_no_flip_keeps_coordinates(self):
+        proj = _make_project(n_layers=1)
+        proj.layers[0].paths = [[(0.0, 0.0), (10.0, 20.0)]]
+        svg = project_to_svg_string(proj, None, {})
+        assert "0.000,0.000" in svg
+        assert "10.000,20.000" in svg
+
+    def test_flip_x_mirrors_horizontally(self):
+        proj = _make_project(n_layers=1)  # A4: 210 x 297
+        w = proj.canvas.width_mm
+        proj.layers[0].paths = [[(0.0, 0.0), (10.0, 20.0)]]
+        svg = project_to_svg_string(proj, None, {"flip_x": True})
+        # x is mirrored (width - x); y is unchanged.
+        assert f"{w - 0.0:.3f},0.000" in svg
+        assert f"{w - 10.0:.3f},20.000" in svg
+
+    def test_flip_y_mirrors_vertically(self):
+        proj = _make_project(n_layers=1)  # A4: 210 x 297
+        h = proj.canvas.height_mm
+        proj.layers[0].paths = [[(0.0, 0.0), (10.0, 20.0)]]
+        svg = project_to_svg_string(proj, None, {"flip_y": True})
+        assert f"0.000,{h - 0.0:.3f}" in svg
+        assert f"10.000,{h - 20.0:.3f}" in svg
+
+    def test_rotate_180_flips_both(self):
+        proj = _make_project(n_layers=1)
+        w, h = proj.canvas.width_mm, proj.canvas.height_mm
+        proj.layers[0].paths = [[(10.0, 20.0), (30.0, 40.0)]]
+        svg = project_to_svg_string(proj, None, {"flip_x": True, "flip_y": True})
+        assert f"{w - 10.0:.3f},{h - 20.0:.3f}" in svg
+        assert f"{w - 30.0:.3f},{h - 40.0:.3f}" in svg
+
+    def test_per_layer_svg_also_flips(self):
+        proj = _make_project(n_layers=1)
+        w = proj.canvas.width_mm
+        proj.layers[0].paths = [[(0.0, 5.0), (10.0, 5.0)]]
+        jobs = project_to_layer_svg_list(proj, None, {"flip_x": True})
+        assert f"{w - 0.0:.3f},5.000" in jobs[0][2]
+
+
 class TestCombinedSvgVisibilityRule:
     def test_ids_none_skips_hidden(self):
         proj = _make_project(n_layers=2, hide_indices=(1,))
@@ -200,6 +241,53 @@ class TestAxiDrawModelPersistence:
             assert dlg._model_combo.currentIndex() == AxiDrawDialog._DEFAULT_MODEL_INDEX
         finally:
             if original is not None:
+                settings.setValue(key, original)
+
+
+class TestAxiDrawOrientation:
+    def test_flip_x_choice_maps_into_settings(self, qtbot):
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        proj = _make_project(n_layers=1)
+        dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+        qtbot.addWidget(dlg)
+        dlg._orientation_combo.setCurrentIndex(1)  # Flip horizontal (X)
+        s = dlg._build_settings()
+        assert s["flip_x"] is True
+        assert s["flip_y"] is False
+
+    def test_rotate_180_maps_both_flips(self, qtbot):
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        proj = _make_project(n_layers=1)
+        dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+        qtbot.addWidget(dlg)
+        dlg._orientation_combo.setCurrentIndex(3)  # Rotate 180°
+        s = dlg._build_settings()
+        assert s["flip_x"] is True
+        assert s["flip_y"] is True
+
+    def test_orientation_is_remembered(self, qtbot):
+        from PyQt6.QtCore import QSettings
+
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        key = AxiDrawDialog._ORIENTATION_SETTINGS_KEY
+        settings = QSettings("Plottter", "Plottter")
+        original = settings.value(key)
+        try:
+            proj = _make_project(n_layers=1)
+            dlg1 = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+            qtbot.addWidget(dlg1)
+            dlg1._orientation_combo.setCurrentIndex(1)  # Flip X
+
+            dlg2 = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+            qtbot.addWidget(dlg2)
+            assert dlg2._orientation_combo.currentIndex() == 1
+        finally:
+            if original is None:
+                settings.remove(key)
+            else:
                 settings.setValue(key, original)
 
 

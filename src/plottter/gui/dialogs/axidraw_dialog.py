@@ -199,6 +199,23 @@ class AxiDrawDialog(QDialog):
     _MODEL_SETTINGS_KEY = "axidraw/model_index"
     _DEFAULT_MODEL_INDEX = 1  # AxiDraw V3/A3
 
+    # Plot-orientation options (index -> (flip_x, flip_y)). Persisted so a
+    # machine whose origin differs from the app's top-left only needs setting
+    # once.
+    _ORIENTATION_NAMES = [
+        "Normal",
+        "Flip horizontal (X) — mirrors, reverses text",
+        "Flip vertical (Y) — mirrors, reverses text",
+        "Rotate 180° — repositions, keeps text readable",
+    ]
+    _ORIENTATION_FLIPS = [
+        (False, False),  # Normal
+        (True, False),   # Flip X
+        (False, True),   # Flip Y
+        (True, True),    # Rotate 180°
+    ]
+    _ORIENTATION_SETTINGS_KEY = "axidraw/plot_orientation"
+
     # Step (in pen-position %) applied by each live pressure-tuning nudge.
     _PRESSURE_STEP = 2
 
@@ -299,6 +316,27 @@ class AxiDrawDialog(QDialog):
         self._model_combo.setCurrentIndex(saved_idx)
         self._model_combo.currentIndexChanged.connect(self._on_model_changed)
         dev_layout.addRow("Model:", self._model_combo)
+
+        # Plot orientation — corrects for plotters whose physical origin sits
+        # on a different corner than the app's top-left (0, 0).
+        self._orientation_combo = QComboBox()
+        for name in self._ORIENTATION_NAMES:
+            self._orientation_combo.addItem(name)
+        saved_orient = settings.value(
+            self._ORIENTATION_SETTINGS_KEY, 0, type=int
+        )
+        if not 0 <= saved_orient < len(self._ORIENTATION_NAMES):
+            saved_orient = 0
+        self._orientation_combo.setCurrentIndex(saved_orient)
+        self._orientation_combo.setToolTip(
+            "Mirror or rotate the plot to match your plotter's physical origin "
+            "if it isn't the app's top-left corner. Does not change the on-screen "
+            "drawing — only what is sent to the device."
+        )
+        self._orientation_combo.currentIndexChanged.connect(
+            self._on_orientation_changed
+        )
+        dev_layout.addRow("Plot orientation:", self._orientation_combo)
 
         self._port_label = QLabel("Auto-detect")
         dev_layout.addRow("USB Port:", self._port_label)
@@ -505,6 +543,12 @@ class AxiDrawDialog(QDialog):
             settings = QSettings("Plottter", "Plottter")
             settings.setValue(self._MODEL_SETTINGS_KEY, index)
 
+    def _on_orientation_changed(self, index: int) -> None:
+        """Persist the plot-orientation choice so it sticks across sessions."""
+        if 0 <= index < len(self._ORIENTATION_NAMES):
+            settings = QSettings("Plottter", "Plottter")
+            settings.setValue(self._ORIENTATION_SETTINGS_KEY, index)
+
     # ------------------------------------------------------------------
     # Layer selection helpers
     # ------------------------------------------------------------------
@@ -582,8 +626,13 @@ class AxiDrawDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _build_settings(self) -> dict:
+        flip_x, flip_y = self._ORIENTATION_FLIPS[
+            self._orientation_combo.currentIndex()
+        ]
         return {
             "model": self._model_combo.currentIndex() + 1,
+            "flip_x": flip_x,
+            "flip_y": flip_y,
             "speed_pendown": self._speed_pendown.value(),
             "speed_penup": self._speed_penup.value(),
             "pen_pos_down": self._pen_pos_down.value(),

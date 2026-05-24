@@ -242,6 +242,29 @@ def plot_project(
 # Internal SVG helpers
 # ---------------------------------------------------------------------------
 
+def _orient_points(
+    path: list, canvas: "Canvas", settings: dict
+) -> list[tuple[str, str]]:
+    """Apply the plot-orientation flip(s) and format points for an SVG polyline.
+
+    Mirrors the plot to match the plotter's physical origin when it differs
+    from the app's top-left (0, 0).  ``flip_x`` reflects across the vertical
+    centre line (``x -> width - x``); ``flip_y`` across the horizontal one.
+    Setting both is a 180° rotation. The app's on-screen coordinates are
+    unchanged — this only affects what is sent to the device.
+    """
+    flip_x = bool(settings.get("flip_x", False))
+    flip_y = bool(settings.get("flip_y", False))
+    out: list[tuple[str, str]] = []
+    for x, y in path:
+        if flip_x:
+            x = canvas.width_mm - x
+        if flip_y:
+            y = canvas.height_mm - y
+        out.append((f"{x:.3f}", f"{y:.3f}"))
+    return out
+
+
 def _layer_to_svg_string(layer: "Layer", canvas: "Canvas", settings: dict) -> str:
     """Convert a single Layer to an in-memory SVG string."""
     import svgwrite
@@ -258,8 +281,7 @@ def _layer_to_svg_string(layer: "Layer", canvas: "Canvas", settings: dict) -> st
     for path in layer.paths:
         if len(path) < 2:
             continue
-        points = [(f"{x:.3f}", f"{y:.3f}") for x, y in path]
-        g.add(dwg.polyline(points=points))
+        g.add(dwg.polyline(points=_orient_points(path, canvas, settings)))
     dwg.add(g)
 
     buf = io.StringIO()
@@ -326,8 +348,7 @@ def project_to_svg_string(
         for path in layer.paths:
             if len(path) < 2:
                 continue
-            points = [(f"{x:.3f}", f"{y:.3f}") for x, y in path]
-            g.add(dwg.polyline(points=points))
+            g.add(dwg.polyline(points=_orient_points(path, canvas, settings)))
         dwg.add(g)
 
     buf = io.StringIO()
