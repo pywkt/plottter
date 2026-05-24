@@ -151,3 +151,91 @@ class TestAxiDrawDialogLayerScope:
         assert not dlg._pause_check.isEnabled()
         summary = dlg._layer_summary_label.text()
         assert "1 layer" in summary
+
+
+# ---------------------------------------------------------------------------
+# AxiDrawDialog: model selection persists across dialog instances
+# ---------------------------------------------------------------------------
+
+class TestAxiDrawModelPersistence:
+    def test_model_selection_is_remembered(self, qtbot):
+        from PyQt6.QtCore import QSettings
+
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        key = AxiDrawDialog._MODEL_SETTINGS_KEY
+        settings = QSettings("Plottter", "Plottter")
+        original = settings.value(key)
+        try:
+            proj = _make_project(n_layers=1)
+
+            # First dialog: user picks "AxiDraw SE/A2" (index 5).
+            dlg1 = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+            qtbot.addWidget(dlg1)
+            dlg1._model_combo.setCurrentIndex(5)
+
+            # Second dialog should open with that choice already selected.
+            dlg2 = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+            qtbot.addWidget(dlg2)
+            assert dlg2._model_combo.currentIndex() == 5
+        finally:
+            if original is None:
+                settings.remove(key)
+            else:
+                settings.setValue(key, original)
+
+    def test_defaults_to_v3_a3_when_unset(self, qtbot):
+        from PyQt6.QtCore import QSettings
+
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        key = AxiDrawDialog._MODEL_SETTINGS_KEY
+        settings = QSettings("Plottter", "Plottter")
+        original = settings.value(key)
+        try:
+            settings.remove(key)
+            proj = _make_project(n_layers=1)
+            dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+            qtbot.addWidget(dlg)
+            assert dlg._model_combo.currentIndex() == AxiDrawDialog._DEFAULT_MODEL_INDEX
+        finally:
+            if original is not None:
+                settings.setValue(key, original)
+
+
+# ---------------------------------------------------------------------------
+# AxiDrawDialog: live pressure nudge
+# ---------------------------------------------------------------------------
+
+class TestAxiDrawPressureNudge:
+    def _make_dialog(self, qtbot):
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        proj = _make_project(n_layers=1)
+        dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+        qtbot.addWidget(dlg)
+        # Don't touch hardware: record the re-lower request instead of running it.
+        dlg._lower_calls = []
+        dlg._run_manual = lambda cmd: dlg._lower_calls.append(cmd)
+        return dlg
+
+    def test_more_pressure_lowers_pen_down_value_and_relowers(self, qtbot):
+        dlg = self._make_dialog(qtbot)
+        dlg._pen_pos_down.setValue(40)
+        dlg._more_pressure_btn.click()
+        assert dlg._pen_pos_down.value() == 40 - dlg._PRESSURE_STEP
+        assert dlg._lower_calls == ["lower_pen"]
+
+    def test_less_pressure_raises_pen_down_value(self, qtbot):
+        dlg = self._make_dialog(qtbot)
+        dlg._pen_pos_down.setValue(40)
+        dlg._less_pressure_btn.click()
+        assert dlg._pen_pos_down.value() == 40 + dlg._PRESSURE_STEP
+        assert dlg._lower_calls == ["lower_pen"]
+
+    def test_nudge_clamps_and_does_not_relower_at_limit(self, qtbot):
+        dlg = self._make_dialog(qtbot)
+        dlg._pen_pos_down.setValue(0)
+        dlg._nudge_pressure(-dlg._PRESSURE_STEP)  # already at minimum
+        assert dlg._pen_pos_down.value() == 0
+        assert dlg._lower_calls == []

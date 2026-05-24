@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import QMutex, Qt, QThread, QWaitCondition, pyqtSignal
+from PyQt6.QtCore import QMutex, QSettings, Qt, QThread, QWaitCondition, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -195,6 +195,13 @@ class AxiDrawDialog(QDialog):
         "AxiDraw SE/A2",             # model=6
     ]
 
+    # QSettings key + fallback for the remembered model selection.
+    _MODEL_SETTINGS_KEY = "axidraw/model_index"
+    _DEFAULT_MODEL_INDEX = 1  # AxiDraw V3/A3
+
+    # Step (in pen-position %) applied by each live pressure-tuning nudge.
+    _PRESSURE_STEP = 2
+
     def __init__(
         self,
         project: "Project",
@@ -207,8 +214,9 @@ class AxiDrawDialog(QDialog):
         self._worker: QThread | None = None
         self._is_multilayer_worker = False
         self.setWindowTitle("Plot with AxiDraw")
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(480)
         self._build_ui()
+        self._apply_initial_size()
         self._update_layer_summary()
         self._check_availability()
 
@@ -227,8 +235,13 @@ class AxiDrawDialog(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        # The dialog is sized to fit its content (see _apply_initial_size), so
+        # horizontal scrolling should never be needed — disable it outright and
+        # keep the vertical scrollbar only as a fallback on very small screens.
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         inner = QWidget()
         scroll.setWidget(inner)
+        self._scroll_inner = inner
         form_root = QVBoxLayout(inner)
         root.addWidget(scroll)
 
@@ -276,7 +289,15 @@ class AxiDrawDialog(QDialog):
         self._model_combo = QComboBox()
         for name in self._MODEL_NAMES:
             self._model_combo.addItem(name)
-        self._model_combo.setCurrentIndex(1)  # V3/A3 default
+        # Restore the last-used model, falling back to the V3/A3 default.
+        settings = QSettings("Plottter", "Plottter")
+        saved_idx = settings.value(
+            self._MODEL_SETTINGS_KEY, self._DEFAULT_MODEL_INDEX, type=int
+        )
+        if not 0 <= saved_idx < len(self._MODEL_NAMES):
+            saved_idx = self._DEFAULT_MODEL_INDEX
+        self._model_combo.setCurrentIndex(saved_idx)
+        self._model_combo.currentIndexChanged.connect(self._on_model_changed)
         dev_layout.addRow("Model:", self._model_combo)
 
         self._port_label = QLabel("Auto-detect")
@@ -378,10 +399,47 @@ class AxiDrawDialog(QDialog):
         manual_btn_row.addWidget(self._release_motors_btn)
         pen_layout.addRow(manual_btn_row)
 
+        # --- Live pressure tuning ---
+        # Lower the pen, then nudge the pen-down position a couple % at a time
+        # while the pen stays on the paper, so the user can dial in contact
+        # pressure by feel without re-clamping the pen. A lower pen-down
+        # position means the carriage drops the pen further = more pressure.
+        pressure_label = QLabel(
+            "Pressure tuning (lower the pen first, then nudge until it draws "
+            "cleanly without skipping):"
+        )
+        pressure_label.setWordWrap(True)
+        pressure_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        pen_layout.addRow(pressure_label)
+
+        pressure_btn_row = QHBoxLayout()
+        self._less_pressure_btn = QPushButton("− Less Pressure")
+        self._less_pressure_btn.setToolTip(
+            "Raise the pen-down position by "
+            f"{self._PRESSURE_STEP}% and re-lower the pen — less contact force."
+        )
+        self._less_pressure_btn.clicked.connect(
+            lambda: self._nudge_pressure(self._PRESSURE_STEP)
+        )
+        pressure_btn_row.addWidget(self._less_pressure_btn)
+
+        self._more_pressure_btn = QPushButton("More Pressure +")
+        self._more_pressure_btn.setToolTip(
+            "Lower the pen-down position by "
+            f"{self._PRESSURE_STEP}% and re-lower the pen — more contact force."
+        )
+        self._more_pressure_btn.clicked.connect(
+            lambda: self._nudge_pressure(-self._PRESSURE_STEP)
+        )
+        pressure_btn_row.addWidget(self._more_pressure_btn)
+        pen_layout.addRow(pressure_btn_row)
+
         self._manual_buttons = [
             self._raise_pen_btn,
             self._lower_pen_btn,
             self._release_motors_btn,
+            self._less_pressure_btn,
+            self._more_pressure_btn,
         ]
 
         form_root.addStretch()
@@ -405,6 +463,42 @@ class AxiDrawDialog(QDialog):
         self._cancel_btn = QPushButton("Close")
         self._cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(self._cancel_btn)
+
+    # ------------------------------------------------------------------
+    # Initial sizing
+    # ------------------------------------------------------------------
+
+    def _apply_initial_size(self) -> None:
+        """Resize so all controls fit without scrolling on a typical screen.
+
+        The scrollable content is the tallest part of the dialog; we size to
+        its natural ``sizeHint`` plus the surrounding chrome (status banner,
+        progress bar, button row, margins), then cap to the available screen
+        so the dialog never opens larger than the display.
+        """
+        inner_hint = self._scroll_inner.sizeHint()
+        chrome_h = (
+            self._status_label.sizeHint().height()
+            + self._progress_bar.sizeHint().height()
+            + self._plot_btn.sizeHint().height()
+            + 48  # layout margins + spacing
+        )
+        target_w = max(self.minimumWidth(), inner_hint.width() + 24)
+        target_h = inner_hint.height() + chrome_h
+
+        screen = self.screen()
+        if screen is not None:
+            avail = screen.availableGeometry()
+            target_w = min(target_w, avail.width() - 80)
+            target_h = min(target_h, avail.height() - 80)
+
+        self.resize(target_w, target_h)
+
+    def _on_model_changed(self, index: int) -> None:
+        """Persist the selected plotter model so it's the default next time."""
+        if 0 <= index < len(self._MODEL_NAMES):
+            settings = QSettings("Plottter", "Plottter")
+            settings.setValue(self._MODEL_SETTINGS_KEY, index)
 
     # ------------------------------------------------------------------
     # Layer selection helpers
@@ -593,6 +687,23 @@ class AxiDrawDialog(QDialog):
         self._manual_worker.finished.connect(self._on_manual_finished)
         self._manual_worker.error.connect(self._on_manual_error)
         self._manual_worker.start()
+
+    def _nudge_pressure(self, delta: int) -> None:
+        """Adjust the pen-down position by *delta* % and re-lower the pen.
+
+        Negative *delta* drops the pen further (more pressure); positive lifts
+        it slightly (less pressure). Re-lowering immediately lets the user feel
+        the new contact force while tuning. No-ops at the 0–100 % limits and
+        while another command/plot is in flight.
+        """
+        if self._worker and self._worker.isRunning():
+            return
+        current = self._pen_pos_down.value()
+        new_val = max(0, min(100, current + delta))
+        if new_val == current:
+            return  # already at the limit — nothing to apply
+        self._pen_pos_down.setValue(new_val)
+        self._run_manual("lower_pen")
 
     def _on_manual_finished(self) -> None:
         self._set_manual_buttons_enabled(True)
