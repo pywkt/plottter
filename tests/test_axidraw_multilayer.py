@@ -424,6 +424,31 @@ class TestAxiDrawPressureNudge:
         assert dlg._lower_calls == []
 
 
+class TestAxiDrawReturnHome:
+    def test_return_home_button_issues_walk_home(self, qtbot):
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        proj = _make_project(n_layers=1)
+        dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+        qtbot.addWidget(dlg)
+        # Record the command instead of touching hardware.
+        calls = []
+        dlg._run_manual = lambda cmd: calls.append(cmd)
+        dlg._return_home_btn.click()
+        assert calls == ["walk_home"]
+
+    def test_return_home_is_a_managed_manual_button(self, qtbot):
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        proj = _make_project(n_layers=1)
+        dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+        qtbot.addWidget(dlg)
+        # Must be disabled along with the other manual buttons during commands.
+        assert dlg._return_home_btn in dlg._manual_buttons
+        dlg._set_manual_buttons_enabled(False)
+        assert not dlg._return_home_btn.isEnabled()
+
+
 # ---------------------------------------------------------------------------
 # AxiDrawDialog: default settings
 # ---------------------------------------------------------------------------

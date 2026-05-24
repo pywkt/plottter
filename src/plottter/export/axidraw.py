@@ -69,8 +69,11 @@ def run_manual_command(
     ----------
     command:
         One of: ``"raise_pen"``, ``"lower_pen"``, ``"disable_xy"`` (release motors),
-        ``"enable_xy"`` (re-engage motors). These are pyaxidraw's documented
-        manual-mode command names.
+        ``"enable_xy"`` (re-engage motors), ``"walk_home"`` (return the carriage
+        to the home corner). These are pyaxidraw's documented manual-mode command
+        names.  ``"walk_home"`` queries the controller's tracked position, so it
+        only homes correctly if the carriage hasn't been moved by hand since the
+        last known position (and requires firmware >= 2.6.2).
     settings:
         Same shape as :func:`plot_svg_string`'s settings. Pen positions
         (``pen_pos_up`` / ``pen_pos_down``), ``model``, ``port``, and

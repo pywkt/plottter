@@ -470,6 +470,19 @@ class AxiDrawDialog(QDialog):
             lambda: self._run_manual("disable_xy")
         )
         manual_btn_row.addWidget(self._release_motors_btn)
+
+        self._return_home_btn = QPushButton("Return Home")
+        self._return_home_btn.setToolTip(
+            "Move the pen carriage back to the home corner (0,0). Handy after "
+            "stopping a plot with the plotter's pause button — it re-engages "
+            "the motors and raises the pen for you. Only homes correctly if the "
+            "carriage hasn't been pushed by hand since it stopped, and needs "
+            "plotter firmware 2.6.2 or newer."
+        )
+        self._return_home_btn.clicked.connect(
+            lambda: self._run_manual("walk_home")
+        )
+        manual_btn_row.addWidget(self._return_home_btn)
         pen_layout.addRow(manual_btn_row)
 
         # --- Live pressure tuning ---
@@ -511,6 +524,7 @@ class AxiDrawDialog(QDialog):
             self._raise_pen_btn,
             self._lower_pen_btn,
             self._release_motors_btn,
+            self._return_home_btn,
             self._less_pressure_btn,
             self._more_pressure_btn,
         ]
