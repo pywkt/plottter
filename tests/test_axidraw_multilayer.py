@@ -239,3 +239,19 @@ class TestAxiDrawPressureNudge:
         dlg._nudge_pressure(-dlg._PRESSURE_STEP)  # already at minimum
         assert dlg._pen_pos_down.value() == 0
         assert dlg._lower_calls == []
+
+
+# ---------------------------------------------------------------------------
+# AxiDrawDialog: default settings
+# ---------------------------------------------------------------------------
+
+class TestAxiDrawDefaults:
+    def test_pen_down_delay_defaults_to_settle_time(self, qtbot):
+        """A short pen-down delay avoids stroke-start skipping out of the box."""
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        proj = _make_project(n_layers=1)
+        dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+        qtbot.addWidget(dlg)
+        assert dlg._pen_delay_down.value() == 125
+        assert dlg._build_settings()["pen_delay_down"] == 125

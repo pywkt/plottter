@@ -349,8 +349,13 @@ class AxiDrawDialog(QDialog):
 
         self._pen_delay_down = QSpinBox()
         self._pen_delay_down.setRange(0, 2000)
-        self._pen_delay_down.setValue(0)
+        self._pen_delay_down.setValue(125)
         self._pen_delay_down.setSuffix(" ms")
+        self._pen_delay_down.setToolTip(
+            "Pause after lowering the pen, before the carriage starts moving. "
+            "A short delay (~100–150 ms) lets the servo fully seat so strokes "
+            "don't skip at the start. Set to 0 for the fastest plotting."
+        )
         pen_layout.addRow("Delay after pen-down:", self._pen_delay_down)
 
         self._pen_delay_up = QSpinBox()
