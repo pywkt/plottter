@@ -210,26 +210,28 @@ def generate_paper_size_sheet(
     margin_mm: float,
     paper_name: str | None = None,
 ) -> list[Polyline]:
-    """Generate a paper size alignment underlay sheet.
+    """Generate a "master paper size" alignment sheet.
 
-    Draws crosshair marks at the corners of each paper size from
-    ``PAPER_PRESETS`` that fits within the canvas, so the user can visually
-    align paper on the plotter bed.  Both portrait and landscape orientations
-    are drawn when they fit.
+    Draws the outline (plus corner ticks and a label) of each paper size from
+    ``PAPER_PRESETS`` that fits within the canvas, **anchored at the plotter's
+    home corner (0, 0)** rather than centred on the canvas.  Anchoring at the
+    origin is what makes this usable as a placement guide: a real plot also
+    starts from ``(0, 0)``, so a sheet of paper placed inside the drawn outline
+    will receive any later design plotted on a same-or-smaller canvas.  When
+    several sizes are drawn they nest, all sharing the top-left corner.
+
+    Both portrait and landscape orientations are drawn when they fit.
 
     Parameters
     ----------
     width_mm:   Page width in mm.
     height_mm:  Page height in mm.
-    margin_mm:  Margin from each page edge to the drawing area.
+    margin_mm:  Accepted for signature compatibility but ignored — the paper
+                boundary is anchored to the bare machine origin, not inset by a
+                drawing margin.
     paper_name: If given, only draw this paper size (e.g. ``"A3"``).
                 If ``None``, draw all fitting paper sizes.
     """
-    x0 = margin_mm
-    y0 = margin_mm
-    x1 = width_mm - margin_mm
-    y1 = height_mm - margin_mm
-
     result: list[Polyline] = []
 
     # -- Paper size crosshairs -------------------------------------------------
@@ -273,11 +275,12 @@ def generate_paper_size_sheet(
     label_bboxes: list[tuple[float, float, float, float]] = []  # (lx0, ly0, lx1, ly1)
 
     for pw, ph, label in entries:
-        # Centre each paper size on the canvas
-        px0 = (width_mm - pw) / 2.0
-        py0 = (height_mm - ph) / 2.0
-        px1 = px0 + pw
-        py1 = py0 + ph
+        # Anchor each paper size at the home corner (0, 0) so the outline
+        # matches where a real plot lands.  Nested sizes share this corner.
+        px0 = 0.0
+        py0 = 0.0
+        px1 = pw
+        py1 = ph
 
         # Solid rectangle outline showing the full paper boundary.
         result.append([(px0, py0), (px1, py0)])  # top
@@ -285,14 +288,16 @@ def generate_paper_size_sheet(
         result.append([(px1, py1), (px0, py1)])  # bottom
         result.append([(px0, py1), (px0, py0)])  # left
 
-        # Corners: (corner_x, corner_y, h_dir, v_dir)
-        #   h_dir: -1 = left (outward for left corners), +1 = right
-        #   v_dir: -1 = up   (outward for top corners),  +1 = down
+        # Corner ticks point INWARD (into the paper).  Outward ticks would fall
+        # at negative coordinates for the origin-side corners, so inward keeps
+        # all four corners marked and on-page.
+        #   h_dir: +1 = right (inward from left edge), -1 = left
+        #   v_dir: +1 = down  (inward from top edge),  -1 = up
         corners = [
-            (px0, py0, -1.0, -1.0),  # top-left:     go left and up
-            (px1, py0, +1.0, -1.0),  # top-right:    go right and up
-            (px0, py1, -1.0, +1.0),  # bottom-left:  go left and down
-            (px1, py1, +1.0, +1.0),  # bottom-right: go right and down
+            (px0, py0, +1.0, +1.0),  # top-left:     go right and down
+            (px1, py0, -1.0, +1.0),  # top-right:    go left and down
+            (px0, py1, +1.0, -1.0),  # bottom-left:  go right and up
+            (px1, py1, -1.0, -1.0),  # bottom-right: go left and up
         ]
 
         for cx, cy, hdir, vdir in corners:
@@ -312,21 +317,22 @@ def generate_paper_size_sheet(
             if abs(tx - cx) > 1e-9 or abs(ty - cy) > 1e-9:
                 result.append([(cx, cy), (tx, ty)])
 
-        # Label at the top-left corner of the paper size, offset upward.
-        # Resolve overlaps with previously placed labels by pushing further up.
-        lx = max(1.0, px0)
-        ly = py0 - LABEL_H - 1.0
-        for _ in range(20):  # at most 20 upward shifts to avoid infinite loop
+        # Label just inside the top-left corner.  Because every size shares
+        # that corner, stack labels DOWNWARD to resolve overlaps (upward would
+        # run off the top edge at y=0).
+        lx = px0 + 2.0
+        ly = py0 + 2.0
+        for _ in range(40):  # bounded downward shifts to avoid infinite loop
             conflict = False
             for bx0, by0, bx1, by1 in label_bboxes:
                 if lx < bx1 and lx + LABEL_W > bx0 and ly < by1 and ly + LABEL_H > by0:
-                    ly = by0 - LABEL_H - 1.0
+                    ly = by1 + 1.0
                     conflict = True
                     break
             if not conflict:
                 break
         label_bboxes.append((lx, ly, lx + LABEL_W, ly + LABEL_H))
-        result.extend(_label(label, max(1.0, lx), max(1.0, ly), size_mm=2.5))
+        result.extend(_label(label, lx, ly, size_mm=2.5))
 
     # Clamp every point to the physical page bounds to guard against
     # sub-millimetre Hershey glyph overhangs or floating-point drift.

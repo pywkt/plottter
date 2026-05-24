@@ -305,7 +305,7 @@ plotting a real piece.
 | **Angle Test** | Radial lines every 15° with labels, plus diagonals and concentric squares | Whether the X and Y axes are square, and whether step-loss occurs at oblique angles |
 | **Fill Density Test** | 4×4 grid of hatched swatches at spacings 2.0 / 1.0 / 0.5 / 0.25 mm and angles 0° / 45° / 90° / 135° | The hatching density that produces solid coverage with your specific pen and paper |
 | **Registration Test** | Outer border, corner crosshairs, centre crosshair with circle, and edge tick marks | Multi-pen alignment after paper reload — print once, then re-print and check overlap |
-| **Paper Size Alignment ›** | Outlines for one specific paper size (or all that fit the canvas) with labelled corners | A master template to place under your actual paper to align it consistently each time |
+| **Paper Size Alignment ›** | Outlines for one specific paper size (or all that fit the canvas) with labelled corners, **anchored at the plotter's home corner (0,0)** | A master template: plot it once, place your paper inside the matching outline, and any design plotted on a same-or-smaller canvas lands inside — because plots also start from (0,0) |
 
 After running a test, it appears as a new layer on your canvas. Plot it on a scrap sheet to
 read the result, then return to your real project. The calibration generators ignore the

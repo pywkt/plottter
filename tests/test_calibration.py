@@ -509,14 +509,14 @@ def test_paper_size_sheet_a4_canvas_only_fitting():
             assert y >= -TOLERANCE, f"Crosshair start y={y:.2f} is off-page"
 
 
-# (c) Crosshair lines start at paper boundary corners (or just outside).
+# (c) Crosshair lines start at paper boundary corners, anchored at (0, 0).
 def test_paper_size_sheet_crosshair_positions():
     result = generate_paper_size_sheet(A2_W, A2_H, MARGIN)
-    # A4 portrait centred on A2 canvas
-    a4_px0 = (A2_W - A4_W) / 2.0   # 105.0
-    a4_py0 = (A2_H - A4_H) / 2.0   # 148.5
-    a4_px1 = a4_px0 + A4_W          # 315.0
-    a4_py1 = a4_py0 + A4_H          # 445.5
+    # A4 portrait anchored at the home corner (0, 0) on the A2 canvas.
+    a4_px0 = 0.0
+    a4_py0 = 0.0
+    a4_px1 = A4_W                   # 210.0
+    a4_py1 = A4_H                   # 297.0
     corners = [(a4_px0, a4_py0), (a4_px1, a4_py0), (a4_px0, a4_py1), (a4_px1, a4_py1)]
     for cx, cy in corners:
         found = any(
@@ -553,11 +553,11 @@ def test_paper_size_sheet_labels_present():
 # (210×297, area=62 370) in the output.
 def test_paper_size_sheet_sorted_by_area():
     result = generate_paper_size_sheet(A2_W, A2_H, MARGIN)
-    # Top-left corners of each paper size centred on the A2 canvas.
-    a3_px0 = (A2_W - 297.0) / 2.0   # 61.5
-    a3_py0 = (A2_H - 420.0) / 2.0   # 87.0
-    a4_px0 = (A2_W - 210.0) / 2.0   # 105.0
-    a4_py0 = (A2_H - 297.0) / 2.0   # 148.5
+    # Every size is anchored at (0, 0), so the top-left corner no longer
+    # distinguishes them. Discriminate by the bottom-right corner, which is
+    # unique to each paper size: A3 portrait = (297, 420), A4 = (210, 297).
+    a3_br = (297.0, 420.0)
+    a4_br = (210.0, 297.0)
 
     def first_index_near(cx: float, cy: float) -> int | None:
         """Return the index of the first 2-point polyline starting near (cx, cy)."""
@@ -570,8 +570,8 @@ def test_paper_size_sheet_sorted_by_area():
                 return idx
         return None
 
-    idx_a3 = first_index_near(a3_px0, a3_py0)
-    idx_a4 = first_index_near(a4_px0, a4_py0)
+    idx_a3 = first_index_near(*a3_br)
+    idx_a4 = first_index_near(*a4_br)
     assert idx_a3 is not None, "A3 top-left corner not found in output"
     assert idx_a4 is not None, "A4 top-left corner not found in output"
     assert idx_a3 < idx_a4, (
