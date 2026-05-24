@@ -327,11 +327,10 @@ class _ProcessingOpsMixin:
     def _on_plot_axidraw(self) -> None:
         """Open AxiDraw plot dialog for direct USB plotting."""
         project = self._controller.current_project
-        # Build SVG of all visible layers
-        from plottter.export.axidraw import project_to_svg_string
-        svg_data = project_to_svg_string(project, None, {"stroke_width_mm": 0.3})
+        active_id = self._controller.active_layer_id
+
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
-        dlg = AxiDrawDialog(svg_data, parent=self)
+        dlg = AxiDrawDialog(project, active_layer_id=active_id, parent=self)
         dlg.plot_started.connect(lambda: self.statusBar().showMessage("Plotting…"))
         dlg.plot_finished.connect(lambda: self.statusBar().showMessage("Plot complete."))
         dlg.exec()

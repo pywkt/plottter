@@ -267,6 +267,30 @@ def _layer_to_svg_string(layer: "Layer", canvas: "Canvas", settings: dict) -> st
     return buf.getvalue()
 
 
+def project_to_layer_svg_list(
+    project: "Project",
+    layer_ids: list[str] | None,
+    settings: dict,
+) -> list[tuple[str, str, str]]:
+    """Return one SVG string per selected layer.
+
+    Each entry is ``(layer_name, layer_color, svg_string)``.  Used by the
+    AxiDraw dialog when plotting per-layer (e.g. for pen swaps between
+    layers).  ``layer_ids=None`` means "all visible layers"; an explicit list
+    overrides visibility (the active-layer-only mode plots a hidden layer if
+    the user explicitly selected it).
+    """
+    if layer_ids is None:
+        layers = [lyr for lyr in project.layers if lyr.visible]
+    else:
+        id_set = set(layer_ids)
+        layers = [lyr for lyr in project.layers if lyr.id in id_set]
+    return [
+        (lyr.name, lyr.color, _layer_to_svg_string(lyr, project.canvas, settings))
+        for lyr in layers
+    ]
+
+
 def project_to_svg_string(
     project: "Project",
     layer_ids: list[str] | None,
@@ -283,11 +307,16 @@ def project_to_svg_string(
         viewBox=f"0 0 {canvas.width_mm} {canvas.height_mm}",
     )
 
-    for layer in project.layers:
-        if not layer.visible:
-            continue
-        if layer_ids is not None and layer.id not in layer_ids:
-            continue
+    # When layer_ids is None, plot all visible layers.  When an explicit list
+    # is given, plot exactly those layers regardless of visibility — explicit
+    # selection wins over the visibility flag.
+    if layer_ids is None:
+        selected = [lyr for lyr in project.layers if lyr.visible]
+    else:
+        id_set = set(layer_ids)
+        selected = [lyr for lyr in project.layers if lyr.id in id_set]
+
+    for layer in selected:
         g = dwg.g(
             id=f"layer_{_safe_xml_id(layer.name)}",
             stroke=layer.color,
