@@ -242,15 +242,33 @@ def plot_project(
 # Internal SVG helpers
 # ---------------------------------------------------------------------------
 
+def _document_size(canvas: "Canvas", settings: dict) -> tuple[float, float]:
+    """Return the (width, height) in mm of the SVG document to plot.
+
+    Defaults to the canvas size.  A fixed "bed" size can be supplied via
+    ``bed_width_mm`` / ``bed_height_mm`` so that plots from differently-sized
+    canvases all share one coordinate frame — this is what keeps artwork
+    aligned across canvas sizes (see the AxiDraw dialog's "Plot bed size").
+    Content is always anchored at the document's top-left (0, 0); a larger
+    bed simply pads to the right and below.
+    """
+    bw = settings.get("bed_width_mm")
+    bh = settings.get("bed_height_mm")
+    if bw and bh and float(bw) > 0 and float(bh) > 0:
+        # Never shrink below the canvas — that would clip the artwork.
+        return max(float(bw), canvas.width_mm), max(float(bh), canvas.height_mm)
+    return float(canvas.width_mm), float(canvas.height_mm)
+
+
 def _orient_points(
-    path: list, canvas: "Canvas", settings: dict
+    path: list, doc_w: float, doc_h: float, settings: dict
 ) -> list[tuple[str, str]]:
     """Apply the plot-orientation flip(s) and format points for an SVG polyline.
 
     Mirrors the plot to match the plotter's physical origin when it differs
-    from the app's top-left (0, 0).  ``flip_x`` reflects across the vertical
-    centre line (``x -> width - x``); ``flip_y`` across the horizontal one.
-    Setting both is a 180° rotation. The app's on-screen coordinates are
+    from the app's top-left (0, 0).  ``flip_x`` reflects across the document's
+    vertical centre line (``x -> doc_w - x``); ``flip_y`` across the horizontal
+    one.  Setting both is a 180° rotation. The app's on-screen coordinates are
     unchanged — this only affects what is sent to the device.
     """
     flip_x = bool(settings.get("flip_x", False))
@@ -258,9 +276,9 @@ def _orient_points(
     out: list[tuple[str, str]] = []
     for x, y in path:
         if flip_x:
-            x = canvas.width_mm - x
+            x = doc_w - x
         if flip_y:
-            y = canvas.height_mm - y
+            y = doc_h - y
         out.append((f"{x:.3f}", f"{y:.3f}"))
     return out
 
@@ -269,11 +287,12 @@ def _layer_to_svg_string(layer: "Layer", canvas: "Canvas", settings: dict) -> st
     """Convert a single Layer to an in-memory SVG string."""
     import svgwrite
     stroke_width = float(settings.get("stroke_width_mm", 0.3))
+    doc_w, doc_h = _document_size(canvas, settings)
 
     dwg = svgwrite.Drawing(
         filename="plot.svg",
-        size=(f"{canvas.width_mm}mm", f"{canvas.height_mm}mm"),
-        viewBox=f"0 0 {canvas.width_mm} {canvas.height_mm}",
+        size=(f"{doc_w}mm", f"{doc_h}mm"),
+        viewBox=f"0 0 {doc_w} {doc_h}",
     )
 
     g = dwg.g(stroke=layer.color, fill="none",
@@ -281,7 +300,7 @@ def _layer_to_svg_string(layer: "Layer", canvas: "Canvas", settings: dict) -> st
     for path in layer.paths:
         if len(path) < 2:
             continue
-        g.add(dwg.polyline(points=_orient_points(path, canvas, settings)))
+        g.add(dwg.polyline(points=_orient_points(path, doc_w, doc_h, settings)))
     dwg.add(g)
 
     buf = io.StringIO()
@@ -322,11 +341,12 @@ def project_to_svg_string(
     import svgwrite
     stroke_width = float(settings.get("stroke_width_mm", 0.3))
     canvas = project.canvas
+    doc_w, doc_h = _document_size(canvas, settings)
 
     dwg = svgwrite.Drawing(
         filename="plot.svg",
-        size=(f"{canvas.width_mm}mm", f"{canvas.height_mm}mm"),
-        viewBox=f"0 0 {canvas.width_mm} {canvas.height_mm}",
+        size=(f"{doc_w}mm", f"{doc_h}mm"),
+        viewBox=f"0 0 {doc_w} {doc_h}",
     )
 
     # When layer_ids is None, plot all visible layers.  When an explicit list
@@ -348,7 +368,7 @@ def project_to_svg_string(
         for path in layer.paths:
             if len(path) < 2:
                 continue
-            g.add(dwg.polyline(points=_orient_points(path, canvas, settings)))
+            g.add(dwg.polyline(points=_orient_points(path, doc_w, doc_h, settings)))
         dwg.add(g)
 
     buf = io.StringIO()

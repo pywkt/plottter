@@ -29,6 +29,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from plottter.models.canvas import PAPER_PRESETS
+
 if TYPE_CHECKING:
     from plottter.models.project import Project
 
@@ -216,6 +218,11 @@ class AxiDrawDialog(QDialog):
     ]
     _ORIENTATION_SETTINGS_KEY = "axidraw/plot_orientation"
 
+    # Plot bed size — pad every plot to one fixed document size so a given
+    # coordinate maps to the same physical spot regardless of canvas size.
+    _BED_MATCH_CANVAS = "Match canvas (no padding)"
+    _BED_SETTINGS_KEY = "axidraw/bed_size"
+
     # Step (in pen-position %) applied by each live pressure-tuning nudge.
     _PRESSURE_STEP = 2
 
@@ -337,6 +344,29 @@ class AxiDrawDialog(QDialog):
             self._on_orientation_changed
         )
         dev_layout.addRow("Plot orientation:", self._orientation_combo)
+
+        # Plot bed size — pads every plot to one fixed size (with art anchored
+        # at the top-left) so the same coordinate lands at the same physical
+        # spot no matter what canvas the design came from. Set this to your
+        # plotter's bed for the paper-alignment workflow to line up.
+        self._bed_combo = QComboBox()
+        self._bed_combo.addItem(self._BED_MATCH_CANVAS)
+        for _bed_name in PAPER_PRESETS:
+            self._bed_combo.addItem(_bed_name)
+        saved_bed = settings.value(
+            self._BED_SETTINGS_KEY, self._BED_MATCH_CANVAS, type=str
+        )
+        bed_idx = self._bed_combo.findText(saved_bed)
+        self._bed_combo.setCurrentIndex(bed_idx if bed_idx >= 0 else 0)
+        self._bed_combo.setToolTip(
+            "Pad every plot to this fixed size so a coordinate always maps to "
+            "the same physical point — needed for the paper-size alignment "
+            "guide to line up with designs from differently-sized canvases. "
+            "Set it to your plotter's bed size. 'Match canvas' plots at the "
+            "project canvas size (the original behaviour)."
+        )
+        self._bed_combo.currentIndexChanged.connect(self._on_bed_changed)
+        dev_layout.addRow("Plot bed size:", self._bed_combo)
 
         self._port_label = QLabel("Auto-detect")
         dev_layout.addRow("USB Port:", self._port_label)
@@ -549,6 +579,24 @@ class AxiDrawDialog(QDialog):
             settings = QSettings("Plottter", "Plottter")
             settings.setValue(self._ORIENTATION_SETTINGS_KEY, index)
 
+    def _on_bed_changed(self, index: int) -> None:
+        """Persist the plot bed-size choice so it sticks across sessions."""
+        settings = QSettings("Plottter", "Plottter")
+        settings.setValue(self._BED_SETTINGS_KEY, self._bed_combo.currentText())
+
+    def _bed_size_mm(self) -> tuple[float | None, float | None]:
+        """Return the configured bed (width, height) in mm, or (None, None).
+
+        ``None`` means "match canvas" — the export then uses the canvas size.
+        """
+        label = self._bed_combo.currentText()
+        if label == self._BED_MATCH_CANVAS:
+            return None, None
+        dims = PAPER_PRESETS.get(label)
+        if not dims:
+            return None, None
+        return float(dims[0]), float(dims[1])
+
     # ------------------------------------------------------------------
     # Layer selection helpers
     # ------------------------------------------------------------------
@@ -629,10 +677,13 @@ class AxiDrawDialog(QDialog):
         flip_x, flip_y = self._ORIENTATION_FLIPS[
             self._orientation_combo.currentIndex()
         ]
+        bed_w, bed_h = self._bed_size_mm()
         return {
             "model": self._model_combo.currentIndex() + 1,
             "flip_x": flip_x,
             "flip_y": flip_y,
+            "bed_width_mm": bed_w,
+            "bed_height_mm": bed_h,
             "speed_pendown": self._speed_pendown.value(),
             "speed_penup": self._speed_penup.value(),
             "pen_pos_down": self._pen_pos_down.value(),

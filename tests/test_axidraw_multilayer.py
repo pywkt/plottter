@@ -115,6 +115,39 @@ class TestPlotOrientation:
         assert f"{w - 0.0:.3f},5.000" in jobs[0][2]
 
 
+class TestPlotBedSize:
+    def test_no_bed_uses_canvas_size(self):
+        proj = _make_project(n_layers=1)  # A4: 210 x 297
+        svg = project_to_svg_string(proj, None, {})
+        assert "viewBox=\"0 0 210.0 297.0\"" in svg
+
+    def test_bed_size_pads_document_but_keeps_coords(self):
+        proj = _make_project(n_layers=1)  # A4 canvas: 210 x 297
+        proj.layers[0].paths = [[(0.0, 0.0), (10.0, 20.0)]]
+        # Bed = A2 (420 x 594): document grows, coordinates are unchanged.
+        svg = project_to_svg_string(
+            proj, None, {"bed_width_mm": 420.0, "bed_height_mm": 594.0}
+        )
+        assert "viewBox=\"0 0 420.0 594.0\"" in svg
+        assert "0.000,0.000" in svg          # top-left stays at the origin
+        assert "10.000,20.000" in svg        # not scaled or shifted
+
+    def test_bed_never_shrinks_below_canvas(self):
+        proj = _make_project(n_layers=1)  # A4 canvas: 210 x 297
+        # A smaller bed must not clip the canvas — falls back to canvas size.
+        svg = project_to_svg_string(
+            proj, None, {"bed_width_mm": 100.0, "bed_height_mm": 100.0}
+        )
+        assert "viewBox=\"0 0 210.0 297.0\"" in svg
+
+    def test_per_layer_svg_honours_bed_size(self):
+        proj = _make_project(n_layers=1)
+        jobs = project_to_layer_svg_list(
+            proj, None, {"bed_width_mm": 420.0, "bed_height_mm": 594.0}
+        )
+        assert "viewBox=\"0 0 420.0 594.0\"" in jobs[0][2]
+
+
 class TestCombinedSvgVisibilityRule:
     def test_ids_none_skips_hidden(self):
         proj = _make_project(n_layers=2, hide_indices=(1,))
@@ -284,6 +317,68 @@ class TestAxiDrawOrientation:
             dlg2 = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
             qtbot.addWidget(dlg2)
             assert dlg2._orientation_combo.currentIndex() == 1
+        finally:
+            if original is None:
+                settings.remove(key)
+            else:
+                settings.setValue(key, original)
+
+
+class TestAxiDrawBedSize:
+    def test_match_canvas_default_yields_no_bed(self, qtbot):
+        from PyQt6.QtCore import QSettings
+
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        key = AxiDrawDialog._BED_SETTINGS_KEY
+        settings = QSettings("Plottter", "Plottter")
+        original = settings.value(key)
+        try:
+            settings.remove(key)
+            proj = _make_project(n_layers=1)
+            dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+            qtbot.addWidget(dlg)
+            assert dlg._bed_combo.currentText() == AxiDrawDialog._BED_MATCH_CANVAS
+            s = dlg._build_settings()
+            assert s["bed_width_mm"] is None
+            assert s["bed_height_mm"] is None
+        finally:
+            if original is not None:
+                settings.setValue(key, original)
+
+    def test_selecting_a2_maps_to_bed_dimensions(self, qtbot):
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+        from plottter.models.canvas import PAPER_PRESETS
+
+        proj = _make_project(n_layers=1)
+        dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+        qtbot.addWidget(dlg)
+        idx = dlg._bed_combo.findText("A2")
+        assert idx >= 0
+        dlg._bed_combo.setCurrentIndex(idx)
+        s = dlg._build_settings()
+        assert (s["bed_width_mm"], s["bed_height_mm"]) == (
+            float(PAPER_PRESETS["A2"][0]),
+            float(PAPER_PRESETS["A2"][1]),
+        )
+
+    def test_bed_choice_is_remembered(self, qtbot):
+        from PyQt6.QtCore import QSettings
+
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        key = AxiDrawDialog._BED_SETTINGS_KEY
+        settings = QSettings("Plottter", "Plottter")
+        original = settings.value(key)
+        try:
+            proj = _make_project(n_layers=1)
+            dlg1 = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+            qtbot.addWidget(dlg1)
+            dlg1._bed_combo.setCurrentIndex(dlg1._bed_combo.findText("A2"))
+
+            dlg2 = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+            qtbot.addWidget(dlg2)
+            assert dlg2._bed_combo.currentText() == "A2"
         finally:
             if original is None:
                 settings.remove(key)
