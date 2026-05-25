@@ -40,22 +40,53 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 class _PlotWorker(QThread):
-    """Runs a single combined-SVG plot job in a background thread."""
+    """Runs a single combined-SVG plot job in a background thread.
+
+    Supports a software pause: ``pause()`` (called from the GUI thread) asks
+    pyaxidraw to stop at the next safe point. The run then emits ``paused``
+    with a resume-SVG instead of ``finished``; feeding that SVG back with
+    ``resume=True`` continues the plot.
+    """
 
     progress = pyqtSignal(float)          # 0–100
     finished = pyqtSignal()
+    paused = pyqtSignal(str)              # resume SVG (may be empty)
     error = pyqtSignal(str)
 
-    def __init__(self, svg_data: str, settings: dict, parent=None):
+    def __init__(self, svg_data: str, settings: dict, resume: bool = False, parent=None):
         super().__init__(parent)
         self._svg_data = svg_data
         self._settings = settings
+        self._resume = resume
+        self._ad = None  # set by on_ready once plotting is configured
+
+    def pause(self) -> None:
+        """Request a pause from the GUI thread (no-op if not yet plotting)."""
+        ad = self._ad
+        if ad is None:
+            return
+        try:
+            ad.transmit_pause_request()
+        except Exception:
+            pass
+
+    def _store_ad(self, ad) -> None:
+        self._ad = ad
 
     def run(self) -> None:
         try:
             from plottter.export.axidraw import plot_svg_string
-            plot_svg_string(self._svg_data, self._settings, self.progress.emit)
-            self.finished.emit()
+            outcome = plot_svg_string(
+                self._svg_data,
+                self._settings,
+                self.progress.emit,
+                on_ready=self._store_ad,
+                resume=self._resume,
+            )
+            if outcome.paused:
+                self.paused.emit(outcome.resume_svg or "")
+            else:
+                self.finished.emit()
         except Exception as exc:
             self.error.emit(str(exc))
 
@@ -237,6 +268,7 @@ class AxiDrawDialog(QDialog):
         self._active_layer_id = active_layer_id
         self._worker: QThread | None = None
         self._is_multilayer_worker = False
+        self._resume_svg: str | None = None
         self.setWindowTitle("Plot with AxiDraw")
         self.setMinimumWidth(480)
         self._build_ui()
@@ -547,6 +579,24 @@ class AxiDrawDialog(QDialog):
         self._plot_btn.clicked.connect(self._on_plot)
         btn_row.addWidget(self._plot_btn)
 
+        self._pause_btn = QPushButton("Pause")
+        self._pause_btn.setToolTip(
+            "Pause the plot at the next safe point. The pen lifts and the "
+            "carriage stops; click Resume to continue from where it left off."
+        )
+        self._pause_btn.setVisible(False)
+        self._pause_btn.clicked.connect(self._on_pause)
+        btn_row.addWidget(self._pause_btn)
+
+        self._resume_btn = QPushButton("Resume")
+        self._resume_btn.setToolTip(
+            "Continue a paused plot from where it stopped. Works whether you "
+            "paused from here or with the plotter's physical button."
+        )
+        self._resume_btn.setVisible(False)
+        self._resume_btn.clicked.connect(self._on_resume)
+        btn_row.addWidget(self._resume_btn)
+
         self._cancel_btn = QPushButton("Close")
         self._cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(self._cancel_btn)
@@ -725,15 +775,15 @@ class AxiDrawDialog(QDialog):
 
         settings = self._build_settings()
         layer_ids = self._selected_layer_ids()
-        pause = self._pause_check.isChecked() and len(layers) >= 2
+        pen_swap = self._pause_check.isChecked() and len(layers) >= 2
 
-        self._plot_btn.setEnabled(False)
-        self._set_manual_buttons_enabled(False)
+        self._resume_svg = None
         self._progress_bar.setValue(0)
-        self._progress_bar.setVisible(True)
         self.plot_started.emit()
 
-        if pause:
+        if pen_swap:
+            # Multi-layer pen-swap mode handles its own between-layer pausing;
+            # software pause/resume is not offered here.
             from plottter.export.axidraw import project_to_layer_svg_list
             jobs = project_to_layer_svg_list(self._project, layer_ids, settings)
             worker = _MultiLayerPlotWorker(jobs, settings, parent=None)
@@ -743,6 +793,7 @@ class AxiDrawDialog(QDialog):
             worker.error.connect(self._on_plot_error)
             self._worker = worker
             self._is_multilayer_worker = True
+            self._set_plot_ui_state("plotting", allow_pause=False)
             worker.start()
         else:
             from plottter.export.axidraw import project_to_svg_string
@@ -750,10 +801,77 @@ class AxiDrawDialog(QDialog):
             worker = _PlotWorker(svg_data, settings, parent=None)
             worker.progress.connect(lambda p: self._progress_bar.setValue(int(p)))
             worker.finished.connect(self._on_plot_finished)
+            worker.paused.connect(self._on_plot_paused)
             worker.error.connect(self._on_plot_error)
             self._worker = worker
             self._is_multilayer_worker = False
+            self._set_plot_ui_state("plotting", allow_pause=True)
             worker.start()
+
+    # ------------------------------------------------------------------
+    # Pause / resume
+    # ------------------------------------------------------------------
+
+    def _set_plot_ui_state(self, state: str, allow_pause: bool = True) -> None:
+        """Toggle button visibility/enabled for 'idle', 'plotting', 'paused'."""
+        plotting = state == "plotting"
+        paused = state == "paused"
+        idle = state == "idle"
+        self._plot_btn.setEnabled(idle)
+        # Manual controls are usable while idle or paused, not while plotting.
+        self._set_manual_buttons_enabled(not plotting)
+        self._progress_bar.setVisible(plotting or paused)
+        self._pause_btn.setVisible(plotting and allow_pause)
+        self._pause_btn.setEnabled(plotting and allow_pause)
+        self._pause_btn.setText("Pause")
+        self._resume_btn.setVisible(paused)
+        self._resume_btn.setEnabled(paused)
+
+    def _on_pause(self) -> None:
+        """Ask the running plot worker to pause."""
+        worker = self._worker
+        if isinstance(worker, _PlotWorker) and worker.isRunning():
+            worker.pause()
+            self._pause_btn.setEnabled(False)
+            self._pause_btn.setText("Pausing…")
+
+    def _on_plot_paused(self, resume_svg: str) -> None:
+        """Plot stopped early (software pause or physical button)."""
+        self._resume_svg = resume_svg or None
+        if not self._resume_svg:
+            # Stopped with no resume data — can't continue; reset to idle.
+            self._set_plot_ui_state("idle")
+            self.plot_finished.emit()
+            QMessageBox.warning(
+                self,
+                "Plot Stopped",
+                "The plot stopped but no resume data was returned, so it can't "
+                "be continued. You'll need to start the plot again.",
+            )
+            return
+        self._set_plot_ui_state("paused")
+        QMessageBox.information(
+            self,
+            "Plot Paused",
+            "Plot paused. Click Resume to continue from where it stopped, "
+            "or Close to stop.",
+        )
+
+    def _on_resume(self) -> None:
+        """Continue a paused plot from its saved resume SVG."""
+        if not self._resume_svg or (self._worker and self._worker.isRunning()):
+            return
+        settings = self._build_settings()
+        self._progress_bar.setValue(0)
+        worker = _PlotWorker(self._resume_svg, settings, resume=True, parent=None)
+        worker.progress.connect(lambda p: self._progress_bar.setValue(int(p)))
+        worker.finished.connect(self._on_plot_finished)
+        worker.paused.connect(self._on_plot_paused)
+        worker.error.connect(self._on_plot_error)
+        self._worker = worker
+        self._is_multilayer_worker = False
+        self._set_plot_ui_state("plotting", allow_pause=True)
+        worker.start()
 
     # ------------------------------------------------------------------
     # Pen-swap pause handling
@@ -835,8 +953,8 @@ class AxiDrawDialog(QDialog):
 
     def _on_plot_finished(self) -> None:
         self._progress_bar.setValue(100)
-        self._plot_btn.setEnabled(True)
-        self._set_manual_buttons_enabled(True)
+        self._resume_svg = None
+        self._set_plot_ui_state("idle")
         self.plot_finished.emit()
         QMessageBox.information(
             self,
@@ -845,9 +963,8 @@ class AxiDrawDialog(QDialog):
         )
 
     def _on_plot_error(self, msg: str) -> None:
-        self._progress_bar.setVisible(False)
-        self._plot_btn.setEnabled(True)
-        self._set_manual_buttons_enabled(True)
+        self._resume_svg = None
+        self._set_plot_ui_state("idle")
         self.plot_finished.emit()
         # User-cancelled plots are not really errors — use an info dialog.
         if msg == "Plot cancelled.":
@@ -860,5 +977,7 @@ class AxiDrawDialog(QDialog):
         if worker is not None and worker.isRunning():
             if isinstance(worker, _MultiLayerPlotWorker):
                 worker.cancel()
+            elif isinstance(worker, _PlotWorker):
+                worker.pause()  # stop the plot cleanly before closing
             worker.wait(3000)
         super().closeEvent(event)

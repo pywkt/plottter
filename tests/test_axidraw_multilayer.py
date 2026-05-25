@@ -450,6 +450,121 @@ class TestAxiDrawReturnHome:
 
 
 # ---------------------------------------------------------------------------
+# _PlotWorker software pause
+# ---------------------------------------------------------------------------
+
+class TestPlotWorkerPause:
+    def test_pause_calls_transmit_pause_request(self):
+        from plottter.gui.dialogs.axidraw_dialog import _PlotWorker
+
+        class FakeAd:
+            def __init__(self):
+                self.paused = False
+
+            def transmit_pause_request(self):
+                self.paused = True
+
+        worker = _PlotWorker("<svg/>", {})
+        fake = FakeAd()
+        worker._store_ad(fake)
+        worker.pause()
+        assert fake.paused is True
+
+    def test_pause_before_plotting_is_noop(self):
+        from plottter.gui.dialogs.axidraw_dialog import _PlotWorker
+
+        worker = _PlotWorker("<svg/>", {})
+        worker.pause()  # _ad is None — must not raise
+
+
+# ---------------------------------------------------------------------------
+# AxiDrawDialog: pause / resume UI state machine
+# ---------------------------------------------------------------------------
+
+class TestAxiDrawPauseResume:
+    def _dlg(self, qtbot):
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        proj = _make_project(n_layers=1)
+        dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+        qtbot.addWidget(dlg)
+        return dlg
+
+    def test_initial_state_hides_pause_and_resume(self, qtbot):
+        dlg = self._dlg(qtbot)
+        assert dlg._pause_btn.isHidden()
+        assert dlg._resume_btn.isHidden()
+        assert dlg._plot_btn.isEnabled()
+
+    def test_plotting_state_shows_pause(self, qtbot):
+        dlg = self._dlg(qtbot)
+        dlg._set_plot_ui_state("plotting", allow_pause=True)
+        assert not dlg._pause_btn.isHidden()
+        assert dlg._pause_btn.isEnabled()
+        assert dlg._resume_btn.isHidden()
+        assert not dlg._plot_btn.isEnabled()
+
+    def test_multilayer_plotting_hides_pause(self, qtbot):
+        dlg = self._dlg(qtbot)
+        dlg._set_plot_ui_state("plotting", allow_pause=False)
+        assert dlg._pause_btn.isHidden()
+
+    def test_paused_state_stores_resume_and_shows_resume_button(self, qtbot, monkeypatch):
+        import plottter.gui.dialogs.axidraw_dialog as mod
+        monkeypatch.setattr(mod.QMessageBox, "information", staticmethod(lambda *a, **k: None))
+        dlg = self._dlg(qtbot)
+        dlg._on_plot_paused("<svg>resume-data</svg>")
+        assert dlg._resume_svg == "<svg>resume-data</svg>"
+        assert not dlg._resume_btn.isHidden()
+        assert dlg._resume_btn.isEnabled()
+        assert dlg._pause_btn.isHidden()
+        assert not dlg._plot_btn.isEnabled()
+
+    def test_pause_without_resume_data_returns_to_idle(self, qtbot, monkeypatch):
+        import plottter.gui.dialogs.axidraw_dialog as mod
+        monkeypatch.setattr(mod.QMessageBox, "warning", staticmethod(lambda *a, **k: None))
+        dlg = self._dlg(qtbot)
+        dlg._on_plot_paused("")
+        assert dlg._resume_svg is None
+        assert dlg._resume_btn.isHidden()
+        assert dlg._plot_btn.isEnabled()
+
+    def test_finished_clears_resume_and_returns_idle(self, qtbot, monkeypatch):
+        import plottter.gui.dialogs.axidraw_dialog as mod
+        monkeypatch.setattr(mod.QMessageBox, "information", staticmethod(lambda *a, **k: None))
+        dlg = self._dlg(qtbot)
+        dlg._resume_svg = "leftover"
+        dlg._on_plot_finished()
+        assert dlg._resume_svg is None
+        assert dlg._plot_btn.isEnabled()
+        assert dlg._resume_btn.isHidden()
+
+    def test_resume_is_noop_without_resume_svg(self, qtbot):
+        dlg = self._dlg(qtbot)
+        dlg._resume_svg = None
+        dlg._on_resume()
+        assert dlg._worker is None
+
+
+# ---------------------------------------------------------------------------
+# plot_svg_string return value (preview mode, no hardware)
+# ---------------------------------------------------------------------------
+
+class TestPlotSvgStringOutcome:
+    def test_preview_run_reports_not_paused(self):
+        pytest.importorskip("pyaxidraw")
+        from plottter.export.axidraw import PlotOutcome, plot_svg_string
+
+        proj = _make_project(n_layers=1)
+        proj.layers[0].paths = [[(10.0, 10.0), (30.0, 30.0)]]
+        svg = project_to_svg_string(proj, None, {})
+        outcome = plot_svg_string(svg, {"preview": True})
+        assert isinstance(outcome, PlotOutcome)
+        assert outcome.paused is False
+        assert outcome.resume_svg is None
+
+
+# ---------------------------------------------------------------------------
 # AxiDrawDialog: default settings
 # ---------------------------------------------------------------------------
 

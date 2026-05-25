@@ -12,11 +12,27 @@ from __future__ import annotations
 
 import io
 import re
+from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from plottter.models import Canvas, Layer
     from plottter.models.project import Project
+
+
+@dataclass
+class PlotOutcome:
+    """Result of a plot run.
+
+    ``paused`` is True if the plot stopped early — via a software pause, the
+    plotter's physical button, or a keyboard interrupt — rather than completing.
+    When paused, ``resume_svg`` holds the serialized SVG with embedded progress
+    data; pass it back to :func:`plot_svg_string` with ``resume=True`` to
+    continue from where it stopped.
+    """
+
+    paused: bool
+    resume_svg: str | None = None
 
 
 def _safe_xml_id(name: str) -> str:
@@ -111,7 +127,9 @@ def plot_svg_string(
     svg_data: str,
     settings: dict[str, Any],
     progress_callback: Any = None,
-) -> None:
+    on_ready: Any = None,
+    resume: bool = False,
+) -> "PlotOutcome":
     """Send an SVG string directly to the AxiDraw plotter.
 
     Parameters
@@ -133,6 +151,19 @@ def plot_svg_string(
         - ``preview`` (bool, default False — dry-run, no device needed)
     progress_callback:
         Optional callable(percent: float) for progress updates.
+    on_ready:
+        Optional callable(ad) invoked with the configured ``AxiDraw`` object
+        just before plotting begins. Lets a caller keep a reference so it can
+        request a pause mid-plot via ``ad.transmit_pause_request()``.
+    resume:
+        If True, ``svg_data`` is a resume SVG (from a previous paused run) and
+        plotting continues from where it stopped instead of starting over.
+
+    Returns
+    -------
+    PlotOutcome
+        ``paused`` indicates the plot stopped early; ``resume_svg`` then carries
+        the SVG to pass back (with ``resume=True``) to continue.
     """
     axidraw_module = _require_axidraw()
 
@@ -153,6 +184,11 @@ def plot_svg_string(
     ad.options.report_time = bool(settings.get("report_time", False))
     ad.options.model = int(settings.get("model", 2))
 
+    if resume:
+        # Continue a previously paused plot embedded in svg_data.
+        ad.options.mode = "resume"
+        ad.options.resume_type = "plot"
+
     port = settings.get("port")
     if port:
         ad.options.port = port
@@ -164,8 +200,11 @@ def plot_svg_string(
     if progress_callback:
         progress_callback(10)
 
+    if on_ready is not None:
+        on_ready(ad)
+
     try:
-        ad.plot_run()
+        output_svg = ad.plot_run(True)
     except Exception as exc:
         # Wrap device errors in a friendlier message
         msg = str(exc)
@@ -176,8 +215,18 @@ def plot_svg_string(
             ) from exc
         raise
 
-    if progress_callback:
+    # ad.plot_status.stopped is 0 when the plot completed, > 0 when it stopped
+    # early (paused by software/button/keyboard).
+    try:
+        stopped = int(getattr(ad.plot_status, "stopped", 0) or 0)
+    except (TypeError, ValueError):
+        stopped = 0
+    paused = stopped > 0
+
+    if not paused and progress_callback:
         progress_callback(100)
+
+    return PlotOutcome(paused=paused, resume_svg=output_svg if paused else None)
 
 
 def plot_project_layer(
