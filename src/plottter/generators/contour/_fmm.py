@@ -606,8 +606,8 @@ def _fmm_wave(
 
 def _fmm_radial(
     T: np.ndarray,
-    source_sy: int,
-    source_sx: int,
+    source_sy: float,
+    source_sx: float,
     img_w: int,
     img_h: int,
     draw_x1: float,
@@ -621,16 +621,20 @@ def _fmm_radial(
 ) -> list[Polyline]:
     """Render the FMM travel-time field as radial lines following gradient ascent.
 
-    Draws ``num_radials`` lines that start at the FMM source point and step
-    outward following the normalised gradient of T (perpendicular to isocontours).
+    Draws ``num_radials`` lines that start at the source point and step outward
+    following the normalised gradient of T (perpendicular to isocontours).
     Lines spread apart in light/fast regions where T increases slowly, and bunch
     together in dark/slow regions where T increases steeply, producing a
     starburst / sunburst effect that warps naturally around image features.
 
+    The source may lie outside the image (negative or beyond the dimensions);
+    rays that point toward the frame then travel straight in until they enter
+    it, after which they follow the field — a fan emanating from off-frame.
+
     Parameters
     ----------
     T:              FMM travel-time field (H×W float64, finite, clamped).
-    source_sy, sx:  Source point pixel row and column.
+    source_sy, sx:  Source point row and column in pixels (may be off-image).
     img_w, img_h:   Source image dimensions in pixels.
     draw_x1..y2:    Canvas drawing area bounds in mm.
     num_radials:    Number of radial lines evenly distributed around 360°.
@@ -642,9 +646,15 @@ def _fmm_radial(
     # Gradient of T: gy = row-direction, gx = col-direction
     gy, gx = np.gradient(T.astype(np.float64))
 
-    # Max steps: enough to reach the farthest corner from any interior source
-    max_steps = int(math.sqrt(img_w ** 2 + img_h ** 2) / max(step_size_px, 0.1)) + 10
-    max_steps = min(max_steps, 10000)
+    # Step budget: enough to travel from the (possibly off-image) source to the
+    # farthest corner, then meander across the diagonal while following T.
+    diag = math.sqrt(img_w ** 2 + img_h ** 2)
+    far = max(
+        math.hypot(source_sx - cx, source_sy - cy)
+        for cx, cy in ((0, 0), (img_w, 0), (0, img_h), (img_w, img_h))
+    )
+    max_steps = int((far + diag) / max(step_size_px, 0.1)) + 10
+    max_steps = min(max_steps, 20000)
 
     polylines: list[Polyline] = []
 
@@ -660,11 +670,22 @@ def _fmm_radial(
         y = float(source_sy) + 0.5 * math.sin(angle)
 
         polyline: Polyline = []
+        # Initial direction is the ray's angle — used to coast straight in from
+        # an off-image source until it enters the frame; overridden by the
+        # gradient once inside.
+        ux, uy = math.cos(angle), math.sin(angle)
+        entered = False
 
         for _ in range(max_steps):
-            # Bounds check (with half-pixel margin)
-            if x < 0.0 or x >= img_w or y < 0.0 or y >= img_h:
-                break
+            in_bounds = 0.0 <= x < img_w and 0.0 <= y < img_h
+            if not in_bounds:
+                if entered:
+                    break  # left the image after entering — ray is done
+                # Not in the frame yet: keep coasting straight toward it.
+                x += ux * step_size_px
+                y += uy * step_size_px
+                continue
+            entered = True
 
             # Record current position in mm
             mm_x, mm_y = _px_to_mm(x, y, img_w, img_h, draw_x1, draw_y1, draw_x2, draw_y2)
@@ -693,12 +714,28 @@ def _fmm_radial(
             )
 
             mag = math.sqrt(gx_val ** 2 + gy_val ** 2)
-            if mag < 1e-6:
-                break
+            reversed_dir = (ux != 0.0 or uy != 0.0) and (gx_val * ux + gy_val * uy) < 0.0
+            if mag < 1e-6 or reversed_dir:
+                # The gradient died (a plateau) or reversed (the radial reached
+                # a ridge / local maximum of the travel-time field and would
+                # otherwise oscillate in place). Nudge one step *outward* from
+                # the source to get past it, then resume following the gradient
+                # on the next iteration — so the line keeps picking up the next
+                # image feature instead of stopping short or running dead
+                # straight to the edge.
+                ox = x - float(source_sx)
+                oy = y - float(source_sy)
+                omag = math.sqrt(ox * ox + oy * oy)
+                if omag < 1e-6:
+                    break  # at the source with no usable direction
+                ux, uy = ox / omag, oy / omag
+            else:
+                ux = gx_val / mag
+                uy = gy_val / mag
 
-            # Step along gradient ascent of T
-            x += (gx_val / mag) * step_size_px
-            y += (gy_val / mag) * step_size_px
+            # Step along gradient ascent of T (or straight, once coasting)
+            x += ux * step_size_px
+            y += uy * step_size_px
 
         if len(polyline) >= 2:
             polylines.append(polyline)

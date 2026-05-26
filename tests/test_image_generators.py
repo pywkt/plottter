@@ -4081,14 +4081,14 @@ class TestContourGeneratorFMMMode:
         assert p.default == "Center"
 
     def test_fmm_gamma_param_exists(self):
-        """fmm_gamma must be a FloatParam with range 0.1–5.0 and default 1.0."""
+        """fmm_gamma must be a FloatParam with range 0.1–20.0 and default 1.0."""
         from plottter.generators.base import FloatParam
         params = {p.name: p for p in self.gen.get_parameters()}
         assert "fmm_gamma" in params
         p = params["fmm_gamma"]
         assert isinstance(p, FloatParam)
         assert p.min == 0.1
-        assert p.max == 5.0
+        assert p.max == 20.0
         assert p.default == 1.0
 
     def test_fmm_speed_floor_param_exists(self):

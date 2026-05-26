@@ -357,14 +357,23 @@ class ContourGenerator(Generator):
                 )
                 if progress_callback:
                     progress_callback(10)
+                # Geometric ray origin: for a Custom source, use the unclamped
+                # percentage so the origin can sit outside the image (negative
+                # or >100%). The FMM field's seed (sy, sx) stays clamped to the
+                # grid; only the ray geometry uses the off-image origin.
+                if fmm_source_point == "Custom":
+                    origin_sx = fmm_source_x_pct / 100.0 * (img_w - 1)
+                    origin_sy = fmm_source_y_pct / 100.0 * (img_h - 1)
+                else:
+                    origin_sx, origin_sy = float(sx), float(sy)
                 img_rect_w = img_x2 - img_x1
                 step_size_mm = float(params.get("fmm_step_size_mm", 0.5))
                 px_per_mm = img_w / img_rect_w if img_rect_w > 0 else 1.0
                 step_size_px = max(0.1, step_size_mm * px_per_mm)
                 result = _fmm_radial(
                     T,
-                    sy,
-                    sx,
+                    origin_sy,
+                    origin_sx,
                     img_w,
                     img_h,
                     img_x1,
