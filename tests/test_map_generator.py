@@ -846,3 +846,68 @@ def test_generate_fallback():
             assert top - coord_tol <= y <= bottom + coord_tol, (
                 f"y={y:.3f} outside printable area [{top:.3f}, {bottom:.3f}]"
             )
+
+
+def test_major_strokes():
+    """Phase 145.2 — major_road_strokes=3 yields ~3× the polyline count vs =1.
+
+    Verifies that when major_road_strokes=3, the Roads (major) layer contains
+    approximately 3× as many polylines as when major_road_strokes=1.
+    The test uses a fixture MapData with a single roads_major feature so the
+    baseline count is predictable.
+    """
+    from plottter.generators.map_generator import MapGenerator
+
+    gen = MapGenerator()
+    canvas = make_canvas()
+    map_data = _make_line_map_data()
+
+    base_params = {
+        "_map_data": map_data,
+        "road_detail": "standard",
+        "simplify_mm": 0.0,
+        "min_feature_mm": 0.0,
+        "include_water": False,
+        "include_parks": False,
+        "include_buildings": False,
+        "include_waterways": False,
+        "include_coastline": False,
+        "include_rail": False,
+        "include_roads": True,
+    }
+
+    # Generate with 1 stroke (baseline).
+    params_1 = {**base_params, "major_road_strokes": 1}
+    specs_1 = gen.generate_layers(params_1, canvas)
+    major_1 = next((s for s in specs_1 if s.name == "Roads (major)"), None)
+    assert major_1 is not None, "Roads (major) layer must be present with strokes=1"
+    count_1 = len(major_1.paths)
+    assert count_1 >= 1, "Baseline must have at least one polyline"
+
+    # Generate with 3 strokes.
+    params_3 = {**base_params, "major_road_strokes": 3}
+    specs_3 = gen.generate_layers(params_3, canvas)
+    major_3 = next((s for s in specs_3 if s.name == "Roads (major)"), None)
+    assert major_3 is not None, "Roads (major) layer must be present with strokes=3"
+    count_3 = len(major_3.paths)
+
+    # Should be approximately 3× the baseline (within 50% tolerance to allow for
+    # clipping effects — offset strokes that extend slightly outside the bbox may
+    # be trimmed, but the count must still increase significantly).
+    ratio = count_3 / count_1
+    assert ratio >= 2.5, (
+        f"Expected ~3× polylines with strokes=3 vs strokes=1, "
+        f"got {count_3} vs {count_1} (ratio={ratio:.2f})"
+    )
+    assert ratio <= 3.5, (
+        f"Expected ~3× polylines with strokes=3 vs strokes=1, "
+        f"got {count_3} vs {count_1} (ratio={ratio:.2f})"
+    )
+
+    # Non-major layers must not be affected by major_road_strokes.
+    minor_1 = next((s for s in specs_1 if s.name == "Roads (minor)"), None)
+    minor_3 = next((s for s in specs_3 if s.name == "Roads (minor)"), None)
+    if minor_1 is not None and minor_3 is not None:
+        assert len(minor_1.paths) == len(minor_3.paths), (
+            "Roads (minor) count must be unaffected by major_road_strokes"
+        )

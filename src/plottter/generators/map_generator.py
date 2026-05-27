@@ -328,6 +328,7 @@ class MapGenerator(Generator):
         area_fill: str = params.get("area_fill", "none")
         fill_spacing_mm: float = params.get("fill_spacing_mm", 2.0)
         fill_angle_deg: float = params.get("fill_angle_deg", 45.0)
+        major_road_strokes: int = max(1, int(params.get("major_road_strokes", 1)))
 
         # Spec §9 draw order: areas first, then lines.
         _AREA_ORDER = [
@@ -535,6 +536,24 @@ class MapGenerator(Generator):
             # Simplify with Douglas–Peucker (skip when tolerance is zero).
             if simplify_mm > 0.0 and clipped:
                 clipped = simplify_paths(clipped, simplify_mm)
+
+            # Major-road multi-stroke emphasis (spec §8).
+            # Thicken roads_major by adding symmetric offset copies on both
+            # sides of the centreline.  offset_paths(sides="both", count=k)
+            # produces original + k left + k right = 1+2k paths per input.
+            # Use max(1, (n-1)//2) so any n>1 always generates extra strokes:
+            #   n=2 → k=1 → 3×   n=3 → k=1 → 3×   n=4 → k=1 → 3×
+            if cat_id == "roads_major" and major_road_strokes > 1 and clipped:
+                from plottter.processing.offset import offset_paths
+
+                clipped = offset_paths(
+                    clipped,
+                    distance_mm=0.5,
+                    sides="both",
+                    count=max(1, (major_road_strokes - 1) // 2),
+                    join_style="round",
+                    include_original=True,
+                )
 
             if not clipped:
                 continue
