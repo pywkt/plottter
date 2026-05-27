@@ -368,7 +368,55 @@ class MapGenerator(Generator):
 
         map_data = params.get("_map_data")
         if map_data is None:
-            return []
+            # CLI convenience (spec §13): when no pre-fetched data is present
+            # but a `location` param is provided, fetch inline so the CLI path
+            # works without a GUI cache-priming step.
+            location: str = str(params.get("location", "")).strip()
+            if not location:
+                return []
+
+            from plottter.osm import fetch_map_data as _fetch_map_data
+
+            _radius_km = float(params.get("radius_km", 1.5))
+            _extent_mode = str(params.get("extent_mode", "radius"))
+            _road_detail = str(params.get("road_detail", "standard"))
+            _endpoint = str(
+                params.get(
+                    "_overpass_endpoint",
+                    "https://overpass-api.de/api/interpreter",
+                )
+            )
+
+            # Derive enabled categories from include_* flags (mirrors
+            # _MapMixin._get_enabled_map_categories in the GUI panel).
+            _enabled_cats: list[str] = []
+            if params.get("include_roads", True):
+                _enabled_cats.append("roads_major")
+                if _road_detail != "major_only":
+                    _enabled_cats.append("roads_minor")
+            if params.get("include_rail", True):
+                _enabled_cats.append("rail")
+            if params.get("include_water", True):
+                _enabled_cats.append("water")
+            if params.get("include_waterways", True):
+                _enabled_cats.append("waterways")
+            if params.get("include_parks", True):
+                _enabled_cats.append("parks")
+            if params.get("include_buildings", False):
+                _enabled_cats.append("buildings")
+            if params.get("include_coastline", True):
+                _enabled_cats.append("coastline")
+
+            map_data = _fetch_map_data(
+                location,
+                radius_km=_radius_km,
+                extent_mode=_extent_mode,
+                enabled_categories=_enabled_cats,
+                road_detail=_road_detail,
+                endpoint=_endpoint,
+                user_agent="Plottter/cli (pen-plotter map art)",
+                progress_callback=progress_callback,
+            )
 
         simplify_mm: float = params.get("simplify_mm", 0.15)
         min_feature_mm: float = params.get("min_feature_mm", 0.8)
