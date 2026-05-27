@@ -245,3 +245,93 @@ def test_assembly():
     assert rings[0][0] == rings[0][-1], "Relation outer ring must be closed"
     assert len(holes) == 1, f"Expected 1 inner hole from relation, got {len(holes)}"
     assert holes[0] == inner_ring, "Inner hole must match the stored inner_coords ring"
+
+
+def test_inverse_mercator_round_trip():
+    """inverse_mercator() is the exact inverse of mercator() to within 1e-9."""
+    from plottter.osm.geometry import inverse_mercator
+
+    test_cases = [
+        (0.0, 0.0),
+        (45.0, 90.0),
+        (-45.0, -90.0),
+        (85.0, 180.0),
+        (-85.0, -180.0),
+        (85.05112877980659, 0.0),   # lat clamp boundary
+        (-85.05112877980659, 0.0),  # lat clamp boundary
+        (33.4489, -112.0741),       # Phoenix
+        (51.5074, -0.1278),         # London
+    ]
+
+    for lat, lon in test_cases:
+        x, y = mercator(lat, lon)
+        lat2, lon2 = inverse_mercator(x, y)
+        # lon round-trips exactly (no clamping on lon)
+        assert abs(lon2 - lon) < 1e-9, (
+            f"lon round-trip failed for ({lat}, {lon}): got {lon2}"
+        )
+        # lat may be clamped by mercator; round-trip from clamped value
+        lat_clamped = max(-85.05112877980659, min(85.05112877980659, lat))
+        assert abs(lat2 - lat_clamped) < 1e-9, (
+            f"lat round-trip failed for ({lat}, {lon}): "
+            f"expected {lat_clamped}, got {lat2}"
+        )
+
+
+def test_view_transform_centre_placement():
+    """view_transform() places the centre lat/lon at the printable-area centre."""
+    from plottter.osm.geometry import view_transform, inverse_mercator
+    from plottter.models.canvas import Canvas
+
+    canvas = Canvas(width_mm=200.0, height_mm=150.0, margin_mm=10.0)
+    left, top, right, bottom = canvas.drawing_area()
+    ccx = (left + right) / 2
+    ccy = (top + bottom) / 2
+
+    center_lat, center_lon = 48.8566, 2.3522  # Paris
+    scale = 50.0  # arbitrary mm per Mercator unit
+
+    transform = view_transform(center_lat, center_lon, scale, canvas)
+
+    # Apply the transform formula to (center_lat, center_lon)
+    mcx, mcy = mercator(center_lat, center_lon)
+    canvas_x = transform.x_origin + mcx * transform.scale
+    canvas_y = transform.y_origin - mcy * transform.scale
+
+    assert abs(canvas_x - ccx) < 1e-9, (
+        f"centre x not at printable-area centre: got {canvas_x}, expected {ccx}"
+    )
+    assert abs(canvas_y - ccy) < 1e-9, (
+        f"centre y not at printable-area centre: got {canvas_y}, expected {ccy}"
+    )
+
+
+def test_view_transform_scale_and_offset():
+    """view_transform() applies scale correctly for a known nearby point."""
+    from plottter.osm.geometry import view_transform
+    from plottter.models.canvas import Canvas
+
+    canvas = Canvas(width_mm=200.0, height_mm=150.0, margin_mm=10.0)
+    left, top, right, bottom = canvas.drawing_area()
+    ccx = (left + right) / 2
+    ccy = (top + bottom) / 2
+
+    center_lat, center_lon = 0.0, 0.0  # equator / prime meridian
+    scale = 100.0
+
+    transform = view_transform(center_lat, center_lon, scale, canvas)
+
+    # A point 1 radian east and 1 radian north in Mercator space should be
+    # offset by exactly (scale, -scale) from the canvas centre (y-flipped).
+    # mercator(lat2, lon2) = (1.0, 1.0) when lon2 = degrees(1) and lat is chosen
+    # such that the Mercator y == 1.  We just use the transform directly.
+    test_mx, test_my = 1.0, 1.0
+    canvas_x = transform.x_origin + test_mx * transform.scale
+    canvas_y = transform.y_origin - test_my * transform.scale
+
+    assert abs(canvas_x - (ccx + scale * 1.0)) < 1e-9, (
+        f"x offset wrong: got {canvas_x}, expected {ccx + scale}"
+    )
+    assert abs(canvas_y - (ccy - scale * 1.0)) < 1e-9, (
+        f"y offset wrong (north up): got {canvas_y}, expected {ccy - scale}"
+    )

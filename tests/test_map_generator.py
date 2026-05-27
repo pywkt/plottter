@@ -914,6 +914,27 @@ def test_major_strokes():
             "Roads (minor) count must be unaffected by major_road_strokes"
         )
 
+    # Regression: every stroke value must yield exactly that many strokes per
+    # road. Previously 2/3/4 all collapsed to 3 (offset_paths sides="both" only
+    # produces odd totals). Counts are exact here because offsetting happens
+    # after clipping and is not re-clipped.
+    def _major_count(n: int) -> int:
+        specs = gen.generate_layers({**base_params, "major_road_strokes": n}, canvas)
+        layer = next((s for s in specs if s.name == "Roads (major)"), None)
+        assert layer is not None, f"Roads (major) must be present with strokes={n}"
+        return len(layer.paths)
+
+    counts = {n: _major_count(n) for n in (1, 2, 3, 4)}
+    for n in (2, 3, 4):
+        assert counts[n] == n * counts[1], (
+            f"strokes={n} should yield {n}× the baseline "
+            f"({n * counts[1]}), got {counts[n]}"
+        )
+    # The previously-broken values must now be distinct from one another.
+    assert counts[2] != counts[3] != counts[4], (
+        f"strokes 2/3/4 must produce different counts, got {counts}"
+    )
+
 
 def test_attribution():
     """Phase 145.3 — Attribution layer present/absent based on include_attribution.

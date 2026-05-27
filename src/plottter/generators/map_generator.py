@@ -714,22 +714,45 @@ class MapGenerator(Generator):
                 clipped = simplify_paths(clipped, simplify_mm)
 
             # Major-road multi-stroke emphasis (spec §8).
-            # Thicken roads_major by adding symmetric offset copies on both
-            # sides of the centreline.  offset_paths(sides="both", count=k)
-            # produces original + k left + k right = 1+2k paths per input.
-            # Use max(1, (n-1)//2) so any n>1 always generates extra strokes:
-            #   n=2 → k=1 → 3×   n=3 → k=1 → 3×   n=4 → k=1 → 3×
+            # Draw exactly `major_road_strokes` parallel passes so major roads
+            # read as bolder lines.  We always keep the original centreline and
+            # add (n-1) offset copies split across both sides, so the total
+            # stroke count per road is exactly `n` for any value in 2..4:
+            #   n=2 → centreline + 1 right            = 2
+            #   n=3 → centreline + 1 left + 1 right    = 3
+            #   n=4 → centreline + 1 left + 2 right    = 4
+            # (offset_paths clamps count to >=1, so we call it per side only
+            # when that side actually needs copies.)
             if cat_id == "roads_major" and major_road_strokes > 1 and clipped:
                 from plottter.processing.offset import offset_paths
 
-                clipped = offset_paths(
-                    clipped,
-                    distance_mm=0.5,
-                    sides="both",
-                    count=max(1, (major_road_strokes - 1) // 2),
-                    join_style="round",
-                    include_original=True,
-                )
+                extra = major_road_strokes - 1
+                left_count = extra // 2
+                right_count = extra - left_count
+                strokes: list[Polyline] = list(clipped)  # centreline always kept
+                if left_count > 0:
+                    strokes.extend(
+                        offset_paths(
+                            clipped,
+                            distance_mm=0.5,
+                            sides="left",
+                            count=left_count,
+                            join_style="round",
+                            include_original=False,
+                        )
+                    )
+                if right_count > 0:
+                    strokes.extend(
+                        offset_paths(
+                            clipped,
+                            distance_mm=0.5,
+                            sides="right",
+                            count=right_count,
+                            join_style="round",
+                            include_original=False,
+                        )
+                    )
+                clipped = strokes
 
             if not clipped:
                 continue

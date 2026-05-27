@@ -30,6 +30,21 @@ def mercator(lat: float, lon: float) -> tuple[float, float]:
 from dataclasses import dataclass
 
 
+def inverse_mercator(x: float, y: float) -> tuple[float, float]:
+    """Inverse of mercator(): (x, y) in radians-units → (lat, lon) in degrees.
+
+    Args:
+        x: Mercator x coordinate (radians), increases eastward.
+        y: Mercator y coordinate (radians), increases northward.
+
+    Returns:
+        (lat, lon) in decimal degrees (WGS84).
+    """
+    lon = math.degrees(x)
+    lat = math.degrees(2 * math.atan(math.exp(y)) - math.pi / 2)
+    return lat, lon
+
+
 @dataclass
 class FitTransform:
     """Affine transform mapping Mercator (x, y) to canvas mm coordinates.
@@ -111,6 +126,34 @@ def fit_transform(features: list, canvas) -> FitTransform:
     x_origin = left + cx - minx * scale
     y_origin = top + cy + maxy * scale
 
+    return FitTransform(scale=scale, x_origin=x_origin, y_origin=y_origin)
+
+
+def view_transform(
+    center_lat: float,
+    center_lon: float,
+    scale: float,
+    canvas,
+) -> FitTransform:
+    """Build a FitTransform placing (center_lat, center_lon) at the centre of canvas.drawing_area().
+
+    Args:
+        center_lat: Latitude of the geographic point to place at the canvas centre.
+        center_lon: Longitude of the geographic point to place at the canvas centre.
+        scale:      mm per Mercator unit (same quantity as FitTransform.scale).
+        canvas:     Canvas dataclass whose drawing_area() returns
+                    (left, top, right, bottom) in mm.
+
+    Returns:
+        A FitTransform that maps the given geographic point to the printable-area
+        centre at the requested scale, with north up (y-flipped).
+    """
+    mcx, mcy = mercator(center_lat, center_lon)
+    left, top, right, bottom = canvas.drawing_area()
+    ccx = (left + right) / 2
+    ccy = (top + bottom) / 2
+    x_origin = ccx - mcx * scale
+    y_origin = ccy + mcy * scale  # y-flipped (north up), matches MG §6.2
     return FitTransform(scale=scale, x_origin=x_origin, y_origin=y_origin)
 
 
