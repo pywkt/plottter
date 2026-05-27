@@ -11,12 +11,16 @@ key is required.
 
 ## The Two-Step Workflow
 
-Map generation is intentionally split into two separate operations:
+Map generation is intentionally split into two separate operations, with an optional
+positioning step in between:
 
 ```
 Type a location → Fetch Map Data  →  (data cached to disk)
                                             │
     Adjust parameters ──────────────────────┤
+                                            │
+                              [Position Map]  ←  optional pan/zoom
+                                            │
                                             ▼
                               Generate  →  Layers on canvas
 ```
@@ -25,13 +29,19 @@ Type a location → Fetch Map Data  →  (data cached to disk)
 `~/.plottter/maps/`. This can take several seconds for large radii or busy Overpass
 servers.
 
-**Step 2 — Generate** is fast and fully offline. It reprojects the cached data,
-applies your current parameter choices (fill style, road detail, which categories are
-on), and emits layers. You can tweak parameters and regenerate as many times as you
-like without any further network requests.
+**Step 1.5 — Position (optional)** lets you pan and zoom interactively to frame the
+exact portion of the downloaded area you want to plot. See
+[Positioning the Map](#positioning-the-map) below.
+
+**Step 2 — Generate** is fast and fully offline. It reprojects the cached data using
+the current pan/zoom position, applies your current parameter choices (fill style, road
+detail, which categories are on), clips to the printable area, and emits layers. You
+can tweak parameters and regenerate as many times as you like without any further
+network requests.
 
 If you close and reopen the project, clicking **Fetch Map Data** again for the same
-location and radius reads from the disk cache rather than hitting the network.
+location and radius reads from the disk cache rather than hitting the network. The
+saved pan/zoom position is restored once the data is loaded.
 
 ---
 
@@ -56,7 +66,54 @@ The status label updates as each phase completes:
 | `Loaded: 1,240 features` | Fetch complete; data is cached and ready |
 | *(red text)* | An error occurred — see the message for details |
 
-Once the status shows a feature count, click **Generate** (`Ctrl+G`) to produce layers.
+Once the status shows a feature count, click **Generate** (`Ctrl+G`) to produce layers,
+or click **Position Map** to frame the area interactively first.
+
+---
+
+## Positioning the Map
+
+After fetching, you can pan and zoom the map preview interactively to frame exactly
+which portion of the downloaded area to plot. This step is optional — if you skip it,
+Generate fits all downloaded features inside the printable area automatically.
+
+### Entering position mode
+
+Click **Position Map** in the Map settings panel. The canvas switches to an interactive
+overlay showing the fetched geometry as faded preview lines. A dashed rectangle marks
+the printable area — everything inside that rectangle is what Generate will output.
+
+To exit position mode without generating, click **Position Map** again to deactivate.
+
+### Pan and zoom
+
+| Action | Effect |
+|--------|--------|
+| **Drag** (left mouse button) | Pan the map |
+| **Scroll wheel** | Zoom in or out; the geographic point under the cursor stays fixed |
+
+Pan and zoom are **bounded by the extent of the fetched data**. You cannot scroll past
+the edge of the downloaded area, and you cannot zoom out past the fit-to-canvas level.
+If you want to reposition beyond the current boundary, increase **Radius (km)** and
+click **Fetch Map Data** again to download a larger area.
+
+### Reset to fit
+
+Click **Reset to fit** to return to the default view where all downloaded features are
+scaled to fill the printable area. Use this to recover from an unusable pan/zoom state.
+
+### How cropping works
+
+The dashed printable-area rectangle is the exact crop boundary used by Generate.
+When you click **Generate**, the map data is reprojected using your current pan/zoom
+position and clipped to the printable area. Features outside the rectangle are
+discarded — the generated layers contain exactly what the preview shows, no more.
+
+### Saving position with the project
+
+The pan/zoom position is stored in the project file automatically as you adjust it.
+When you reopen the project and click **Fetch Map Data** (which reads from the disk
+cache), the saved position is restored and the canvas preview reflects it immediately.
 
 ---
 
@@ -269,6 +326,10 @@ plottter --generator "Map" \
 **Start small.** Use radius 1.5 km or less for your first map to keep fetch and
 generation fast. Increase once you know what the output looks like for your chosen city.
 
+**Position before generating.** Use **Position Map** to zoom into a dense
+neighbourhood or to place a landmark precisely inside the printable area. Pan/zoom
+costs nothing — Generate is fully offline and regenerates from the same cached data.
+
 **Buildings are slow.** Building footprints are the densest category. Enable them only
 when you need the detail, and prefer small radii (≤ 2 km).
 
@@ -303,4 +364,5 @@ text label on top, overlay a math-art pattern as a background, or apply post-pro
   the map is fit-to-canvas.
 - Re-opening a saved project does not restore the map data automatically; clicking
   **Fetch Map Data** again (which reads from the disk cache) is required before
-  regenerating.
+  regenerating. The pan/zoom position **is** saved with the project and is restored
+  automatically once you click Fetch Map Data.
