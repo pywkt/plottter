@@ -237,6 +237,10 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         self._map_preview_polylines: list = []  # decimated polylines in Mercator coords
         self._map_data_bounds: tuple[float, float, float, float] | None = None  # (min_lat, min_lon, max_lat, max_lon)
         self._map_view: dict | None = None  # {center_lat, center_lon, scale}
+        self._map_features: list | None = None  # MapFeature list for clamp_map_view
+        # Map pan drag tracking (mirroring 3D orbit/pan)
+        self._map_pan_drag_start = None   # QPoint where left-drag began
+        self._map_pan_start_merc: tuple[float, float] | None = None  # centre in Mercator at drag start  # {center_lat, center_lon, scale}
 
         # Drag-to-move tool state
         self._drag_move_active: bool = False
@@ -552,6 +556,13 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         from plottter.osm.geometry import mercator
 
         self._map_data_bounds = data_bounds
+
+        # Store flattened feature list for clamp_map_view during interaction.
+        self._map_features = [
+            feature
+            for features in map_data.features.values()
+            for feature in features
+        ]
 
         # Convert all features to Mercator-coord polylines.
         # Include lines and area outlines; skip inner rings (building fills etc.)

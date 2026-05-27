@@ -271,3 +271,308 @@ class TestDrawMapPreview:
         # Should not raise
         canvas_widget.repaint()
         qtbot.waitExposed(canvas_widget)
+
+
+# ---------------------------------------------------------------------------
+# Task 150.2 — mouse pan/zoom interaction tests
+# ---------------------------------------------------------------------------
+
+# Shared helpers for 150.2 tests: create and send Qt input events directly.
+
+
+def _to_qpointf(pos):
+    """Convert QPoint or (x, y) tuple to QPointF."""
+    from PyQt6.QtCore import QPointF
+    if isinstance(pos, tuple):
+        return QPointF(float(pos[0]), float(pos[1]))
+    return QPointF(pos)
+
+
+def _press_event(pos, button=None):
+    """Create a QMouseEvent for a mouse press."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QMouseEvent
+
+    if button is None:
+        button = Qt.MouseButton.LeftButton
+    p = _to_qpointf(pos)
+    return QMouseEvent(
+        QMouseEvent.Type.MouseButtonPress,
+        p,
+        p,
+        button,
+        button,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def _move_event(pos, buttons=None):
+    """Create a QMouseEvent for a mouse move (left button held)."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QMouseEvent
+
+    if buttons is None:
+        buttons = Qt.MouseButton.LeftButton
+    p = _to_qpointf(pos)
+    return QMouseEvent(
+        QMouseEvent.Type.MouseMove,
+        p,
+        p,
+        Qt.MouseButton.NoButton,
+        buttons,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def _release_event(pos, button=None):
+    """Create a QMouseEvent for a mouse release."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QMouseEvent
+
+    if button is None:
+        button = Qt.MouseButton.LeftButton
+    p = _to_qpointf(pos)
+    return QMouseEvent(
+        QMouseEvent.Type.MouseButtonRelease,
+        p,
+        p,
+        button,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def _wheel_event(pos, delta=120):
+    """Create a QWheelEvent for a wheel scroll (positive = zoom in)."""
+    from PyQt6.QtCore import QPoint, Qt
+    from PyQt6.QtGui import QWheelEvent
+
+    p = _to_qpointf(pos)
+    return QWheelEvent(
+        p,
+        p,
+        QPoint(0, delta),
+        QPoint(0, delta),
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+        Qt.ScrollPhase.NoScrollPhase,
+        False,
+    )
+
+
+class TestMapDragPan:
+    """Task 150.2 — left-drag changes center_lat/lon and emits map_view_changed."""
+
+    def _setup(self, canvas_widget):
+        """Put the canvas widget in map-positioning mode with data and a view."""
+        from plottter.osm.geometry import default_map_view
+        map_data = _make_map_data(n_features=5, pts_per_feature=5)
+        canvas_widget.set_map_preview_data(map_data, _default_bounds())
+        canvas_widget.show()
+        canvas_widget._fit_to_window()
+        canvas = canvas_widget._controller.current_project.canvas
+        features = canvas_widget._map_features
+        # Use 2× fit-scale so there is room to pan in both axes
+        base = default_map_view(features, canvas)
+        view = {"center_lat": base["center_lat"], "center_lon": base["center_lon"],
+                "scale": base["scale"] * 2}
+        canvas_widget.update_map_view(view)
+        canvas_widget.set_map_position_active(True)
+        return view
+
+    def test_drag_changes_center_lat_lon(self, canvas_widget, qtbot):
+        """Left drag must change center_lat and/or center_lon."""
+        initial_view = self._setup(canvas_widget)
+        center = canvas_widget.rect().center()
+        end_pos = (center.x() + 60, center.y() + 40)
+
+        canvas_widget.mousePressEvent(_press_event(center))
+        canvas_widget.mouseMoveEvent(_move_event(end_pos))
+        canvas_widget.mouseReleaseEvent(_release_event(end_pos))
+
+        new_view = canvas_widget._map_view
+        assert new_view is not None
+        # At least one of lat or lon must have changed
+        assert (
+            new_view["center_lat"] != initial_view["center_lat"]
+            or new_view["center_lon"] != initial_view["center_lon"]
+        ), "left-drag must change center_lat or center_lon"
+
+    def test_drag_right_decreases_longitude(self, canvas_widget, qtbot):
+        """Dragging right should move the centre west (smaller longitude)."""
+        initial_view = self._setup(canvas_widget)
+        center = canvas_widget.rect().center()
+        # Drag purely horizontal to the right
+        end_pos = (center.x() + 80, center.y())
+
+        canvas_widget.mousePressEvent(_press_event(center))
+        canvas_widget.mouseMoveEvent(_move_event(end_pos))
+        canvas_widget.mouseReleaseEvent(_release_event(end_pos))
+
+        new_view = canvas_widget._map_view
+        assert new_view is not None
+        assert new_view["center_lon"] < initial_view["center_lon"], (
+            "dragging right should decrease center_lon (move west)"
+        )
+
+    def test_drag_emits_map_view_changed(self, canvas_widget, qtbot):
+        """Left drag must emit map_view_changed with (lat, lon, scale)."""
+        self._setup(canvas_widget)
+        center = canvas_widget.rect().center()
+        end_pos = (center.x() + 50, center.y() + 30)
+
+        emitted = []
+        canvas_widget.map_view_changed.connect(lambda lat, lon, scale: emitted.append((lat, lon, scale)))
+
+        canvas_widget.mousePressEvent(_press_event(center))
+        canvas_widget.mouseMoveEvent(_move_event(end_pos))
+        canvas_widget.mouseReleaseEvent(_release_event(end_pos))
+
+        assert len(emitted) > 0, "map_view_changed must be emitted during drag"
+        lat, lon, scale = emitted[-1]
+        assert isinstance(lat, float)
+        assert isinstance(lon, float)
+        assert isinstance(scale, float)
+
+    def test_drag_scale_unchanged(self, canvas_widget, qtbot):
+        """Pan drag must not change the scale."""
+        initial_view = self._setup(canvas_widget)
+        center = canvas_widget.rect().center()
+        end_pos = (center.x() + 40, center.y() + 20)
+
+        canvas_widget.mousePressEvent(_press_event(center))
+        canvas_widget.mouseMoveEvent(_move_event(end_pos))
+        canvas_widget.mouseReleaseEvent(_release_event(end_pos))
+
+        assert canvas_widget._map_view["scale"] == initial_view["scale"], (
+            "pan drag must not change scale"
+        )
+
+    def test_drag_state_cleaned_up_on_release(self, canvas_widget, qtbot):
+        """After mouse release, _map_pan_drag_start must be cleared."""
+        self._setup(canvas_widget)
+        center = canvas_widget.rect().center()
+        end_pos = (center.x() + 30, center.y() + 30)
+
+        canvas_widget.mousePressEvent(_press_event(center))
+        canvas_widget.mouseMoveEvent(_move_event(end_pos))
+        canvas_widget.mouseReleaseEvent(_release_event(end_pos))
+
+        assert canvas_widget._map_pan_drag_start is None
+        assert canvas_widget._map_pan_start_merc is None
+
+    def test_drag_stays_in_clamp_bounds(self, canvas_widget, qtbot):
+        """After an extreme drag, the view must remain within clamp_map_view limits."""
+        from plottter.osm.geometry import clamp_map_view
+
+        self._setup(canvas_widget)
+        center = canvas_widget.rect().center()
+        # Extreme drag — try to move way outside data bounds
+        end_pos = (center.x() + 2000, center.y() + 2000)
+
+        canvas_widget.mousePressEvent(_press_event(center))
+        canvas_widget.mouseMoveEvent(_move_event(end_pos))
+        canvas_widget.mouseReleaseEvent(_release_event(end_pos))
+
+        new_view = canvas_widget._map_view
+        assert new_view is not None
+        # Re-clamp and verify the stored view is already at the clamped position
+        canvas = canvas_widget._controller.current_project.canvas
+        features = canvas_widget._map_features
+        clamped = clamp_map_view(new_view, features, canvas)
+        assert abs(new_view["center_lat"] - clamped["center_lat"]) < 1e-6
+        assert abs(new_view["center_lon"] - clamped["center_lon"]) < 1e-6
+        assert abs(new_view["scale"] - clamped["scale"]) < 1e-6
+
+
+class TestMapWheelZoom:
+    """Task 150.2 — wheel event changes scale and emits map_view_changed."""
+
+    def _setup(self, canvas_widget):
+        from plottter.osm.geometry import default_map_view
+        map_data = _make_map_data(n_features=5, pts_per_feature=5)
+        canvas_widget.set_map_preview_data(map_data, _default_bounds())
+        canvas_widget.show()
+        canvas_widget._fit_to_window()
+        canvas = canvas_widget._controller.current_project.canvas
+        features = canvas_widget._map_features
+        # Use 2× fit-scale so wheel-down has room to decrease before clamping
+        base = default_map_view(features, canvas)
+        view = {"center_lat": base["center_lat"], "center_lon": base["center_lon"],
+                "scale": base["scale"] * 2}
+        canvas_widget.update_map_view(view)
+        canvas_widget.set_map_position_active(True)
+        return view
+
+    def test_wheel_up_increases_scale(self, canvas_widget, qtbot):
+        """Wheel up (zoom in) must increase scale."""
+        initial_view = self._setup(canvas_widget)
+        center = canvas_widget.rect().center()
+        canvas_widget.wheelEvent(_wheel_event(center, delta=120))
+        assert canvas_widget._map_view["scale"] > initial_view["scale"], (
+            "wheel up must increase scale (zoom in)"
+        )
+
+    def test_wheel_down_decreases_or_clamps_scale(self, canvas_widget, qtbot):
+        """Wheel down (zoom out) must decrease scale, or be clamped at fit."""
+        initial_view = self._setup(canvas_widget)
+        # First zoom in so there's room to zoom out
+        center = canvas_widget.rect().center()
+        canvas_widget.wheelEvent(_wheel_event(center, delta=120))
+        zoomed_in_scale = canvas_widget._map_view["scale"]
+
+        canvas_widget.wheelEvent(_wheel_event(center, delta=-120))
+        new_scale = canvas_widget._map_view["scale"]
+        assert new_scale <= zoomed_in_scale, (
+            "wheel down must decrease or clamp scale"
+        )
+
+    def test_wheel_emits_map_view_changed(self, canvas_widget, qtbot):
+        """Wheel event must emit map_view_changed."""
+        self._setup(canvas_widget)
+        center = canvas_widget.rect().center()
+        emitted = []
+        canvas_widget.map_view_changed.connect(
+            lambda lat, lon, scale: emitted.append((lat, lon, scale))
+        )
+        canvas_widget.wheelEvent(_wheel_event(center, delta=120))
+        assert len(emitted) == 1, "wheel event must emit map_view_changed once"
+        lat, lon, scale = emitted[0]
+        assert isinstance(lat, float)
+        assert isinstance(lon, float)
+        assert isinstance(scale, float)
+
+    def test_wheel_does_not_change_map_scale_when_inactive(self, canvas_widget, qtbot):
+        """Wheel must not trigger map zoom when map mode is inactive."""
+        map_data = _make_map_data()
+        view = _default_view()
+        canvas_widget.set_map_preview_data(map_data, _default_bounds())
+        canvas_widget.update_map_view(view)
+        canvas_widget.set_map_position_active(False)
+        canvas_widget.show()
+        canvas_widget._fit_to_window()
+
+        center = canvas_widget.rect().center()
+        canvas_widget.wheelEvent(_wheel_event(center, delta=120))
+        # _map_view should be unchanged (no map zoom applied)
+        assert canvas_widget._map_view["scale"] == view["scale"], (
+            "wheel must not change map scale when map mode is inactive"
+        )
+
+    def test_wheel_scale_stays_at_or_above_fit(self, canvas_widget, qtbot):
+        """Extreme zoom-out must not push scale below the fit-scale floor."""
+        from plottter.osm.geometry import fit_transform
+
+        self._setup(canvas_widget)
+        center = canvas_widget.rect().center()
+        # Apply many zoom-out events
+        for _ in range(30):
+            canvas_widget.wheelEvent(_wheel_event(center, delta=-120))
+
+        new_view = canvas_widget._map_view
+        canvas = canvas_widget._controller.current_project.canvas
+        features = canvas_widget._map_features
+        fit_scale = fit_transform(features, canvas).scale
+        assert new_view["scale"] >= fit_scale - 1e-6, (
+            "scale must not drop below fit scale after extreme zoom-out"
+        )

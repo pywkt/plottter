@@ -29,6 +29,46 @@ class _EventsMixin:
                 )
                 self.update()
             return
+
+        # Map positioning mode: wheel zooms the map about the cursor position.
+        # Modifier-based screen pan (Ctrl/Alt) falls through to the existing paths.
+        if self._map_position_active and self._map_view is not None:
+            modifiers = event.modifiers()
+            if not (modifiers & Qt.KeyboardModifier.ControlModifier) and \
+               not (modifiers & Qt.KeyboardModifier.AltModifier):
+                from plottter.osm.geometry import mercator, inverse_mercator, clamp_map_view
+                angle_delta = event.angleDelta().y()
+                factor = 1.1 if angle_delta > 0 else (1.0 / 1.1)
+                scale = self._map_view["scale"]
+                new_scale = scale * factor
+
+                # Printable-area centre in mm.
+                canvas = self._controller.current_project.canvas
+                left, top, right, bottom = canvas.drawing_area()
+                ccx = (left + right) / 2
+                ccy = (top + bottom) / 2
+
+                # Cursor position in mm (via screen→mm transform).
+                cursor_mm_x, cursor_mm_y = self.pixel_to_mm(event.position())
+
+                # Adjust centre so the geographic point under the cursor is preserved.
+                # Derivation: x_mm = ccx + (px - mcx)*scale → new_mcx keeps cursor fixed.
+                mcx, mcy = mercator(self._map_view["center_lat"], self._map_view["center_lon"])
+                inv = 1.0 / scale - 1.0 / new_scale
+                new_mcx = mcx + (cursor_mm_x - ccx) * inv
+                new_mcy = mcy - (cursor_mm_y - ccy) * inv
+
+                new_lat, new_lon = inverse_mercator(new_mcx, new_mcy)
+                new_view = {"center_lat": new_lat, "center_lon": new_lon, "scale": new_scale}
+                if self._map_features:
+                    new_view = clamp_map_view(new_view, self._map_features, canvas)
+                self._map_view = new_view
+                self.map_view_changed.emit(
+                    new_view["center_lat"], new_view["center_lon"], new_view["scale"]
+                )
+                self.update()
+                return
+
         # Modifier-based pan must be checked BEFORE falling through to zoom.
         # Use angleDelta exclusively — pixelDelta-based heuristics caused
         # simultaneous zoom+pan on mice that emit both deltas per click.
@@ -75,6 +115,18 @@ class _EventsMixin:
                 self.setCursor(Qt.CursorShape.SizeAllCursor)
             elif event.button() == Qt.MouseButton.RightButton:
                 self._show_3d_context_menu(event.pos())
+            return
+
+        # ── Map positioning mode: left drag pans the map ─────────────────
+        if self._map_position_active:
+            if event.button() == Qt.MouseButton.LeftButton and self._map_view is not None:
+                from plottter.osm.geometry import mercator
+                self._map_pan_drag_start = event.pos()
+                mcx, mcy = mercator(
+                    self._map_view["center_lat"], self._map_view["center_lon"]
+                )
+                self._map_pan_start_merc = (mcx, mcy)
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
 
         # AI mask point mode: left = positive point, right = negative point
@@ -217,6 +269,40 @@ class _EventsMixin:
                 self.update()
             return
 
+        # ── Map positioning mode: left-drag pans the map ─────────────────
+        if self._map_position_active:
+            if (
+                self._map_pan_drag_start is not None
+                and self._map_pan_start_merc is not None
+                and self._map_view is not None
+                and event.buttons() & Qt.MouseButton.LeftButton
+            ):
+                from plottter.osm.geometry import inverse_mercator, clamp_map_view
+                delta = event.pos() - self._map_pan_drag_start
+                scale = self._map_view["scale"]
+                # Pixel delta → Mercator delta.
+                # Dragging right → centre moves west (−mcx); dragging down → north (+mcy).
+                # Derivation: view_transform places mcx/mcy at canvas centre (ccx/ccy);
+                # x_mm = ccx + (px − mcx)·scale  →  new_mcx = start_mcx − Δpx/(zoom·scale)
+                # y_mm = ccy − (py − mcy)·scale  →  new_mcy = start_mcy + Δpy/(zoom·scale)
+                dx_merc = -delta.x() / (self._zoom * scale)
+                dy_merc = delta.y() / (self._zoom * scale)
+                new_mcx = self._map_pan_start_merc[0] + dx_merc
+                new_mcy = self._map_pan_start_merc[1] + dy_merc
+                new_lat, new_lon = inverse_mercator(new_mcx, new_mcy)
+                new_view = {"center_lat": new_lat, "center_lon": new_lon, "scale": scale}
+                if self._map_features:
+                    canvas = self._controller.current_project.canvas
+                    new_view = clamp_map_view(new_view, self._map_features, canvas)
+                self._map_view = new_view
+                self.map_view_changed.emit(
+                    new_view["center_lat"], new_view["center_lon"], new_view["scale"]
+                )
+                self.update()
+            x_mm, y_mm = self.pixel_to_mm(QPointF(event.pos()))
+            self.mouse_position_mm.emit(x_mm, y_mm)
+            return
+
         # FMM source pick mode: update live crosshair preview on mouse move
         if self._fmm_source_mode:
             self._fmm_cursor_preview_mm = self.pixel_to_mm(QPointF(event.pos()))
@@ -324,6 +410,15 @@ class _EventsMixin:
             ):
                 self._3d_orbit_drag_start = None
                 self._3d_pan_drag_start = None
+                self.setCursor(Qt.CursorShape.CrossCursor)
+            return
+
+        # ── Map positioning mode: end pan drag ───────────────────────────
+        if self._map_position_active:
+            if event.button() == Qt.MouseButton.LeftButton:
+                if self._map_pan_drag_start is not None:
+                    self._map_pan_drag_start = None
+                    self._map_pan_start_merc = None
                 self.setCursor(Qt.CursorShape.CrossCursor)
             return
 
