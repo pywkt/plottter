@@ -24,6 +24,101 @@ from plottter.models import Canvas
 Polyline = list[tuple[float, float]]
 
 
+
+def _hatch_polygon(
+    polygon: "Any",
+    angle_deg: float,
+    spacing_mm: float,
+) -> "list[Polyline]":
+    """Generate parallel hatch lines clipped to a Shapely polygon.
+
+    Produces lines at *angle_deg* degrees (measured from the x-axis) with
+    *spacing_mm* between adjacent lines.  The polygon may contain holes;
+    ``shapely.intersection`` handles the exclusion of interior holes
+    automatically — no separate clipping step is needed.
+
+    Args:
+        polygon:    A ``shapely.geometry.Polygon`` (possibly with interior
+                    rings / holes).
+        angle_deg:  Hatch angle in degrees from the positive x-axis.
+        spacing_mm: Distance between adjacent hatch lines (mm).
+
+    Returns:
+        List of polylines, each a ``list[tuple[float, float]]`` in mm.
+    """
+    import math
+    from shapely.geometry import LineString, MultiLineString, GeometryCollection
+
+    if spacing_mm <= 0 or polygon.is_empty or polygon.area == 0:
+        return []
+
+    minx, miny, maxx, maxy = polygon.bounds
+    cx = (minx + maxx) / 2.0
+    cy = (miny + maxy) / 2.0
+
+    angle_rad = math.radians(angle_deg)
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+
+    # Half-diagonal — lines extended this far from their centre point are
+    # guaranteed to span the entire bounding box.
+    half_diag = math.hypot(maxx - minx, maxy - miny) / 2.0 + spacing_mm
+
+    # Project bounding-box corners onto the perpendicular axis
+    # (perpendicular unit vector is (-sin_a, cos_a)).
+    corners = [(minx, miny), (maxx, miny), (minx, maxy), (maxx, maxy)]
+    perp_vals = [-(x - cx) * sin_a + (y - cy) * cos_a for x, y in corners]
+    perp_min = min(perp_vals)
+    perp_max = max(perp_vals)
+
+    polylines: list[Polyline] = []
+    perp_pos = perp_min
+    while perp_pos <= perp_max + spacing_mm * 0.5:
+        # Centre of this scan line in canvas mm
+        sx = cx - perp_pos * sin_a
+        sy = cy + perp_pos * cos_a
+
+        # Full scan line in the hatch direction (± half_diag from centre)
+        line = LineString(
+            [
+                (sx - half_diag * cos_a, sy - half_diag * sin_a),
+                (sx + half_diag * cos_a, sy + half_diag * sin_a),
+            ]
+        )
+
+        clipped = polygon.intersection(line)
+
+        if clipped.is_empty:
+            perp_pos += spacing_mm
+            continue
+
+        if isinstance(clipped, LineString):
+            coords = list(clipped.coords)
+            if len(coords) >= 2:
+                polylines.append([(float(x), float(y)) for x, y in coords])
+        elif isinstance(clipped, MultiLineString):
+            for seg in clipped.geoms:
+                coords = list(seg.coords)
+                if len(coords) >= 2:
+                    polylines.append([(float(x), float(y)) for x, y in coords])
+        elif isinstance(clipped, GeometryCollection):
+            for geom in clipped.geoms:
+                if isinstance(geom, LineString) and not geom.is_empty:
+                    coords = list(geom.coords)
+                    if len(coords) >= 2:
+                        polylines.append([(float(x), float(y)) for x, y in coords])
+                elif isinstance(geom, MultiLineString):
+                    for seg in geom.geoms:
+                        coords = list(seg.coords)
+                        if len(coords) >= 2:
+                            polylines.append(
+                                [(float(x), float(y)) for x, y in coords]
+                            )
+
+        perp_pos += spacing_mm
+
+    return polylines
+
 @register_generator
 class MapGenerator(Generator):
     """Multi-layer generator that renders OpenStreetMap data as pen-plotter art."""
@@ -230,6 +325,9 @@ class MapGenerator(Generator):
         simplify_mm: float = params.get("simplify_mm", 0.15)
         min_feature_mm: float = params.get("min_feature_mm", 0.8)
         road_detail: str = params.get("road_detail", "standard")
+        area_fill: str = params.get("area_fill", "none")
+        fill_spacing_mm: float = params.get("fill_spacing_mm", 2.0)
+        fill_angle_deg: float = params.get("fill_angle_deg", 45.0)
 
         # Spec §9 draw order: areas first, then lines.
         _AREA_ORDER = [
@@ -290,8 +388,10 @@ class MapGenerator(Generator):
         specs: list[LayerSpec] = []
 
         # ------------------------------------------------------------------ #
-        # Area categories (water, parks, buildings) — closed polygon outlines.
-        # area_fill="none" → emit the polygon boundary as a closed polyline.
+        # Area categories (water, parks, buildings).
+        # area_fill="none"        → outline only (closed polyline, spec §7).
+        # area_fill="hatch"       → outline + parallel hatch lines.
+        # area_fill="cross_hatch" → outline + two perpendicular hatch sets.
         # ------------------------------------------------------------------ #
         for cat_id, enabled, display_name in area_config:
             if not enabled:
@@ -305,12 +405,20 @@ class MapGenerator(Generator):
             if not features:
                 continue
 
-            # Project each area feature ring to canvas mm and ensure closure.
+            # Project each area feature ring (and its holes) to canvas mm.
+            # raw_rings     — outer rings fed to clip_polygons for outlines.
+            # proj_features — (outer_ring_mm, [hole_rings_mm]) for hatch fill.
             raw_rings: list[list[tuple[float, float]]] = []
+            proj_features: list[
+                tuple[
+                    list[tuple[float, float]],
+                    list[list[tuple[float, float]]],
+                ]
+            ] = []
             for feature in features:
-                rings, _holes = assemble(feature)
+                rings, holes_latlon = assemble(feature)
                 for ring in rings:
-                    # Project (lat, lon) → canvas mm via the shared transform.
+                    # Project outer ring (lat, lon) → canvas mm.
                     proj: list[tuple[float, float]] = []
                     for lat, lon in ring:
                         px, py = mercator(lat, lon)
@@ -320,11 +428,74 @@ class MapGenerator(Generator):
                     # Ensure closure (first == last).
                     if len(proj) >= 2 and proj[0] != proj[-1]:
                         proj = proj + [proj[0]]
-                    if len(proj) >= 3:
-                        raw_rings.append(proj)
+                    if len(proj) < 3:
+                        continue
+                    raw_rings.append(proj)
+                    # Project inner-ring holes so hatch fill correctly omits
+                    # them (shapely.intersection subtracts holes automatically).
+                    proj_holes: list[list[tuple[float, float]]] = []
+                    for hole in holes_latlon:
+                        ph: list[tuple[float, float]] = []
+                        for lat_h, lon_h in hole:
+                            px_h, py_h = mercator(lat_h, lon_h)
+                            cx_h = transform.x_origin + px_h * transform.scale
+                            cy_h = transform.y_origin - py_h * transform.scale
+                            ph.append((cx_h, cy_h))
+                        if len(ph) >= 3:
+                            proj_holes.append(ph)
+                    proj_features.append((proj, proj_holes))
 
-            # Clip to printable area; drop rings below min perimeter.
+            # Clip outlines to the printable area; drop rings below threshold.
             clipped = clip_polygons(raw_rings, bbox_rect, min_feature_mm)
+
+            # Generate hatch fill when requested (spec §7).
+            if area_fill in ("hatch", "cross_hatch") and proj_features:
+                from shapely.geometry import (
+                    GeometryCollection as _GC,
+                    MultiPolygon as _MP,
+                    Polygon as _SP,
+                    box as _shapely_box,
+                )
+
+                clip_box = _shapely_box(left, top, right, bottom)
+                for outer_ring, holes in proj_features:
+                    if len(outer_ring) < 3:
+                        continue
+                    try:
+                        shp = _SP(outer_ring, holes)
+                        if not shp.is_valid:
+                            shp = shp.buffer(0)
+                        clipped_shp = shp.intersection(clip_box)
+                    except Exception:
+                        continue
+                    if clipped_shp.is_empty:
+                        continue
+                    if isinstance(clipped_shp, _SP):
+                        polys = [clipped_shp]
+                    elif isinstance(clipped_shp, _MP):
+                        polys = list(clipped_shp.geoms)
+                    elif isinstance(clipped_shp, _GC):
+                        polys = [
+                            g
+                            for g in clipped_shp.geoms
+                            if isinstance(g, _SP) and not g.is_empty
+                        ]
+                    else:
+                        polys = []
+                    for poly in polys:
+                        if poly.is_empty or poly.area == 0:
+                            continue
+                        clipped.extend(
+                            _hatch_polygon(poly, fill_angle_deg, fill_spacing_mm)
+                        )
+                        if area_fill == "cross_hatch":
+                            clipped.extend(
+                                _hatch_polygon(
+                                    poly,
+                                    (fill_angle_deg + 90.0) % 180.0,
+                                    fill_spacing_mm,
+                                )
+                            )
 
             # Simplify with Douglas–Peucker (skip when tolerance is zero).
             if simplify_mm > 0.0 and clipped:

@@ -521,3 +521,157 @@ def test_area_outlines():
     # ------------------------------------------------------------------ #
     spec_by_name = {s.name: s for s in specs}
     assert spec_by_name["Parks"].color == FEATURE_CATEGORIES["parks"]["color"]
+
+
+def test_hatch_fill():
+    """Phase 144.2 — hatch fill for area polygons.
+
+    Verifies:
+    - With area_fill="hatch", the Parks layer contains more than just outline
+      paths (i.e. hatch lines were appended).
+    - Every interior fill point lies inside the source polygon
+      (shapely containment, tolerance 0.1 mm).
+    - A polygon with a hole: no fill point lies inside the hole.
+    - With area_fill="cross_hatch", two sets of hatch lines are generated.
+    """
+    from shapely.geometry import Point, Polygon as ShapelyPolygon
+
+    from plottter.generators.map_generator import MapGenerator
+    from plottter.osm.types import MapData, MapFeature
+
+    gen = MapGenerator()
+    canvas = make_canvas()
+    left, top, right, bottom = canvas.drawing_area()
+
+    # ------------------------------------------------------------------ #
+    # Build a fixture with a park that has an inner hole (simulating a
+    # multipolygon relation inner ring so we can test hole exclusion).
+    # ------------------------------------------------------------------ #
+    # Outer park polygon — a 0.01° × 0.01° square near Paris.
+    park_outer = [
+        (48.855, 2.340),
+        (48.865, 2.340),
+        (48.865, 2.350),
+        (48.855, 2.350),
+        (48.855, 2.340),
+    ]
+    # Inner hole — a smaller square centred inside the park.
+    hole_ring = [
+        (48.858, 2.343),
+        (48.862, 2.343),
+        (48.862, 2.347),
+        (48.858, 2.347),
+        (48.858, 2.343),
+    ]
+    park_feature = MapFeature(
+        tags={"leisure": "park"},
+        coords=park_outer,
+        is_area=True,
+        inner_coords=[hole_ring],
+    )
+
+    map_data = MapData(
+        location="Paris, France",
+        center=(48.860, 2.345),
+        bbox=(48.850, 2.335, 48.870, 2.360),
+        features={"parks": [park_feature]},
+    )
+
+    base_params = {
+        "_map_data": map_data,
+        "simplify_mm": 0.0,
+        "min_feature_mm": 0.0,
+        "include_roads": False,
+        "include_rail": False,
+        "include_water": False,
+        "include_waterways": False,
+        "include_coastline": False,
+        "include_buildings": False,
+        "include_parks": True,
+        "fill_spacing_mm": 2.0,
+        "fill_angle_deg": 45.0,
+    }
+
+    # ------------------------------------------------------------------ #
+    # 1. area_fill="hatch" → Parks layer present with paths.
+    # ------------------------------------------------------------------ #
+    params_hatch = {**base_params, "area_fill": "hatch"}
+    specs = gen.generate_layers(params_hatch, canvas)
+    assert specs, "generate_layers must return at least one spec"
+    parks_spec = next((s for s in specs if s.name == "Parks"), None)
+    assert parks_spec is not None, "Parks layer must be present"
+    assert parks_spec.paths, "Parks layer must have paths"
+
+    # ------------------------------------------------------------------ #
+    # 2. Every fill-line point lies inside the source polygon.
+    #    We reconstruct the source polygon in canvas mm to check.
+    # ------------------------------------------------------------------ #
+    from plottter.osm.geometry import fit_transform, mercator
+
+    from plottter.osm.types import MapFeature as MF
+
+    # Derive the same fit-transform the generator used.
+    all_feats = [park_feature]
+    transform = fit_transform(all_feats, canvas)
+
+    def project_pt(lat, lon):
+        px, py = mercator(lat, lon)
+        return (
+            transform.x_origin + px * transform.scale,
+            transform.y_origin - py * transform.scale,
+        )
+
+    outer_mm = [project_pt(lat, lon) for lat, lon in park_outer]
+    hole_mm = [project_pt(lat, lon) for lat, lon in hole_ring]
+
+    # Clip the source polygon to the canvas bbox (same as the generator).
+    from shapely.geometry import box as shapely_box
+
+    bbox_shp = shapely_box(left, top, right, bottom)
+    source_poly = ShapelyPolygon(outer_mm, [hole_mm])
+    if not source_poly.is_valid:
+        source_poly = source_poly.buffer(0)
+    source_poly = source_poly.intersection(bbox_shp)
+
+    tol_mm = 0.1  # spec tolerance
+
+    # Collect all non-outline paths from the hatch run.  The outline is the
+    # closed path (first ≈ last); hatch lines are open segments.
+    hatch_paths = [
+        path
+        for path in parks_spec.paths
+        if not (len(path) >= 2 and abs(path[0][0] - path[-1][0]) < 1e-6
+                and abs(path[0][1] - path[-1][1]) < 1e-6)
+    ]
+    assert hatch_paths, "At least one hatch segment must be present"
+
+    for path in hatch_paths:
+        for x, y in path:
+            pt = Point(x, y)
+            assert source_poly.distance(pt) <= tol_mm, (
+                f"Hatch point ({x:.3f}, {y:.3f}) is {source_poly.distance(pt):.4f} mm "
+                f"outside the source polygon (tol={tol_mm} mm)"
+            )
+
+    # ------------------------------------------------------------------ #
+    # 3. No fill point lies inside the hole.
+    # ------------------------------------------------------------------ #
+    hole_poly = ShapelyPolygon(hole_mm)
+    for path in hatch_paths:
+        for x, y in path:
+            pt = Point(x, y)
+            # Allow a tiny tolerance for floating-point edge cases.
+            assert not hole_poly.contains(pt), (
+                f"Hatch point ({x:.3f}, {y:.3f}) lies inside the hole polygon"
+            )
+
+    # ------------------------------------------------------------------ #
+    # 4. area_fill="cross_hatch" → more paths than "hatch" (two directions).
+    # ------------------------------------------------------------------ #
+    params_cross = {**base_params, "area_fill": "cross_hatch"}
+    specs_cross = gen.generate_layers(params_cross, canvas)
+    parks_cross = next((s for s in specs_cross if s.name == "Parks"), None)
+    assert parks_cross is not None
+    assert len(parks_cross.paths) > len(parks_spec.paths), (
+        "cross_hatch must produce more paths than hatch"
+    )
