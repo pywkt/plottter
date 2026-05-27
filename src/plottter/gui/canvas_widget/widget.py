@@ -19,6 +19,69 @@ from ._painting import _PaintingMixin
 from .enums import MaskTool, ShapeDrawTool, _MASK_PX_PER_MM
 
 
+
+def _simplify_polylines(
+    polylines: list[list[tuple[float, float]]],
+    tolerance: float = 1e-5,
+) -> list[list[tuple[float, float]]]:
+    """Apply Douglas-Peucker simplification to a list of Mercator polylines.
+
+    Uses Shapely's ``simplify`` for robustness.  Falls back to the original
+    polyline if Shapely is unavailable or raises.
+
+    Args:
+        polylines:  List of polylines, each a list of (x, y) Mercator pairs.
+        tolerance:  Simplification tolerance in Mercator units.
+
+    Returns:
+        Simplified polylines (same order, never fewer than 2 points each).
+    """
+    result = []
+    for pl in polylines:
+        if len(pl) < 2:
+            continue
+        try:
+            from shapely.geometry import LineString  # type: ignore
+            simp = LineString(pl).simplify(tolerance, preserve_topology=False)
+            coords = list(simp.coords)
+            result.append(coords if len(coords) >= 2 else pl)
+        except Exception:
+            result.append(pl)
+    return result
+
+
+def _cap_polylines(
+    polylines: list[list[tuple[float, float]]],
+    max_points: int,
+) -> list[list[tuple[float, float]]]:
+    """Drop the smallest polylines first until total point count ≤ *max_points*.
+
+    Large features (by point count) are retained preferentially so the
+    most-visible roads/outlines survive the budget cut.
+
+    Args:
+        polylines:  List of polylines (already simplified).
+        max_points: Maximum total number of points to keep.
+
+    Returns:
+        Subset of *polylines* with total points ≤ *max_points*.
+    """
+    total = sum(len(pl) for pl in polylines)
+    if total <= max_points:
+        return polylines
+    # Sort largest first, greedily include until budget is exhausted.
+    sorted_pls = sorted(polylines, key=len, reverse=True)
+    result: list[list[tuple[float, float]]] = []
+    used = 0
+    for pl in sorted_pls:
+        if used + len(pl) <= max_points:
+            result.append(pl)
+            used += len(pl)
+        if used >= max_points:
+            break
+    return result
+
+
 class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin, QWidget):
     """Renders project layers with zoom/pan support."""
 
@@ -58,6 +121,10 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
 
     # Emitted when the user selects "Toggle Projection" from the 3D context menu.
     camera_projection_toggle_requested = pyqtSignal()
+
+    # Emitted when the map view changes during interactive positioning.
+    # Args: (center_lat, center_lon, scale)
+    map_view_changed = pyqtSignal(float, float, float)
 
     # Emitted when the user finishes a drag-to-move operation on the active layer.
     # Args: (dx_mm, dy_mm) — translation applied to all paths in the active layer.
@@ -164,6 +231,12 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # Pan drag tracking
         self._3d_pan_drag_start = None
         self._3d_pan_start_lookat: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+        # Map positioning preview state
+        self._map_position_active: bool = False
+        self._map_preview_polylines: list = []  # decimated polylines in Mercator coords
+        self._map_data_bounds: tuple[float, float, float, float] | None = None  # (min_lat, min_lon, max_lat, max_lon)
+        self._map_view: dict | None = None  # {center_lat, center_lon, scale}
 
         # Drag-to-move tool state
         self._drag_move_active: bool = False
@@ -440,6 +513,73 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         """Store pre-rendered wireframe polylines and repaint when in 3D mode."""
         self._3d_wireframe_polylines = polylines
         if self._3d_preview_active:
+            self.update()
+
+    # ------------------------------------------------------------------
+    # Map positioning preview API
+    # ------------------------------------------------------------------
+
+    def set_map_position_active(self, active: bool) -> None:
+        """Enable or disable map-positioning interactive preview mode.
+
+        When active, the canvas shows a faded vector preview of the fetched
+        map data.  Mouse interactions control the map view:
+          - Left drag  → pan (shift center lat/lon)
+          - Scroll     → zoom (change scale)
+        """
+        self._map_position_active = active
+        if active:
+            self._mask_paint_active = False
+            self._shape_draw_active = False
+            self._3d_preview_active = False
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def set_map_preview_data(
+        self,
+        map_data: object,
+        data_bounds: tuple[float, float, float, float],
+    ) -> None:
+        """Store fetched MapData and extract decimated Mercator preview polylines.
+
+        Args:
+            map_data:    A MapData instance (``map_data.features`` dict).
+            data_bounds: Geographic bounds ``(min_lat, min_lon, max_lat, max_lon)``
+                         used to draw the faint bounds outline and for clamping.
+        """
+        from plottter.osm.geometry import mercator
+
+        self._map_data_bounds = data_bounds
+
+        # Convert all features to Mercator-coord polylines.
+        # Include lines and area outlines; skip inner rings (building fills etc.)
+        raw: list[list[tuple[float, float]]] = []
+        for _category, features in map_data.features.items():
+            for feature in features:
+                if len(feature.coords) < 2:
+                    continue
+                merc_pts = [mercator(lat, lon) for lat, lon in feature.coords]
+                raw.append(merc_pts)
+
+        # Decimate: simplify then cap total point count.
+        MAX_POINTS = 15_000
+        simplified = _simplify_polylines(raw)
+        self._map_preview_polylines = _cap_polylines(simplified, MAX_POINTS)
+
+        if self._map_position_active:
+            self.update()
+
+    def update_map_view(self, view: dict) -> None:
+        """Sync map view state from the settings panel (no signal emission).
+
+        Args:
+            view: ``{center_lat, center_lon, scale}`` dict (same format as the
+                  ``_map_view`` param injected into the generator).
+        """
+        self._map_view = view
+        if self._map_position_active:
             self.update()
 
     # -- Drag-to-move public API --

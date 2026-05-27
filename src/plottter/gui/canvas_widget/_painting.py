@@ -111,6 +111,10 @@ class _PaintingMixin:
                 if self._show_travel:
                     self._draw_travel_lines(painter, project)
 
+        # Map positioning preview overlay (faded lines + data-bounds outline)
+        if self._map_position_active:
+            self._draw_map_preview(painter, canvas)
+
         # AI mask overlays (points and bounding box) — shown whenever prompts exist
         if (
             self._ai_mask_mode is not None
@@ -213,6 +217,84 @@ class _PaintingMixin:
             painter.drawText(
                 QPointF(cx - 80, cy), "Generating wireframe…"
             )
+
+    def _draw_map_preview(self, painter: QPainter, canvas) -> None:  # type: ignore[no-untyped-def]
+        """Draw decimated map preview polylines and data-bounds outline.
+
+        Projects the stored Mercator preview polylines through the current
+        map view transform, then draws them as faded mid-grey lines so the
+        printable-area rectangle reads as the visible crop boundary.
+
+        Also draws a faint dashed rectangle showing the extent of the fetched
+        data, so the user can see pan/zoom limits.
+        """
+        if self._map_view is None:
+            return
+
+        from plottter.osm.geometry import mercator, view_transform
+
+        transform = view_transform(
+            self._map_view["center_lat"],
+            self._map_view["center_lon"],
+            self._map_view["scale"],
+            canvas,
+        )
+
+        # Viewport bounds in mm for culling
+        vp_left, vp_top = self.pixel_to_mm(QPointF(0.0, 0.0))
+        vp_right, vp_bottom = self.pixel_to_mm(
+            QPointF(float(self.width()), float(self.height()))
+        )
+
+        # Faded mid-grey lines for preview polylines
+        line_pen = QPen(QColor(120, 120, 120, 180), max(0.5, self._zoom * 0.2))
+        painter.setPen(line_pen)
+
+        for polyline in self._map_preview_polylines:
+            if len(polyline) < 2:
+                continue
+            # Project Mercator → mm
+            pts_mm = [
+                (
+                    transform.x_origin + mx * transform.scale,
+                    transform.y_origin - my * transform.scale,
+                )
+                for mx, my in polyline
+            ]
+            # Viewport culling (bounding-box check)
+            min_x = min(p[0] for p in pts_mm)
+            max_x = max(p[0] for p in pts_mm)
+            min_y = min(p[1] for p in pts_mm)
+            max_y = max(p[1] for p in pts_mm)
+            if max_x < vp_left or min_x > vp_right or max_y < vp_top or min_y > vp_bottom:
+                continue
+            pts_px = [self.mm_to_pixel(p) for p in pts_mm]
+            for i in range(len(pts_px) - 1):
+                painter.drawLine(pts_px[i], pts_px[i + 1])
+
+        # Dashed outline of the fetched-data bounds
+        if self._map_data_bounds is not None:
+            min_lat, min_lon, max_lat, max_lon = self._map_data_bounds
+            corners_latlon = [
+                (min_lat, min_lon),
+                (min_lat, max_lon),
+                (max_lat, max_lon),
+                (max_lat, min_lon),
+            ]
+            corners_px = []
+            for lat, lon in corners_latlon:
+                mx, my = mercator(lat, lon)
+                x_mm = transform.x_origin + mx * transform.scale
+                y_mm = transform.y_origin - my * transform.scale
+                corners_px.append(self.mm_to_pixel((x_mm, y_mm)))
+
+            bounds_pen = QPen(QColor(80, 140, 200, 160), max(0.5, self._zoom * 0.3))
+            bounds_pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(bounds_pen)
+
+            n = len(corners_px)
+            for i in range(n):
+                painter.drawLine(corners_px[i], corners_px[(i + 1) % n])
 
     def _show_3d_context_menu(self, pos: QPoint) -> None:
         """Show a context menu for 3D preview interactions."""
