@@ -90,6 +90,7 @@ class PreferencesDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self._build_ai_group())
         layout.addWidget(self._build_cache_group())
+        layout.addWidget(self._build_map_group())
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -197,6 +198,32 @@ class PreferencesDialog(QDialog):
 
         return group
 
+    def _build_map_group(self) -> QGroupBox:
+        group = QGroupBox("Map")
+        form = QFormLayout(group)
+
+        self._overpass_endpoint_edit = QLineEdit()
+        self._overpass_endpoint_edit.setPlaceholderText(
+            "https://overpass-api.de/api/interpreter"
+        )
+        self._overpass_endpoint_edit.setToolTip(
+            "Overpass API endpoint used to fetch OpenStreetMap data.\n"
+            "Leave blank to use the default (overpass-api.de).\n"
+            "Switch to a mirror (e.g. overpass.kumi.systems) if you hit rate limits."
+        )
+        form.addRow("Overpass Endpoint:", self._overpass_endpoint_edit)
+
+        note = QLabel(
+            "Leave blank to use the default endpoint. "
+            "Try <tt>https://overpass.kumi.systems/api/interpreter</tt> "
+            "if you receive 429 or 504 errors."
+        )
+        note.setWordWrap(True)
+        note.setTextFormat(Qt.TextFormat.RichText)
+        form.addRow(note)
+
+        return group
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
@@ -207,6 +234,8 @@ class PreferencesDialog(QDialog):
         self._api_key_edit.setText(key)
         cache_dir = _cache_dir_from_settings(settings)
         self._cache_dir_edit.setText(cache_dir)
+        endpoint = settings.value("map/overpass_endpoint", "") or ""
+        self._overpass_endpoint_edit.setText(endpoint)
 
     def _save_settings(self) -> None:
         settings = QSettings("Plottter", "Plottter")
@@ -214,6 +243,8 @@ class PreferencesDialog(QDialog):
         settings.setValue("ai/cache_dir", self._cache_dir_edit.text().strip())
         # Remove old key if present
         settings.remove("ai/depth_cache_dir")
+        endpoint = self._overpass_endpoint_edit.text().strip()
+        settings.setValue("map/overpass_endpoint", endpoint)
 
     # ------------------------------------------------------------------
     # Helpers
