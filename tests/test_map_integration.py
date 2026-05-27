@@ -393,3 +393,168 @@ class TestMapRegenReplaces:
         assert count_after_run2 == count_after_run1, (
             "Layer count must not grow when re-generating from an untagged active layer"
         )
+
+
+# ---------------------------------------------------------------------------
+# Helpers for positioned generate tests (phase 151.3)
+# ---------------------------------------------------------------------------
+
+
+def _make_positioned_fixture():
+    """Parks in NW corner, road in SE corner — spatially separated for positioning tests.
+
+    The two features are in opposite quadrants of the bbox so that a 3× zoom
+    into the NW area makes the SE road fall completely outside the printable
+    area (verified analytically in spec §8, phase 149.4 / 151.3).
+    """
+    from plottter.osm.types import MapData, MapFeature
+
+    # Small closed park polygon in the NW corner of the bbox.
+    park_nw = MapFeature(
+        tags={"leisure": "park"},
+        coords=[
+            (48.870, 2.340),
+            (48.868, 2.340),
+            (48.868, 2.343),
+            (48.870, 2.343),
+            (48.870, 2.340),
+        ],
+        is_area=True,
+    )
+    # Short road segment in the SE corner of the bbox.
+    road_se = MapFeature(
+        tags={"highway": "primary"},
+        coords=[(48.851, 2.372), (48.850, 2.375)],
+        is_area=False,
+    )
+    return MapData(
+        location="test-positioned",
+        center=(48.860, 2.358),
+        bbox=(48.850, 2.340, 48.870, 2.375),
+        features={"parks": [park_nw], "roads_major": [road_se]},
+    )
+
+
+def _poly_length(paths) -> float:
+    """Total Euclidean length (mm) across all polylines in *paths*."""
+    total = 0.0
+    for path in paths:
+        for i in range(1, len(path)):
+            dx = path[i][0] - path[i - 1][0]
+            dy = path[i][1] - path[i - 1][1]
+            total += (dx * dx + dy * dy) ** 0.5
+    return total
+
+
+def _run_generate_direct(map_data, canvas, extra_params=None):
+    """Call MapGenerator.generate_layers() directly (no panel, no Qt thread)."""
+    from plottter.generators.map_generator import MapGenerator
+
+    params = {**_BASE_PARAMS, "_map_data": map_data}
+    if extra_params:
+        params.update(extra_params)
+    return MapGenerator().generate_layers(params, canvas)
+
+
+# ---------------------------------------------------------------------------
+# Tests — phase 151.3
+# ---------------------------------------------------------------------------
+
+
+class TestMapPositionedGenerate:
+    """Phase 151.3 — end-to-end positioned generate with ``_map_view``.
+
+    Spec §8:
+    - With a zoomed/panned ``_map_view``: a feature positioned outside the
+      printable area is absent; surviving features are scaled larger than the
+      fit baseline.
+    - Without ``_map_view``: output matches the fit baseline (both categories
+      present; regression guard).
+    """
+
+    @staticmethod
+    def _canvas():
+        return Canvas.from_preset("A4", margin=10.0)
+
+    @staticmethod
+    def _zoomed_nw_view(map_data, canvas):
+        """Return a ``_map_view`` dict zoomed 3× into the NW corner (park area).
+
+        Analytically verified: at 3× fit_scale centred on (48.870°, 2.340°)
+        the SE road segment (at lon ≈ 2.372°–2.375°) lies beyond the right
+        edge of the viewport after clamp_map_view — it is completely absent
+        from the clipped output.
+        """
+        from plottter.osm.geometry import default_map_view
+
+        all_features = (
+            map_data.features.get("parks", [])
+            + map_data.features.get("roads_major", [])
+        )
+        fit_view = default_map_view(all_features, canvas)
+        return {
+            "center_lat": 48.870,
+            "center_lon": 2.340,
+            "scale": 3.0 * fit_view["scale"],
+        }
+
+    # ------------------------------------------------------------------
+
+    def test_no_view_baseline_has_both_categories(self):
+        """Without ``_map_view`` both Parks and Roads (major) appear (fit baseline)."""
+        canvas = self._canvas()
+        map_data = _make_positioned_fixture()
+
+        specs = _run_generate_direct(map_data, canvas)
+        names = {s.name for s in specs}
+
+        assert "Parks" in names, (
+            f"Fit baseline must include a Parks layer; got {names}"
+        )
+        assert "Roads (major)" in names, (
+            f"Fit baseline must include a Roads (major) layer; got {names}"
+        )
+
+    def test_zoomed_view_drops_distant_feature(self):
+        """With view zoomed into the NW, the SE road is absent from output."""
+        canvas = self._canvas()
+        map_data = _make_positioned_fixture()
+
+        zoomed_view = self._zoomed_nw_view(map_data, canvas)
+        specs = _run_generate_direct(
+            map_data, canvas, extra_params={"_map_view": zoomed_view}
+        )
+        names = {s.name for s in specs}
+
+        assert "Parks" in names, (
+            f"Parks (NW) must survive in zoomed output; got {names}"
+        )
+        assert "Roads (major)" not in names, (
+            f"Roads (major) (SE) must be absent when zoomed into NW; got {names}"
+        )
+
+    def test_zoomed_survivors_scaled_larger_than_fit(self):
+        """Surviving paths are physically larger (mm) at 3× zoom vs fit."""
+        canvas = self._canvas()
+        map_data = _make_positioned_fixture()
+
+        zoomed_view = self._zoomed_nw_view(map_data, canvas)
+
+        fit_specs = _run_generate_direct(map_data, canvas)
+        zoomed_specs = _run_generate_direct(
+            map_data, canvas, extra_params={"_map_view": zoomed_view}
+        )
+
+        fit_parks = next((s for s in fit_specs if s.name == "Parks"), None)
+        zoomed_parks = next((s for s in zoomed_specs if s.name == "Parks"), None)
+
+        assert fit_parks is not None, "Parks must be present in fit baseline output"
+        assert zoomed_parks is not None, "Parks must survive in zoomed output"
+
+        fit_len = _poly_length(fit_parks.paths)
+        zoomed_len = _poly_length(zoomed_parks.paths)
+
+        assert zoomed_len > fit_len, (
+            f"Zoomed Parks paths must be physically larger (mm) than the fit "
+            f"baseline: fit={fit_len:.3f} mm, zoomed={zoomed_len:.3f} mm"
+        )
