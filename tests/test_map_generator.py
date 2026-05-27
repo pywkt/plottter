@@ -326,3 +326,64 @@ def test_line_layers():
         f"'Roads (minor)' should be absent for major_only; got {names_major}"
     )
     assert "Roads (major)" in names_major
+
+
+def test_progress_cancel():
+    """Phase 143.2 — progress callback and cancellation for generate_layers.
+
+    (A) A recording progress_callback receives a final value of 100 for a
+        complete run.
+    (B) A cancelled_callback that returns True after the first category is
+        processed yields fewer layers than the full run, without raising.
+    """
+    from plottter.generators.map_generator import MapGenerator
+
+    gen = MapGenerator()
+    canvas = make_canvas()
+    map_data = _make_line_map_data()
+
+    # Fixture has roads_major, roads_minor, rail — 3 enabled line categories.
+    params = {
+        "_map_data": map_data,
+        "road_detail": "standard",
+        "simplify_mm": 0.0,
+        "min_feature_mm": 0.0,
+        "include_roads": True,
+        "include_rail": True,
+        "include_water": False,
+        "include_waterways": False,
+        "include_coastline": False,
+        "include_parks": False,
+        "include_buildings": False,
+    }
+
+    # ------------------------------------------------------------------ #
+    # (A) Full run: recording progress callback must end at 100.
+    # ------------------------------------------------------------------ #
+    progress_values: list[int] = []
+    full_specs = gen.generate_layers(
+        params, canvas, progress_callback=lambda v: progress_values.append(v)
+    )
+    assert progress_values, "progress_callback was never called"
+    assert progress_values[-1] == 100, (
+        f"Last progress value should be 100, got {progress_values[-1]}"
+    )
+    n_full = len(full_specs)
+    assert n_full > 0, "Expected at least one layer for a full run"
+
+    # ------------------------------------------------------------------ #
+    # (B) Cancel after first category: fewer layers, no exception raised.
+    # ------------------------------------------------------------------ #
+    call_count: list[int] = [0]
+
+    def cancel_after_one() -> bool:
+        call_count[0] += 1
+        return call_count[0] > 1
+
+    cancelled_specs = gen.generate_layers(
+        params, canvas, cancelled_callback=cancel_after_one
+    )
+    assert len(cancelled_specs) < n_full, (
+        f"Cancelled run should produce fewer layers than full run ({n_full}); "
+        f"got {len(cancelled_specs)}"
+    )

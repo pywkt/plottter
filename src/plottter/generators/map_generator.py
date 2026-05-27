@@ -200,6 +200,11 @@ class MapGenerator(Generator):
         Line categories (roads_major, roads_minor, rail, waterways, coastline)
         are emitted in spec §9 draw order (areas are handled in a later phase).
         Returns an empty list when no map data has been fetched yet.
+
+        Progress is reported in two phases:
+          0–40%  — projection / fit-transform setup
+          40–100% — per-category build, distributed evenly
+        Cancellation is checked before each enabled category.
         """
         from plottter.osm.categories import FEATURE_CATEGORIES
         from plottter.osm.geometry import clip_lines, fit_transform, project_feature
@@ -244,10 +249,28 @@ class MapGenerator(Generator):
         left, top, right, bottom = canvas.drawing_area()
         bbox_rect = (left, top, right, bottom)
 
+        # Projection phase complete — report 40%.
+        if progress_callback is not None:
+            progress_callback(40)
+
+        # Pre-count enabled categories that have actual feature data for
+        # distributing the 40–100% range evenly across them.
+        enabled_with_data = sum(
+            1
+            for cat_id, enabled, _ in category_config
+            if enabled and map_data.features.get(cat_id)
+        )
+        n_cats = max(1, enabled_with_data)
+        processed = 0
+
         specs: list[LayerSpec] = []
         for cat_id, enabled, display_name in category_config:
             if not enabled:
                 continue
+
+            # Check for cancellation between categories (spec §9).
+            if cancelled_callback is not None and cancelled_callback():
+                return specs
 
             features = map_data.features.get(cat_id, [])
             if not features:
@@ -269,6 +292,11 @@ class MapGenerator(Generator):
             color = FEATURE_CATEGORIES[cat_id]["color"]
             specs.append(LayerSpec(name=display_name, color=color, paths=clipped))
 
+            processed += 1
+            if progress_callback is not None:
+                progress_callback(40 + int(60 * processed / n_cats))
+
+        # Full run complete — ensure 100 is reported.
         if progress_callback is not None:
             progress_callback(100)
 
