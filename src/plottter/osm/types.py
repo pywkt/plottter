@@ -14,15 +14,18 @@ class MapFeature:
     """A single OSM geometric feature (way or relation member).
 
     Attributes:
-        tags:    OSM key→value tags for this element.
-        coords:  Ordered sequence of (lat, lon) pairs in WGS84 degrees.
-        is_area: True for closed ways / polygons (buildings, parks, water
-                 bodies); False for open lines (roads, rail, waterways).
+        tags:        OSM key→value tags for this element.
+        coords:      Ordered sequence of (lat, lon) pairs in WGS84 degrees.
+        is_area:     True for closed ways / polygons (buildings, parks, water
+                     bodies); False for open lines (roads, rail, waterways).
+        inner_coords: Inner ring coordinate lists for multipolygon relations
+                     (role=inner member ways).  Empty for simple ways.
     """
 
     tags: dict[str, str]
     coords: list[tuple[float, float]]  # (lat, lon), in order
-    is_area: bool  # closed polygon vs open line
+    is_area: bool
+    inner_coords: list[list[tuple[float, float]]] = field(default_factory=list)  # closed polygon vs open line
 
 
 @dataclass
@@ -70,6 +73,10 @@ class MapData:
                         "tags": dict(feat.tags),
                         "coords": [list(c) for c in feat.coords],
                         "is_area": feat.is_area,
+                        "inner_coords": [
+                            [list(c) for c in ring]
+                            for ring in feat.inner_coords
+                        ],
                     }
                     for feat in feats
                 ]
@@ -90,6 +97,10 @@ class MapData:
                         tags=dict(rf["tags"]),
                         coords=[tuple(c) for c in rf["coords"]],
                         is_area=bool(rf["is_area"]),
+                        inner_coords=[
+                            [tuple(c) for c in ring]
+                            for ring in rf.get("inner_coords", [])
+                        ],
                     )
                 )
             features[category] = feats

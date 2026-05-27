@@ -184,3 +184,64 @@ def test_clip():
     assert max(all_xs) <= 100.0 + 1e-9, "Polygon right edge not clipped"
     assert min(all_ys) >= 0.0 - 1e-9, "Polygon top edge not clipped"
     assert max(all_ys) <= 100.0 + 1e-9, "Polygon bottom edge not clipped"
+
+
+def test_assembly():
+    """Verify assemble() per spec §6.4.
+
+    Three invariants are checked:
+
+    1. An open way (is_area=False) stays open — first point != last point.
+    2. A closed way (is_area=True) returns a ring where first == last point.
+    3. A multipolygon relation with an inner ring returns that inner ring in
+       the ``inner_holes`` list.
+    """
+    from plottter.osm.geometry import assemble
+    from plottter.osm.types import MapFeature
+
+    # ── 1. Open way stays open ────────────────────────────────────────────────
+    open_feature = MapFeature(
+        tags={},
+        coords=[(35.0, 135.0), (35.1, 135.1), (35.2, 135.0)],
+        is_area=False,
+    )
+    rings, holes = assemble(open_feature)
+    assert len(rings) == 1, f"Expected 1 polyline from open way, got {len(rings)}"
+    assert rings[0][0] != rings[0][-1], "Open way must NOT be closed (first != last)"
+    assert holes == [], "Open way must produce no inner holes"
+
+    # ── 2. Closed way: first == last ──────────────────────────────────────────
+    # Provide coords that are NOT yet closed; assemble() must close them.
+    closed_feature = MapFeature(
+        tags={"building": "yes"},
+        coords=[(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)],
+        is_area=True,
+    )
+    rings, holes = assemble(closed_feature)
+    assert len(rings) == 1, f"Expected 1 ring from closed way, got {len(rings)}"
+    assert rings[0][0] == rings[0][-1], "Closed way ring must have first == last point"
+    assert holes == [], "Simple closed way must produce no inner holes"
+
+    # Also works when coords are already closed (idempotent).
+    pre_closed = MapFeature(
+        tags={"building": "yes"},
+        coords=[(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)],
+        is_area=True,
+    )
+    rings2, _ = assemble(pre_closed)
+    assert rings2[0][0] == rings2[0][-1], "Pre-closed ring must remain closed"
+
+    # ── 3. Relation with an inner ring → inner_holes ──────────────────────────
+    outer_coords = [(0.0, 0.0), (0.0, 10.0), (10.0, 10.0), (10.0, 0.0)]
+    inner_ring = [(2.0, 2.0), (2.0, 5.0), (5.0, 5.0), (5.0, 2.0), (2.0, 2.0)]
+    relation_feature = MapFeature(
+        tags={"natural": "water"},
+        coords=outer_coords,
+        is_area=True,
+        inner_coords=[inner_ring],
+    )
+    rings, holes = assemble(relation_feature)
+    assert len(rings) == 1, f"Expected 1 outer ring from relation, got {len(rings)}"
+    assert rings[0][0] == rings[0][-1], "Relation outer ring must be closed"
+    assert len(holes) == 1, f"Expected 1 inner hole from relation, got {len(holes)}"
+    assert holes[0] == inner_ring, "Inner hole must match the stored inner_coords ring"

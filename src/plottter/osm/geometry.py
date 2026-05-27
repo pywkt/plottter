@@ -226,3 +226,45 @@ def clip_polygons(
             if g.length >= min_len_mm:
                 result.append(list(g.exterior.coords))
     return result
+
+
+def assemble(
+    feature: "MapFeature",  # type: ignore[name-defined]  # forward ref; imported below
+) -> tuple[list[list[tuple[float, float]]], list[list[tuple[float, float]]]]:
+    """Assemble a MapFeature into geometric rings or polylines per spec §6.4.
+
+    - **Open way** (``is_area=False``): returns a single open polyline; the
+      caller must not close it.
+    - **Closed way / polygon** (``is_area=True``): returns a single closed
+      ring where ``ring[0] == ring[-1]``.  If the stored ``coords`` are not
+      yet closed the first point is appended automatically.
+    - **Relation (multipolygon)**: outer ring is handled identically to a
+      closed way.  Inner-member rings (``role=inner``) stored in
+      ``feature.inner_coords`` are returned as *inner_holes* for fill
+      clipping (§7).
+
+    Args:
+        feature: A :class:`~plottter.osm.types.MapFeature`.
+                 ``feature.coords`` is the (lat, lon) sequence of the outer
+                 ring or open way.  ``feature.inner_coords`` (may be empty)
+                 holds inner rings from multipolygon relation members.
+
+    Returns:
+        ``(rings_or_lines, inner_holes)`` — both are lists of coordinate
+        lists (each coordinate list is a sequence of (lat, lon) tuples).
+        For open ways ``inner_holes`` is always ``[]``.
+    """
+    coords = list(feature.coords)
+
+    if not feature.is_area:
+        # Open way → polyline returned as-is; first != last is expected.
+        return ([coords], [])
+
+    # Closed way or relation outer ring — ensure ring closure.
+    if len(coords) >= 2 and coords[0] != coords[-1]:
+        coords = coords + [coords[0]]
+
+    inner_holes: list[list[tuple[float, float]]] = [
+        list(ring) for ring in feature.inner_coords
+    ]
+    return ([coords], inner_holes)
