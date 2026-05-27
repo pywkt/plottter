@@ -122,3 +122,65 @@ def test_fit_to_canvas():
         f"y-flip wrong: northernmost canvas-y {min(north_ys):.3f} "
         f"should be less than southernmost {max(south_ys):.3f}"
     )
+
+
+def test_clip():
+    """Verify clip_lines() per spec §6.3.
+
+    Three invariants are checked:
+
+    1. A line crossing the bbox edge is trimmed to the boundary.
+    2. A sub-min_len_mm fragment is dropped.
+    3. A multipart intersection yields >1 polyline.
+    """
+    from plottter.osm.geometry import clip_lines, clip_polygons
+
+    # bbox (left, top, right, bottom) in canvas mm
+    bbox = (0.0, 0.0, 100.0, 100.0)
+
+    # ── 1. Line crossing bbox edge is trimmed ─────────────────────────────────
+    # Horizontal line from x=-10 to x=110 at y=50 — crosses both left and right edges.
+    line_crossing = [(-10.0, 50.0), (110.0, 50.0)]
+    result = clip_lines([line_crossing], bbox, min_len_mm=0.0)
+    assert len(result) == 1, f"Expected 1 trimmed segment, got {len(result)}"
+    xs = [p[0] for p in result[0]]
+    assert min(xs) >= 0.0 - 1e-9, f"Left edge not trimmed: min x = {min(xs)}"
+    assert max(xs) <= 100.0 + 1e-9, f"Right edge not trimmed: max x = {max(xs)}"
+
+    # ── 2. Sub-min_len_mm fragment is dropped ─────────────────────────────────
+    # 0.5 mm line well inside the bbox — shorter than min_len_mm=1.0
+    tiny_line = [(50.0, 50.0), (50.5, 50.0)]
+    result = clip_lines([tiny_line], bbox, min_len_mm=1.0)
+    assert len(result) == 0, (
+        f"Expected 0 results (fragment shorter than min_len_mm dropped), got {len(result)}"
+    )
+
+    # ── 3. Multipart intersection yields >1 polyline ──────────────────────────
+    # A polyline that starts inside the bbox, exits through the bottom edge
+    # (y > 100), then re-enters — producing two separate clipped segments.
+    #
+    # Path: (10, 50) → (50, 150) → (90, 50)
+    #   Segment A exits at (30, 100); segment B re-enters at (70, 100).
+    multi_line = [(10.0, 50.0), (50.0, 150.0), (90.0, 50.0)]
+    result = clip_lines([multi_line], bbox, min_len_mm=0.0)
+    assert len(result) > 1, (
+        f"Expected >1 polylines from multipart clip, got {len(result)}"
+    )
+
+    # ── 4. clip_polygons: a polygon extending outside bbox is trimmed ─────────
+    # A large square centred on the bbox — extends 20 mm beyond every edge.
+    large_square = [
+        (-20.0, -20.0),
+        (120.0, -20.0),
+        (120.0, 120.0),
+        (-20.0, 120.0),
+        (-20.0, -20.0),
+    ]
+    result_poly = clip_polygons([large_square], bbox, min_len_mm=0.0)
+    assert len(result_poly) == 1, f"Expected 1 clipped polygon, got {len(result_poly)}"
+    all_xs = [p[0] for p in result_poly[0]]
+    all_ys = [p[1] for p in result_poly[0]]
+    assert min(all_xs) >= 0.0 - 1e-9, "Polygon left edge not clipped"
+    assert max(all_xs) <= 100.0 + 1e-9, "Polygon right edge not clipped"
+    assert min(all_ys) >= 0.0 - 1e-9, "Polygon top edge not clipped"
+    assert max(all_ys) <= 100.0 + 1e-9, "Polygon bottom edge not clipped"

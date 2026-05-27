@@ -131,3 +131,98 @@ def project_feature(feature, transform: FitTransform) -> list[tuple[float, float
         canvas_y = transform.y_origin - py * transform.scale
         result.append((canvas_x, canvas_y))
     return result
+
+
+def clip_lines(
+    polylines: list[list[tuple[float, float]]],
+    bbox_rect_mm: tuple[float, float, float, float],
+    min_len_mm: float,
+) -> list[list[tuple[float, float]]]:
+    """Clip polylines to a bounding box, dropping short fragments.
+
+    Uses shapely ``LineString.intersection(box)`` per spec §6.3.  Multi-part
+    intersection results are split into individual polylines; any segment
+    shorter than *min_len_mm* is discarded.
+
+    Args:
+        polylines:    Each entry is a list of (x_mm, y_mm) canvas coordinates.
+        bbox_rect_mm: (left, top, right, bottom) clipping rectangle in mm.
+        min_len_mm:   Minimum arc length (mm) to keep; shorter fragments are
+                      dropped.
+
+    Returns:
+        Clipped polylines, each as a list of (x_mm, y_mm) tuples.
+    """
+    from shapely.geometry import LineString, MultiLineString, GeometryCollection
+    from shapely.geometry import box as shapely_box
+
+    left, top, right, bottom = bbox_rect_mm
+    clip_box = shapely_box(left, top, right, bottom)
+
+    result: list[list[tuple[float, float]]] = []
+    for coords in polylines:
+        if len(coords) < 2:
+            continue
+        clipped = LineString(coords).intersection(clip_box)
+        if clipped.is_empty:
+            continue
+        if isinstance(clipped, LineString):
+            geoms = [clipped]
+        elif isinstance(clipped, (MultiLineString, GeometryCollection)):
+            geoms = [g for g in clipped.geoms if isinstance(g, LineString)]
+        else:
+            continue
+        for g in geoms:
+            if g.length >= min_len_mm:
+                result.append(list(g.coords))
+    return result
+
+
+def clip_polygons(
+    polylines: list[list[tuple[float, float]]],
+    bbox_rect_mm: tuple[float, float, float, float],
+    min_len_mm: float,
+) -> list[list[tuple[float, float]]]:
+    """Clip polygon outlines to a bounding box, dropping small results.
+
+    Uses shapely ``Polygon.intersection(box)`` per spec §6.3.  Multi-part
+    results are split into individual rings; rings whose perimeter is shorter
+    than *min_len_mm* are discarded.
+
+    Args:
+        polylines:    Each entry is a polygon ring as (x_mm, y_mm) tuples.
+                      The ring may be open or closed (first == last).
+        bbox_rect_mm: (left, top, right, bottom) clipping rectangle in mm.
+        min_len_mm:   Minimum perimeter (mm) to keep; shorter rings are
+                      dropped.
+
+    Returns:
+        Clipped polygon outlines, each as a **closed** list of (x_mm, y_mm)
+        tuples (shapely exterior coords include the repeated closing vertex).
+    """
+    from shapely.geometry import Polygon, MultiPolygon, GeometryCollection
+    from shapely.geometry import box as shapely_box
+
+    left, top, right, bottom = bbox_rect_mm
+    clip_box = shapely_box(left, top, right, bottom)
+
+    result: list[list[tuple[float, float]]] = []
+    for coords in polylines:
+        if len(coords) < 3:
+            continue
+        polygon = Polygon(coords)
+        if not polygon.is_valid:
+            polygon = polygon.buffer(0)
+        clipped = polygon.intersection(clip_box)
+        if clipped.is_empty:
+            continue
+        if isinstance(clipped, Polygon):
+            geoms = [clipped]
+        elif isinstance(clipped, (MultiPolygon, GeometryCollection)):
+            geoms = [g for g in clipped.geoms if isinstance(g, Polygon)]
+        else:
+            continue
+        for g in geoms:
+            if g.length >= min_len_mm:
+                result.append(list(g.exterior.coords))
+    return result
