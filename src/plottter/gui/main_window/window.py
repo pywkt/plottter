@@ -149,6 +149,11 @@ class MainWindow(
         self._act_drag_move.toggled.connect(self._canvas.set_drag_move_active)
         self._canvas.layer_move_finished.connect(self._on_layer_move_finished)
 
+        # Canvas → panel: map view changed (spec §6.2)
+        self._canvas.map_view_changed.connect(
+            self._settings_panel._on_canvas_map_view_changed
+        )
+
         # Wire mask-paint brush controls to canvas
         self._settings_panel.set_canvas(self._canvas)
 

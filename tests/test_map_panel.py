@@ -636,3 +636,85 @@ class TestMapPositioningControls:
             settings_panel._on_reset_to_fit_clicked()
         except Exception as exc:  # noqa: BLE001
             pytest.fail(f"_on_reset_to_fit_clicked raised: {exc!r}")
+
+
+# ---------------------------------------------------------------------------
+# Canvas → panel sync and _map_view param injection — task 151.2
+# ---------------------------------------------------------------------------
+
+
+class TestCanvasMapViewSync:
+    """_on_canvas_map_view_changed updates _map_view; get_params() injects it."""
+
+    def test_canvas_signal_updates_map_view(self, settings_panel):
+        """Calling _on_canvas_map_view_changed stores the view dict."""
+        settings_panel._on_canvas_map_view_changed(35.01, 135.76, 0.5)
+        view = settings_panel._map_view
+        assert view is not None
+        assert view["center_lat"] == pytest.approx(35.01)
+        assert view["center_lon"] == pytest.approx(135.76)
+        assert view["scale"] == pytest.approx(0.5)
+
+    def test_canvas_signal_overwrites_previous_view(self, settings_panel):
+        """A second emission replaces the previous view."""
+        settings_panel._on_canvas_map_view_changed(10.0, 20.0, 1.0)
+        settings_panel._on_canvas_map_view_changed(35.01, 135.76, 2.5)
+        view = settings_panel._map_view
+        assert view["center_lat"] == pytest.approx(35.01)
+        assert view["scale"] == pytest.approx(2.5)
+
+    def test_canvas_signal_persists_to_project_metadata(self, settings_panel, controller):
+        """_on_canvas_map_view_changed writes map_view to project.metadata."""
+        settings_panel._on_canvas_map_view_changed(35.01, 135.76, 0.5)
+        project = controller.current_project
+        assert "map_view" in project.metadata, (
+            "project.metadata should contain 'map_view' after canvas sync"
+        )
+        stored = project.metadata["map_view"]
+        assert stored["center_lat"] == pytest.approx(35.01)
+        assert stored["center_lon"] == pytest.approx(135.76)
+        assert stored["scale"] == pytest.approx(0.5)
+
+    def test_canvas_signal_no_crash_without_controller(self, settings_panel):
+        """Should not raise even if _controller is None."""
+        settings_panel._controller = None
+        try:
+            settings_panel._on_canvas_map_view_changed(1.0, 2.0, 3.0)
+        except Exception as exc:  # noqa: BLE001
+            pytest.fail(f"_on_canvas_map_view_changed raised: {exc!r}")
+        # View should still be stored
+        assert settings_panel._map_view is not None
+
+    # -- get_params() injection --
+
+    def test_get_params_injects_map_view_in_map_mode(self, settings_panel):
+        """get_params() includes _map_view when in Map mode with a view set."""
+        settings_panel._current_mode = "Map"
+        settings_panel._map_view = {"center_lat": 35.0, "center_lon": 135.0, "scale": 1.0}
+        params = settings_panel.get_params()
+        assert "_map_view" in params
+        assert params["_map_view"]["center_lat"] == pytest.approx(35.0)
+        assert params["_map_view"]["center_lon"] == pytest.approx(135.0)
+        assert params["_map_view"]["scale"] == pytest.approx(1.0)
+
+    def test_get_params_map_view_is_a_copy(self, settings_panel):
+        """get_params() returns a copy of _map_view, not the same object."""
+        settings_panel._current_mode = "Map"
+        view = {"center_lat": 35.0, "center_lon": 135.0, "scale": 1.0}
+        settings_panel._map_view = view
+        params = settings_panel.get_params()
+        assert params["_map_view"] is not view
+
+    def test_get_params_omits_map_view_in_non_map_mode(self, settings_panel):
+        """get_params() must NOT inject _map_view outside Map mode."""
+        settings_panel._current_mode = "Math Art"
+        settings_panel._map_view = {"center_lat": 35.0, "center_lon": 135.0, "scale": 1.0}
+        params = settings_panel.get_params()
+        assert "_map_view" not in params
+
+    def test_get_params_omits_map_view_when_none(self, settings_panel):
+        """get_params() must NOT inject _map_view when _map_view is None."""
+        settings_panel._current_mode = "Map"
+        settings_panel._map_view = None
+        params = settings_panel.get_params()
+        assert "_map_view" not in params

@@ -279,3 +279,19 @@ class _MapMixin:
 
         if self._canvas_ref is not None:
             self._canvas_ref.update_map_view(self._map_view)
+
+    # ------------------------------------------------------------------
+    # Canvas → panel sync (spec §6.2)
+    # ------------------------------------------------------------------
+
+    def _on_canvas_map_view_changed(self, lat: float, lon: float, scale: float) -> None:
+        """Store the updated map view emitted by the canvas and persist it."""
+        self._map_view = {"center_lat": lat, "center_lon": lon, "scale": scale}
+        # Persist to project metadata (spec §6.3) — mirrors camera persistence
+        try:
+            if self._controller is not None:
+                project = self._controller.current_project
+                if project is not None:
+                    project.metadata["map_view"] = dict(self._map_view)
+        except Exception:  # noqa: BLE001 — persistence is best-effort
+            pass
