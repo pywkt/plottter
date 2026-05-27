@@ -185,6 +185,56 @@ class _DepthMapWorker(QThread):
             self.error.emit(str(exc))
 
 
+class _MapFetchWorker(QThread):
+    """Fetches OSM map data off the main GUI thread.
+
+    Calls :func:`plottter.osm.fetch_map_data` with the supplied location and
+    fetch parameters, emitting ``finished`` with the resulting
+    :class:`~plottter.osm.MapData` on success or ``error`` with a descriptive
+    message on failure.
+    """
+
+    progress = _pyqtSignal(int)
+    finished = _pyqtSignal(object)  # emits MapData
+    error = _pyqtSignal(str)
+
+    def __init__(
+        self,
+        location: str,
+        radius_km: float,
+        extent_mode: str,
+        selectors: list,
+        endpoint: str,
+        cache_dir: "str | None" = None,
+    ) -> None:
+        super().__init__()  # no parent — prevent Qt parent-child destruction
+        self._location = location
+        self._radius_km = radius_km
+        self._extent_mode = extent_mode
+        self._selectors = selectors
+        self._endpoint = endpoint
+        self._cache_dir = cache_dir
+
+    def run(self) -> None:
+        try:
+            from plottter import __version__
+            from plottter.osm import fetch_map_data
+
+            user_agent = f"Plottter/{__version__} (pen-plotter map art)"
+            map_data = fetch_map_data(
+                self._location,
+                radius_km=self._radius_km,
+                extent_mode=self._extent_mode,
+                enabled_categories=self._selectors,
+                endpoint=self._endpoint,
+                user_agent=user_agent,
+                progress_callback=self.progress.emit,
+            )
+            self.finished.emit(map_data)
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))
+
+
 class _VisibilityTrackedLabel(QLabel):
     """QLabel whose isVisible() returns the intended visibility set via setVisible().
 
