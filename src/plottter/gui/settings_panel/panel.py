@@ -31,6 +31,7 @@ from ._scene3d import _Scene3dMixin
 from ._colorsep import _ColorSepMixin
 from ._snapshot import _SnapshotMixin
 from ._shape_draw import _ShapeDrawMixin
+from ._map import _MapMixin
 
 
 class SettingsPanel(
@@ -45,6 +46,7 @@ class SettingsPanel(
     _ColorSepMixin,
     _SnapshotMixin,
     _ShapeDrawMixin,
+    _MapMixin,
     QScrollArea,
 ):
     """Dynamically builds parameter controls from a generator's get_parameters() list."""
@@ -88,6 +90,10 @@ class SettingsPanel(
         self._original_raw_image: np.ndarray | None = None  # pre-depth-map original
         self._depth_map_cache: dict[str, np.ndarray] = {}  # keyed by image_source_path
         self._depth_map_worker: _DepthMapWorker | None = None
+        # Map mode state (§10.2)
+        self._map_data: object | None = None  # last successful MapData or None
+        self._map_fetch_worker: object | None = None  # active _MapFetchWorker or None
+        self._map_fetch_cache_key: str | None = None  # pending write key
         # Cached user presets for the current generator (refreshed in _rebuild_preset_combo)
         self._user_presets: list = []
 

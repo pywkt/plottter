@@ -384,6 +384,10 @@ class _SnapshotMixin:
         if self._current_mode == "3D Scene":
             result["_camera"] = self._get_camera_dict()
 
+        # Inject fetched map data for Map generators (spec §10.2)
+        if self._current_mode == "Map" and getattr(self, "_map_data", None) is not None:
+            result["_map_data"] = self._map_data
+
         return result
 
     def current_layer_id(self) -> str | None:

@@ -1,0 +1,198 @@
+"""_MapMixin — Map Location group box: location field, extent label, fetch button, status."""
+
+from __future__ import annotations
+
+
+class _MapMixin:
+    """Mixin composed into SettingsPanel for Map-mode location + fetch UI.
+
+    Builds a ``_map_group`` QGroupBox (visible only in Map mode) containing:
+
+    - A ``QLineEdit`` for the location query.
+    - A read-only extent summary label (updates when Fetch is clicked).
+    - A "Fetch Map Data" button that checks the disk cache first, then starts
+      a ``_MapFetchWorker`` if no cached data is available.
+    - A status label reporting Idle / Geocoding… / progress / success / error.
+    """
+
+    def _build_map_group(self) -> None:
+        """Create ``self._map_group`` and add it to ``self._layout``."""
+        from PyQt6.QtWidgets import (
+            QGroupBox,
+            QHBoxLayout,
+            QLabel,
+            QLineEdit,
+            QPushButton,
+            QVBoxLayout,
+        )
+
+        self._map_group = QGroupBox("Map Location")
+        map_layout = QVBoxLayout(self._map_group)
+
+        # Location text field
+        self._map_location_edit = QLineEdit()
+        self._map_location_edit.setPlaceholderText("City, address, or place\u2026")
+        map_layout.addWidget(self._map_location_edit)
+
+        # Extent summary label — updated when Fetch is clicked
+        self._map_extent_label = QLabel("Extent: 1.5\u202fkm radius")
+        self._map_extent_label.setStyleSheet("color: #aaa; font-size: 11px;")
+        map_layout.addWidget(self._map_extent_label)
+
+        # "Fetch Map Data" button
+        fetch_row = QHBoxLayout()
+        self._map_fetch_btn = QPushButton("Fetch Map Data")
+        self._map_fetch_btn.clicked.connect(self._on_fetch_map_clicked)
+        fetch_row.addWidget(self._map_fetch_btn)
+        fetch_row.addStretch()
+        map_layout.addLayout(fetch_row)
+
+        # Status label
+        self._map_status_label = QLabel("Idle")
+        self._map_status_label.setWordWrap(True)
+        map_layout.addWidget(self._map_status_label)
+
+        self._layout.addWidget(self._map_group)
+        self._map_group.setVisible(False)
+
+    # ------------------------------------------------------------------
+    # Fetch button handler
+    # ------------------------------------------------------------------
+
+    def _on_fetch_map_clicked(self) -> None:
+        """Handle 'Fetch Map Data' button: check cache, then start worker."""
+        location = self._map_location_edit.text().strip()
+        if not location:
+            self._map_status_label.setText("Please enter a location.")
+            self._map_status_label.setStyleSheet("color: orange;")
+            return
+
+        # Read current generator params for cache-key derivation and worker args
+        params = self.get_params()
+        radius_km = float(params.get("radius_km", 1.5))
+        extent_mode = str(params.get("extent_mode", "radius"))
+        enabled_cats = self._get_enabled_map_categories(params)
+
+        # Update the extent summary label with the current radius
+        self._map_extent_label.setText(f"Extent: {radius_km:.3g}\u202fkm radius")
+
+        # --- Disk cache check (§11) ---
+        cached = None
+        cache_hit_key: str | None = None
+        try:
+            from plottter.osm.cache import cache_key as _cache_key
+            from plottter.osm.cache import load as _cache_load
+
+            cache_hit_key = _cache_key(location, radius_km, extent_mode, enabled_cats)
+            cached = _cache_load(cache_hit_key)
+        except Exception:  # noqa: BLE001 — cache errors must never surface
+            pass
+
+        if cached is not None:
+            self._map_data = cached
+            n = sum(len(v) for v in cached.features.values())
+            self._map_status_label.setText(f"Loaded: {n:,} features (cached)")
+            self._map_status_label.setStyleSheet("")
+            return
+
+        # --- Start network fetch ---
+        self._map_fetch_btn.setEnabled(False)
+        self._map_status_label.setText("Geocoding\u2026")
+        self._map_status_label.setStyleSheet("")
+        # Remember the key so the finished handler can write to cache
+        self._map_fetch_cache_key = cache_hit_key
+
+        from PyQt6.QtCore import QSettings
+
+        from plottter.gui.settings_panel.workers import _MapFetchWorker
+
+        settings = QSettings("Plottter", "Plottter")
+        endpoint: str = settings.value(
+            "map/overpass_endpoint",
+            "https://overpass-api.de/api/interpreter",
+            type=str,
+        )
+
+        worker = _MapFetchWorker(
+            location=location,
+            radius_km=radius_km,
+            extent_mode=extent_mode,
+            selectors=enabled_cats,
+            endpoint=endpoint,
+        )
+        worker.progress.connect(self._on_map_fetch_progress)
+        worker.finished.connect(self._on_map_fetch_finished)
+        worker.error.connect(self._on_map_fetch_error)
+        self._map_fetch_worker = worker
+        worker.start()
+
+    def _get_enabled_map_categories(self, params: dict) -> list:
+        """Return the list of enabled OSM category IDs from current param values."""
+        cats: list = []
+        if params.get("include_roads", True):
+            cats.append("roads_major")
+            if params.get("road_detail", "standard") != "major_only":
+                cats.append("roads_minor")
+        if params.get("include_rail", True):
+            cats.append("rail")
+        if params.get("include_water", True):
+            cats.append("water")
+        if params.get("include_waterways", True):
+            cats.append("waterways")
+        if params.get("include_parks", True):
+            cats.append("parks")
+        if params.get("include_buildings", False):
+            cats.append("buildings")
+        if params.get("include_coastline", True):
+            cats.append("coastline")
+        return cats
+
+    # ------------------------------------------------------------------
+    # Worker signal handlers
+    # ------------------------------------------------------------------
+
+    def _on_map_fetch_progress(self, pct: int) -> None:
+        """Update status label with download progress."""
+        if pct < 15:
+            self._map_status_label.setText("Geocoding\u2026")
+        else:
+            self._map_status_label.setText(f"Downloading features\u2026 {pct}%")
+
+    def _on_map_fetch_finished(self, map_data: object) -> None:
+        """Store MapData, write disk cache, update project metadata, re-enable button."""
+        self._map_data = map_data
+        self._map_fetch_worker = None
+
+        # Write to disk cache — best-effort, never crash
+        try:
+            key = getattr(self, "_map_fetch_cache_key", None)
+            if key is not None:
+                from plottter.osm.cache import store as _cache_store
+
+                _cache_store(key, map_data)
+        except Exception:  # noqa: BLE001
+            pass
+        self._map_fetch_cache_key = None
+
+        # Persist attribution to project metadata (ODbL requirement §12)
+        try:
+            if self._controller is not None:
+                project = self._controller.current_project
+                if project is not None:
+                    attribution = getattr(map_data, "attribution", "© OpenStreetMap contributors")
+                    project.metadata["map_attribution"] = attribution
+        except Exception:  # noqa: BLE001
+            pass
+
+        n = sum(len(v) for v in map_data.features.values())
+        self._map_status_label.setText(f"Loaded: {n:,} features")
+        self._map_status_label.setStyleSheet("")
+        self._map_fetch_btn.setEnabled(True)
+
+    def _on_map_fetch_error(self, msg: str) -> None:
+        """Show error message in red and re-enable the fetch button."""
+        self._map_fetch_worker = None
+        self._map_fetch_cache_key = None
+        self._map_status_label.setText(f"Error: {msg}")
+        self._map_status_label.setStyleSheet("color: red;")
+        self._map_fetch_btn.setEnabled(True)

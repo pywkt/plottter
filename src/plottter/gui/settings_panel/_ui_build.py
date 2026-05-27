@@ -817,6 +817,9 @@ class _UIBuildMixin:
             _cam_spin.valueChanged.connect(self._on_camera_changed)
         self._cam_projection_combo.currentIndexChanged.connect(self._on_camera_changed)
 
+        # Map Location group (shown only in Map mode)
+        self._build_map_group()
+
         # Preset dropdown
         self._preset_group = QGroupBox("Preset")
         preset_layout = QVBoxLayout(self._preset_group)
