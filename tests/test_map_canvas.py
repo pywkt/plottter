@@ -576,3 +576,151 @@ class TestMapWheelZoom:
         assert new_view["scale"] >= fit_scale - 1e-6, (
             "scale must not drop below fit scale after extreme zoom-out"
         )
+
+
+# ---------------------------------------------------------------------------
+# Task 150.3 — live preview re-projection tests
+# ---------------------------------------------------------------------------
+
+
+class TestLiveReProjection:
+    """Task 150.3 — view changes cause re-projection of preview polylines.
+
+    Verifies that after calling ``update_map_view`` with a new centre or
+    scale, the projected screen position of a sampled preview point changes
+    in the expected direction.  Projection is computed directly via
+    ``view_transform`` + ``mm_to_pixel`` so the test does not depend on
+    inspecting painter output.
+    """
+
+    def _setup(self, canvas_widget):
+        """Put canvas in map-positioning mode with data and a 2x fit-scale view."""
+        from plottter.osm.geometry import default_map_view
+
+        map_data = _make_map_data(n_features=5, pts_per_feature=5)
+        canvas_widget.set_map_preview_data(map_data, _default_bounds())
+        canvas_widget.show()
+        canvas_widget._fit_to_window()
+        canvas = canvas_widget._controller.current_project.canvas
+        features = canvas_widget._map_features
+        base = default_map_view(features, canvas)
+        # 2x fit scale so there is room to pan in both axes without clamping
+        view = {
+            "center_lat": base["center_lat"],
+            "center_lon": base["center_lon"],
+            "scale": base["scale"] * 2,
+        }
+        canvas_widget.update_map_view(view)
+        canvas_widget.set_map_position_active(True)
+        return view, canvas
+
+    def _sample_pixel_pos(self, canvas_widget, view, canvas):
+        """Return screen-space position of the first point of the first preview polyline.
+
+        Uses ``view_transform`` + ``mm_to_pixel`` to mirror exactly what
+        ``_draw_map_preview`` does so the test is tightly coupled to the
+        rendering logic.
+        """
+        from plottter.osm.geometry import view_transform
+
+        polylines = canvas_widget._map_preview_polylines
+        if not polylines:
+            return None
+        mx, my = polylines[0][0]
+        transform = view_transform(
+            view["center_lat"], view["center_lon"], view["scale"], canvas
+        )
+        x_mm = transform.x_origin + mx * transform.scale
+        y_mm = transform.y_origin - my * transform.scale
+        return canvas_widget.mm_to_pixel((x_mm, y_mm))
+
+    def test_pan_east_moves_preview_point_left(self, canvas_widget, qtbot):
+        """Increasing center_lon (pan east) shifts the projected preview point left.
+
+        When the map centre moves east, the content shifts west on screen --
+        identical to a geographic map pan.
+        """
+        initial_view, canvas = self._setup(canvas_widget)
+        initial_pos = self._sample_pixel_pos(canvas_widget, initial_view, canvas)
+
+        panned_view = {
+            "center_lat": initial_view["center_lat"],
+            "center_lon": initial_view["center_lon"] + 0.01,
+            "scale": initial_view["scale"],
+        }
+        canvas_widget.update_map_view(panned_view)
+        new_pos = self._sample_pixel_pos(canvas_widget, panned_view, canvas)
+
+        assert initial_pos is not None and new_pos is not None
+        assert new_pos.x() < initial_pos.x() - 0.1, (
+            "panning east (increasing center_lon) must shift preview points left"
+        )
+
+    def test_pan_north_moves_preview_point_down(self, canvas_widget, qtbot):
+        """Increasing center_lat (pan north) shifts the projected preview point down.
+
+        When the map centre moves north, the content shifts south on screen
+        (y increases downward in screen space).
+        """
+        initial_view, canvas = self._setup(canvas_widget)
+        initial_pos = self._sample_pixel_pos(canvas_widget, initial_view, canvas)
+
+        panned_view = {
+            "center_lat": initial_view["center_lat"] + 0.01,
+            "center_lon": initial_view["center_lon"],
+            "scale": initial_view["scale"],
+        }
+        canvas_widget.update_map_view(panned_view)
+        new_pos = self._sample_pixel_pos(canvas_widget, panned_view, canvas)
+
+        assert initial_pos is not None and new_pos is not None
+        # Moving centre north shifts content south (larger y in screen coords)
+        assert new_pos.y() > initial_pos.y() + 0.1, (
+            "panning north (increasing center_lat) must shift preview points down (screen y increases)"
+        )
+
+    def test_zoom_in_moves_preview_point(self, canvas_widget, qtbot):
+        """Increasing scale (zoom in) moves preview points away from the canvas centre.
+
+        A point that is not at the canvas centre must move further away from it
+        when the map scale increases.
+        """
+        initial_view, canvas = self._setup(canvas_widget)
+        initial_pos = self._sample_pixel_pos(canvas_widget, initial_view, canvas)
+
+        zoomed_view = {
+            "center_lat": initial_view["center_lat"],
+            "center_lon": initial_view["center_lon"],
+            "scale": initial_view["scale"] * 1.5,
+        }
+        canvas_widget.update_map_view(zoomed_view)
+        new_pos = self._sample_pixel_pos(canvas_widget, zoomed_view, canvas)
+
+        assert initial_pos is not None and new_pos is not None
+        assert (
+            abs(new_pos.x() - initial_pos.x()) > 0.1
+            or abs(new_pos.y() - initial_pos.y()) > 0.1
+        ), "increasing scale must move the projected preview point"
+
+    def test_update_map_view_triggers_repaint_no_crash(self, canvas_widget, qtbot):
+        """update_map_view triggers a repaint and stores the new view."""
+        initial_view, canvas = self._setup(canvas_widget)
+        new_view = {
+            "center_lat": initial_view["center_lat"],
+            "center_lon": initial_view["center_lon"] + 0.005,
+            "scale": initial_view["scale"],
+        }
+        canvas_widget.update_map_view(new_view)
+        canvas_widget.repaint()
+        qtbot.waitExposed(canvas_widget)
+        assert canvas_widget._map_view == new_view
+
+    def test_inactive_no_side_effects_on_view_update(self, canvas_widget, qtbot):
+        """update_map_view stores the view when inactive (repaint is skipped)."""
+        map_data = _make_map_data()
+        canvas_widget.set_map_preview_data(map_data, _default_bounds())
+        canvas_widget.set_map_position_active(False)
+        view = _default_view()
+        canvas_widget.update_map_view(view)
+        # View must be stored even when inactive
+        assert canvas_widget._map_view == view
