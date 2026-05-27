@@ -201,6 +201,102 @@ def default_map_view(features: list, canvas) -> dict:
     return {"center_lat": center_lat, "center_lon": center_lon, "scale": ft.scale}
 
 
+def data_bounds(features: list) -> tuple[float, float, float, float]:
+    """Geographic bbox (min_lat, min_lon, max_lat, max_lon) over all feature coords.
+
+    Args:
+        features: Iterable of MapFeature objects (each has .coords as a list
+                  of (lat, lon) pairs in decimal degrees).
+
+    Returns:
+        (min_lat, min_lon, max_lat, max_lon) in decimal degrees.
+
+    Raises:
+        ValueError: If no coordinates are found across all features.
+    """
+    lats: list[float] = []
+    lons: list[float] = []
+    for feature in features:
+        for lat, lon in feature.coords:
+            lats.append(lat)
+            lons.append(lon)
+    if not lats:
+        raise ValueError(
+            "No coordinates found in features; cannot compute data bounds."
+        )
+    return min(lats), min(lons), max(lats), max(lons)
+
+
+def clamp_map_view(view: dict, features: list, canvas) -> dict:
+    """Clamp a view so the printable-area viewport stays within the fetched data
+    extent and scale never drops below fit (no whitespace, no zoom-out past fit).
+
+    Clamp rules (spec §3.4):
+    - scale = max(view["scale"], fit_scale) where fit_scale comes from
+      fit_transform(features, canvas).
+    - The viewport's geographic half-extents at the clamped scale are
+      printable_width / (2 * scale) and printable_height / (2 * scale)
+      in Mercator units.
+    - center_lat/lon are clamped so that the viewport rectangle lies inside
+      the data's Mercator bounding box.
+    - If data is smaller than the viewport in a dimension (only possible on
+      the letterbox axis at fit scale), the centre is placed at the data
+      midpoint in that dimension.
+
+    Args:
+        view:     dict with keys center_lat, center_lon, scale.
+        features: Iterable of MapFeature objects.
+        canvas:   Canvas dataclass whose drawing_area() returns
+                  (left, top, right, bottom) in mm.
+
+    Returns:
+        A new dict with clamped center_lat, center_lon, scale.
+
+    Raises:
+        ValueError: If no coordinates are found across all features.
+    """
+    fit_scale = fit_transform(features, canvas).scale
+    scale = max(view["scale"], fit_scale)
+
+    left, top, right, bottom = canvas.drawing_area()
+    pw = right - left   # printable width in mm
+    ph = bottom - top   # printable height in mm
+
+    half_w = (pw / 2.0) / scale   # viewport half-width in Mercator units
+    half_h = (ph / 2.0) / scale   # viewport half-height in Mercator units
+
+    # Mercator bounding box of the data.
+    xs: list[float] = []
+    ys: list[float] = []
+    for feature in features:
+        for lat, lon in feature.coords:
+            px, py = mercator(lat, lon)
+            xs.append(px)
+            ys.append(py)
+
+    minx, maxx = min(xs), max(xs)
+    miny, maxy = min(ys), max(ys)
+
+    # Current centre in Mercator.
+    mcx, mcy = mercator(view["center_lat"], view["center_lon"])
+
+    # Clamp x: if data span is narrower than viewport width, centre on data;
+    # otherwise push the edges to stay within data bounds.
+    if maxx - minx <= 2.0 * half_w:
+        mcx = (minx + maxx) / 2.0
+    else:
+        mcx = max(minx + half_w, min(maxx - half_w, mcx))
+
+    # Clamp y: same logic (Mercator y increases northward).
+    if maxy - miny <= 2.0 * half_h:
+        mcy = (miny + maxy) / 2.0
+    else:
+        mcy = max(miny + half_h, min(maxy - half_h, mcy))
+
+    center_lat, center_lon = inverse_mercator(mcx, mcy)
+    return {"center_lat": center_lat, "center_lon": center_lon, "scale": scale}
+
+
 def project_feature(feature, transform: FitTransform) -> list[tuple[float, float]]:
     """Project a MapFeature's coordinates to canvas mm using the given transform.
 

@@ -405,3 +405,138 @@ def test_default_map_view_fit_equivalence():
                 f"feature {feat_idx} point {pt_idx}: y mismatch "
                 f"fit={fy:.9f} view={vy:.9f} diff={abs(fy - vy):.2e}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Phase 149.3: data_bounds + clamp_map_view
+# ---------------------------------------------------------------------------
+
+_PARIS_FEATURES_149_3 = None  # populated lazily per test to avoid module-level import
+
+
+def _make_paris_features():
+    from plottter.osm.types import MapFeature
+
+    return [
+        MapFeature(
+            tags={},
+            coords=[
+                (48.85, 2.35),
+                (48.90, 2.40),
+                (48.80, 2.30),
+                (48.95, 2.28),
+            ],
+            is_area=False,
+        ),
+        MapFeature(
+            tags={},
+            coords=[
+                (48.87, 2.36),
+                (48.83, 2.42),
+            ],
+            is_area=False,
+        ),
+    ]
+
+
+def test_data_bounds_fixture():
+    """data_bounds returns correct (min_lat, min_lon, max_lat, max_lon) for a fixture."""
+    from plottter.osm.geometry import data_bounds
+
+    features = _make_paris_features()
+    min_lat, min_lon, max_lat, max_lon = data_bounds(features)
+
+    # All latitudes: 48.85, 48.90, 48.80, 48.95, 48.87, 48.83
+    assert min_lat == pytest.approx(48.80)
+    assert max_lat == pytest.approx(48.95)
+    # All longitudes: 2.35, 2.40, 2.30, 2.28, 2.36, 2.42
+    assert min_lon == pytest.approx(2.28)
+    assert max_lon == pytest.approx(2.42)
+
+
+def test_clamp_map_view_sub_fit_scale_is_raised():
+    """A scale below the fit scale is raised to the fit scale."""
+    from plottter.osm.geometry import clamp_map_view, default_map_view, fit_transform
+    from plottter.models.canvas import Canvas
+
+    features = _make_paris_features()
+    canvas = Canvas(width_mm=200.0, height_mm=150.0, margin_mm=10.0)
+    fit_scale = fit_transform(features, canvas).scale
+
+    # Build a view with scale well below fit.
+    default = default_map_view(features, canvas)
+    low_view = {
+        "center_lat": default["center_lat"],
+        "center_lon": default["center_lon"],
+        "scale": fit_scale * 0.5,   # half the fit scale → must be raised
+    }
+
+    clamped = clamp_map_view(low_view, features, canvas)
+    assert clamped["scale"] == pytest.approx(fit_scale, rel=1e-9)
+
+
+def test_clamp_map_view_centre_outside_bounds_is_pulled_back():
+    """A centre outside the data bbox is pulled back so the viewport ⊆ data."""
+    from plottter.osm.geometry import clamp_map_view, fit_transform, mercator
+    from plottter.models.canvas import Canvas
+
+    features = _make_paris_features()
+    canvas = Canvas(width_mm=200.0, height_mm=150.0, margin_mm=10.0)
+
+    fit_scale = fit_transform(features, canvas).scale
+    # Zoom in 4× so the viewport is well inside the data extent, giving room to pan.
+    scale = fit_scale * 4.0
+
+    # Place the centre far outside the data bbox to the east.
+    bad_view = {
+        "center_lat": 48.87,
+        "center_lon": 100.0,   # far outside the Paris bbox
+        "scale": scale,
+    }
+
+    clamped = clamp_map_view(bad_view, features, canvas)
+
+    # Verify the clamped viewport stays inside the data's Mercator bbox.
+    left, top, right, bottom = canvas.drawing_area()
+    pw = right - left
+    ph = bottom - top
+    half_w = (pw / 2.0) / clamped["scale"]
+    half_h = (ph / 2.0) / clamped["scale"]
+
+    mcx, mcy = mercator(clamped["center_lat"], clamped["center_lon"])
+
+    # Data Mercator bounds from all feature coordinates.
+    xs = [mercator(lat, lon)[0] for f in features for lat, lon in f.coords]
+    ys = [mercator(lat, lon)[1] for f in features for lat, lon in f.coords]
+    data_minx, data_maxx = min(xs), max(xs)
+    data_miny, data_maxy = min(ys), max(ys)
+
+    assert mcx - half_w >= data_minx - 1e-9, (
+        f"viewport left {mcx - half_w:.6f} < data minx {data_minx:.6f}"
+    )
+    assert mcx + half_w <= data_maxx + 1e-9, (
+        f"viewport right {mcx + half_w:.6f} > data maxx {data_maxx:.6f}"
+    )
+    assert mcy - half_h >= data_miny - 1e-9, (
+        f"viewport bottom {mcy - half_h:.6f} < data miny {data_miny:.6f}"
+    )
+    assert mcy + half_h <= data_maxy + 1e-9, (
+        f"viewport top {mcy + half_h:.6f} > data maxy {data_maxy:.6f}"
+    )
+
+
+def test_clamp_map_view_in_bounds_passes_through():
+    """A view already inside bounds with scale >= fit passes through unchanged."""
+    from plottter.osm.geometry import clamp_map_view, default_map_view, fit_transform
+    from plottter.models.canvas import Canvas
+
+    features = _make_paris_features()
+    canvas = Canvas(width_mm=200.0, height_mm=150.0, margin_mm=10.0)
+
+    # default_map_view is centred on data and uses fit_scale — it must pass through.
+    view = default_map_view(features, canvas)
+    clamped = clamp_map_view(view, features, canvas)
+
+    assert clamped["scale"] == pytest.approx(view["scale"], rel=1e-9)
+    assert clamped["center_lat"] == pytest.approx(view["center_lat"], abs=1e-6)
+    assert clamped["center_lon"] == pytest.approx(view["center_lon"], abs=1e-6)
