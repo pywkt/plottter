@@ -74,6 +74,88 @@ _DEFAULT_ENDPOINT = "https://overpass-api.de/api/interpreter"
 # Retry delays in seconds for 429 / 504 responses.
 _RETRY_DELAYS = [2, 8]
 
+# Tag keys whose presence (any value) marks a closed way as an area.
+_AREA_TAG_KEYS = frozenset({"building", "leisure", "landuse", "amenity"})
+
+# Values for the "natural" key that mark a closed way as an area.
+_AREA_NATURAL_VALUES = frozenset({"water", "wood", "scrub", "grassland", "wetland"})
+
+
+def _is_area_way(tags: dict, coords: list) -> bool:
+    """Return True if a way with *tags* and *coords* represents an area polygon."""
+    if len(coords) < 2 or coords[0] != coords[-1]:
+        return False  # not a closed ring
+    for key in _AREA_TAG_KEYS:
+        if key in tags:
+            return True
+    if tags.get("natural") in _AREA_NATURAL_VALUES:
+        return True
+    return False
+
+
+def _parse_elements(elements: list) -> list:
+    """Parse a list of Overpass JSON elements into ``MapFeature`` objects.
+
+    Parameters
+    ----------
+    elements:
+        The ``"elements"`` list from a parsed Overpass JSON response.
+
+    Returns
+    -------
+    list[MapFeature]
+        One ``MapFeature`` per way with geometry and per outer relation member.
+        Elements without a ``geometry`` array are silently skipped.
+    """
+    from .types import MapFeature
+
+    features: list = []
+
+    for elem in elements:
+        elem_type = elem.get("type")
+
+        if elem_type == "way":
+            geometry = elem.get("geometry") or []
+            if not geometry:
+                continue
+            coords = [(g["lat"], g["lon"]) for g in geometry]
+            tags = elem.get("tags") or {}
+            features.append(MapFeature(
+                tags=tags,
+                coords=coords,
+                is_area=_is_area_way(tags, coords),
+            ))
+
+        elif elem_type == "relation":
+            tags = elem.get("tags") or {}
+            members = elem.get("members") or []
+
+            outer_rings: list = []
+            inner_rings: list = []
+
+            for member in members:
+                if member.get("type") != "way":
+                    continue
+                geometry = member.get("geometry") or []
+                if not geometry:
+                    continue
+                coords = [(g["lat"], g["lon"]) for g in geometry]
+                role = member.get("role", "outer")
+                if role == "inner":
+                    inner_rings.append(coords)
+                else:
+                    outer_rings.append(coords)
+
+            for outer_coords in outer_rings:
+                features.append(MapFeature(
+                    tags=tags,
+                    coords=outer_coords,
+                    is_area=True,
+                    inner_coords=inner_rings,
+                ))
+
+    return features
+
 
 def fetch_overpass(
     bbox: tuple[float, float, float, float],
@@ -82,8 +164,8 @@ def fetch_overpass(
     endpoint: str = _DEFAULT_ENDPOINT,
     user_agent: str,
     timeout: int = 90,
-) -> dict:
-    """POST an Overpass QL query and return the parsed JSON response.
+) -> list:
+    """POST an Overpass QL query, parse elements, and return MapFeature list.
 
     Parameters
     ----------
@@ -100,8 +182,8 @@ def fetch_overpass(
 
     Returns
     -------
-    dict
-        Parsed JSON response from the Overpass API.
+    list[MapFeature]
+        Parsed features from the Overpass response elements.
 
     Raises
     ------
@@ -125,7 +207,8 @@ def fetch_overpass(
         try:
             req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=timeout + 10) as resp:
-                return _json.loads(resp.read().decode())
+                data = _json.loads(resp.read().decode())
+            return _parse_elements(data.get("elements", []))
         except urllib.error.HTTPError as exc:
             if exc.code in (429, 504):
                 last_exc = exc

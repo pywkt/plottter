@@ -1,0 +1,76 @@
+{
+  "version": 0.6,
+  "generator": "test fixture",
+  "osm3s": {},
+  "elements": [
+    {
+      "type": "way",
+      "id": 101,
+      "geometry": [
+        {"lat": 35.000, "lon": 135.700},
+        {"lat": 35.001, "lon": 135.701},
+        {"lat": 35.002, "lon": 135.702}
+      ],
+      "tags": {"highway": "primary", "name": "Main Street"}
+    },
+    {
+      "type": "way",
+      "id": 102,
+      "geometry": [
+        {"lat": 35.005, "lon": 135.705},
+        {"lat": 35.006, "lon": 135.706},
+        {"lat": 35.007, "lon": 135.705}
+      ],
+      "tags": {"highway": "residential", "name": "Side Street"}
+    },
+    {
+      "type": "way",
+      "id": 201,
+      "geometry": [
+        {"lat": 35.010, "lon": 135.710},
+        {"lat": 35.015, "lon": 135.710},
+        {"lat": 35.015, "lon": 135.715},
+        {"lat": 35.010, "lon": 135.715},
+        {"lat": 35.010, "lon": 135.710}
+      ],
+      "tags": {"leisure": "park", "name": "Central Park"}
+    },
+    {
+      "type": "relation",
+      "id": 301,
+      "members": [
+        {
+          "type": "way",
+          "ref": 401,
+          "role": "outer",
+          "geometry": [
+            {"lat": 35.020, "lon": 135.720},
+            {"lat": 35.025, "lon": 135.720},
+            {"lat": 35.025, "lon": 135.725},
+            {"lat": 35.020, "lon": 135.725},
+            {"lat": 35.020, "lon": 135.720}
+          ]
+        },
+        {
+          "type": "way",
+          "ref": 402,
+          "role": "inner",
+          "geometry": [
+            {"lat": 35.021, "lon": 135.721},
+            {"lat": 35.024, "lon": 135.721},
+            {"lat": 35.024, "lon": 135.724},
+            {"lat": 35.021, "lon": 135.724},
+            {"lat": 35.021, "lon": 135.721}
+          ]
+        }
+      ],
+      "tags": {"natural": "water", "name": "Lake Example"}
+    },
+    {
+      "type": "way",
+      "id": 501,
+      "geometry": [],
+      "tags": {"highway": "path"}
+    }
+  ]
+}
