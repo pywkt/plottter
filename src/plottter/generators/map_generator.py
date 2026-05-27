@@ -438,11 +438,13 @@ class MapGenerator(Generator):
         from plottter.osm.categories import FEATURE_CATEGORIES
         from plottter.osm.geometry import (
             assemble,
+            clamp_map_view,
             clip_lines,
             clip_polygons,
             fit_transform,
             mercator,
             project_feature,
+            view_transform,
         )
         from plottter.processing.simplify import simplify_paths
 
@@ -544,7 +546,14 @@ class MapGenerator(Generator):
         if not all_features:
             return []
 
-        transform = fit_transform(all_features, canvas)
+        view = params.get("_map_view")
+        if view:
+            view = clamp_map_view(view, all_features, canvas)
+            transform = view_transform(
+                view["center_lat"], view["center_lon"], view["scale"], canvas
+            )
+        else:
+            transform = fit_transform(all_features, canvas)
         left, top, right, bottom = canvas.drawing_area()
         bbox_rect = (left, top, right, bottom)
 

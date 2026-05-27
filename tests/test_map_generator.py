@@ -1133,3 +1133,153 @@ def test_presets():
         assert isinstance(result, list), (
             f"Preset {preset.name!r}: generate_layers() must return a list"
         )
+
+
+def _make_separated_map_data():
+    """MapData with two geographically separated line features.
+
+    Feature A (west): lon ~2.290–2.300, clearly on the western side.
+    Feature B (east): lon ~2.380–2.390, ~0.08° further east.
+
+    With fit_transform both features appear on canvas.  With a view zoomed
+    in 4x centred on the western cluster, the eastern feature falls well
+    outside the printable area and is dropped by clip_lines.
+    """
+    from plottter.osm.types import MapData, MapFeature
+
+    west_feature = MapFeature(
+        tags={"highway": "primary"},
+        coords=[(48.854, 2.290), (48.855, 2.295), (48.856, 2.300)],
+        is_area=False,
+    )
+    east_feature = MapFeature(
+        tags={"highway": "primary"},
+        coords=[(48.854, 2.380), (48.855, 2.385), (48.856, 2.390)],
+        is_area=False,
+    )
+    return MapData(
+        location="Test",
+        center=(48.855, 2.340),
+        bbox=(48.852, 2.288, 48.858, 2.392),
+        features={"roads_major": [west_feature, east_feature]},
+    )
+
+
+def test_generate_layers_with_map_view():
+    """Phase 149.4 — generate_layers honors _map_view.
+
+    Verifies:
+    - Without _map_view, output is identical across two calls (regression guard).
+    - Fit result includes both separated features (2 polylines).
+    - Zoomed-in _map_view centred on the western cluster drops the eastern
+      feature (fewer polylines).
+    - The surviving western feature is rendered at a larger mm scale in the
+      zoomed view than in the fit view.
+    - All zoomed-view output coords are within canvas.drawing_area() (±0.01 mm).
+    """
+    from plottter.generators.map_generator import MapGenerator
+    from plottter.osm.geometry import fit_transform
+
+    gen = MapGenerator()
+    canvas = make_canvas()
+    map_data = _make_separated_map_data()
+
+    base_params = {
+        "_map_data": map_data,
+        "simplify_mm": 0.0,
+        "min_feature_mm": 0.0,
+        "include_water": False,
+        "include_parks": False,
+        "include_buildings": False,
+        "include_waterways": False,
+        "include_rail": False,
+        "include_coastline": False,
+        "include_roads": True,
+        "include_attribution": False,
+    }
+
+    # ------------------------------------------------------------------ #
+    # 1. Regression guard: no _map_view → identical output across two runs #
+    # ------------------------------------------------------------------ #
+    specs_fit1 = gen.generate_layers(base_params, canvas)
+    specs_fit2 = gen.generate_layers(base_params, canvas)
+
+    assert len(specs_fit1) == len(specs_fit2), (
+        "Repeated fit calls must yield same number of LayerSpecs"
+    )
+    for s1, s2 in zip(specs_fit1, specs_fit2):
+        assert len(s1.paths) == len(s2.paths), (
+            "Polyline counts must be stable across repeated fit calls"
+        )
+        for p1, p2 in zip(s1.paths, s2.paths):
+            assert len(p1) == len(p2), "Point counts must be identical"
+            for (x1, y1), (x2, y2) in zip(p1, p2):
+                assert abs(x1 - x2) < 1e-9 and abs(y1 - y2) < 1e-9, (
+                    "Coordinates must be bit-identical across repeated fit calls"
+                )
+
+    # Fit result: both west and east features appear as separate polylines.
+    fit_paths = [p for s in specs_fit1 for p in s.paths]
+    fit_polyline_count = len(fit_paths)
+    assert fit_polyline_count == 2, (
+        f"Fit view should yield exactly 2 polylines (one per feature); "
+        f"got {fit_polyline_count}"
+    )
+
+    # ------------------------------------------------------------------ #
+    # 2. Zoomed-in _map_view → eastern feature dropped                   #
+    # ------------------------------------------------------------------ #
+    all_features = map_data.features["roads_major"]
+    ft = fit_transform(all_features, canvas)
+
+    # 4x zoom centred on the western cluster (lon ~2.295).
+    zoomed_view = {
+        "center_lat": 48.855,
+        "center_lon": 2.295,
+        "scale": 4.0 * ft.scale,
+    }
+    specs_zoomed = gen.generate_layers({**base_params, "_map_view": zoomed_view}, canvas)
+    zoomed_paths = [p for s in specs_zoomed for p in s.paths]
+    zoomed_polyline_count = len(zoomed_paths)
+
+    assert zoomed_polyline_count < fit_polyline_count, (
+        f"Zoomed-in view should drop the eastern feature "
+        f"(got {zoomed_polyline_count} polylines vs {fit_polyline_count} for fit)"
+    )
+    assert zoomed_polyline_count >= 1, (
+        "At least one polyline (western feature) must survive the zoomed view"
+    )
+
+    # ------------------------------------------------------------------ #
+    # 3. Survivors are rendered at a larger mm scale                      #
+    # ------------------------------------------------------------------ #
+    # Identify the western (smaller x-coordinate) path in the fit view, then
+    # compare its x-span to the surviving path in the zoomed view.
+    fit_paths_by_x = sorted(fit_paths, key=lambda p: min(x for x, y in p))
+    west_fit_xspan = (
+        max(x for x, y in fit_paths_by_x[0])
+        - min(x for x, y in fit_paths_by_x[0])
+    )
+    zoom_xspan = (
+        max(x for x, y in zoomed_paths[0])
+        - min(x for x, y in zoomed_paths[0])
+    )
+    assert zoom_xspan > west_fit_xspan, (
+        f"Zoomed surviving path x-span ({zoom_xspan:.2f} mm) must exceed "
+        f"fit western-feature x-span ({west_fit_xspan:.2f} mm) at 4x zoom"
+    )
+
+    # ------------------------------------------------------------------ #
+    # 4. All zoomed output coords lie within drawing_area() (±0.01 mm)   #
+    # ------------------------------------------------------------------ #
+    left, top, right, bottom = canvas.drawing_area()
+    tol = 0.01
+    for spec in specs_zoomed:
+        for path in spec.paths:
+            for x, y in path:
+                assert left - tol <= x <= right + tol, (
+                    f"x={x:.3f} outside [{left:.3f}, {right:.3f}]"
+                )
+                assert top - tol <= y <= bottom + tol, (
+                    f"y={y:.3f} outside [{top:.3f}, {bottom:.3f}]"
+                )
