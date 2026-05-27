@@ -450,3 +450,189 @@ class TestGetParamsInjection:
         settings_panel._current_mode = "Map"
         params = settings_panel.get_params()
         assert "_map_data" not in params
+
+
+# ---------------------------------------------------------------------------
+# Positioning controls — task 151.1
+# ---------------------------------------------------------------------------
+
+
+class TestMapPositioningControls:
+    """'Position Map' and 'Reset to fit' button existence, enable/disable, and behaviour."""
+
+    # -- widget existence --
+
+    def test_position_map_btn_exists(self, settings_panel):
+        assert hasattr(settings_panel, "_map_position_btn"), (
+            "_map_position_btn must be created by _build_map_group"
+        )
+
+    def test_reset_to_fit_btn_exists(self, settings_panel):
+        assert hasattr(settings_panel, "_map_reset_btn"), (
+            "_map_reset_btn must be created by _build_map_group"
+        )
+
+    def test_position_map_btn_is_checkable(self, settings_panel):
+        assert settings_panel._map_position_btn.isCheckable()
+
+    # -- disabled before data loaded --
+
+    def test_position_map_btn_disabled_before_fetch(self, settings_panel):
+        settings_panel._map_data = None
+        assert not settings_panel._map_position_btn.isEnabled(), (
+            "Position Map must be disabled when no map data is loaded"
+        )
+
+    def test_reset_to_fit_btn_disabled_before_fetch(self, settings_panel):
+        settings_panel._map_data = None
+        assert not settings_panel._map_reset_btn.isEnabled(), (
+            "Reset to fit must be disabled when no map data is loaded"
+        )
+
+    # -- enabled after data loaded via _on_map_fetch_finished --
+
+    def test_positioning_buttons_enabled_after_fetch_finished(self, settings_panel):
+        fake = _make_fake_map_data()
+        settings_panel._on_map_fetch_finished(fake)
+        assert settings_panel._map_position_btn.isEnabled(), (
+            "Position Map must be enabled after _on_map_fetch_finished"
+        )
+        assert settings_panel._map_reset_btn.isEnabled(), (
+            "Reset to fit must be enabled after _on_map_fetch_finished"
+        )
+
+    def test_map_view_initialised_after_fetch_finished(self, settings_panel):
+        fake = _make_fake_map_data()
+        settings_panel._on_map_fetch_finished(fake)
+        assert settings_panel._map_view is not None, (
+            "_map_view must be set after _on_map_fetch_finished"
+        )
+        view = settings_panel._map_view
+        assert "center_lat" in view
+        assert "center_lon" in view
+        assert "scale" in view
+
+    # -- enabled after cache-hit path --
+
+    def test_positioning_buttons_enabled_after_cache_hit(self, settings_panel):
+        fake = _make_fake_map_data()
+        settings_panel._map_location_edit.setText("Kyoto, Japan")
+
+        with (
+            patch("plottter.osm.cache.cache_key", return_value="abc123"),
+            patch("plottter.osm.cache.load", return_value=fake),
+        ):
+            settings_panel._on_fetch_map_clicked()
+
+        assert settings_panel._map_position_btn.isEnabled()
+        assert settings_panel._map_reset_btn.isEnabled()
+
+    # -- "Position Map" toggling canvas mode --
+
+    def test_position_map_calls_set_map_position_active(self, settings_panel):
+        from unittest.mock import MagicMock
+
+        fake = _make_fake_map_data()
+        settings_panel._on_map_fetch_finished(fake)
+
+        mock_canvas = MagicMock()
+        settings_panel._canvas_ref = mock_canvas
+
+        settings_panel._map_position_btn.setChecked(True)
+
+        mock_canvas.set_map_position_active.assert_called_with(True)
+
+    def test_position_map_pushes_preview_data(self, settings_panel):
+        from unittest.mock import MagicMock
+
+        fake = _make_fake_map_data()
+        settings_panel._on_map_fetch_finished(fake)
+
+        mock_canvas = MagicMock()
+        settings_panel._canvas_ref = mock_canvas
+
+        settings_panel._map_position_btn.setChecked(True)
+
+        mock_canvas.set_map_preview_data.assert_called_once()
+        # First positional arg should be the MapData
+        args, _ = mock_canvas.set_map_preview_data.call_args
+        assert args[0] is fake
+
+    def test_position_map_pushes_current_view(self, settings_panel):
+        from unittest.mock import MagicMock
+
+        fake = _make_fake_map_data()
+        settings_panel._on_map_fetch_finished(fake)
+        assert settings_panel._map_view is not None
+
+        mock_canvas = MagicMock()
+        settings_panel._canvas_ref = mock_canvas
+
+        settings_panel._map_position_btn.setChecked(True)
+
+        mock_canvas.update_map_view.assert_called_once_with(settings_panel._map_view)
+
+    def test_position_map_unchecked_deactivates_canvas(self, settings_panel):
+        from unittest.mock import MagicMock
+
+        fake = _make_fake_map_data()
+        settings_panel._on_map_fetch_finished(fake)
+
+        mock_canvas = MagicMock()
+        settings_panel._canvas_ref = mock_canvas
+
+        settings_panel._map_position_btn.setChecked(True)
+        settings_panel._map_position_btn.setChecked(False)
+
+        # Last call should be False
+        last_call = mock_canvas.set_map_position_active.call_args
+        assert last_call[0][0] is False
+
+    # -- "Reset to fit" restores default view --
+
+    def test_reset_to_fit_updates_map_view(self, settings_panel):
+        from unittest.mock import MagicMock
+
+        fake = _make_fake_map_data()
+        settings_panel._on_map_fetch_finished(fake)
+
+        # Overwrite _map_view with a bogus value
+        settings_panel._map_view = {"center_lat": 0.0, "center_lon": 0.0, "scale": 0.001}
+
+        mock_canvas = MagicMock()
+        settings_panel._canvas_ref = mock_canvas
+
+        settings_panel._on_reset_to_fit_clicked()
+
+        # Should have called update_map_view with the recomputed default view
+        mock_canvas.update_map_view.assert_called_once()
+        restored_view = mock_canvas.update_map_view.call_args[0][0]
+        assert "center_lat" in restored_view
+        assert "center_lon" in restored_view
+        assert "scale" in restored_view
+        # Scale should not be 0.001 (bogus value was replaced)
+        assert restored_view["scale"] != 0.001
+
+    def test_reset_to_fit_stores_new_view(self, settings_panel):
+        fake = _make_fake_map_data()
+        settings_panel._on_map_fetch_finished(fake)
+
+        original_view = dict(settings_panel._map_view)
+        # Corrupt the view
+        settings_panel._map_view = {"center_lat": 99.0, "center_lon": 99.0, "scale": 0.001}
+
+        settings_panel._on_reset_to_fit_clicked()
+
+        # _map_view should be restored close to original
+        assert settings_panel._map_view is not None
+        assert abs(settings_panel._map_view["scale"] - original_view["scale"]) < 1e-6
+
+    def test_reset_to_fit_no_crash_without_canvas(self, settings_panel):
+        """Clicking Reset to fit without a canvas_ref should not raise."""
+        fake = _make_fake_map_data()
+        settings_panel._on_map_fetch_finished(fake)
+        settings_panel._canvas_ref = None
+        try:
+            settings_panel._on_reset_to_fit_clicked()
+        except Exception as exc:  # noqa: BLE001
+            pytest.fail(f"_on_reset_to_fit_clicked raised: {exc!r}")

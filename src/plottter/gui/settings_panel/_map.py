@@ -26,6 +26,9 @@ class _MapMixin:
             QVBoxLayout,
         )
 
+        # Map-view state (spec §6.1) — initialised to None; set when data arrives.
+        self._map_view: dict | None = None
+
         self._map_group = QGroupBox("Map Location")
         map_layout = QVBoxLayout(self._map_group)
 
@@ -51,6 +54,20 @@ class _MapMixin:
         self._map_status_label = QLabel("Idle")
         self._map_status_label.setWordWrap(True)
         map_layout.addWidget(self._map_status_label)
+
+        # Positioning controls — disabled until map data is loaded (spec §6.1)
+        pos_row = QHBoxLayout()
+        self._map_position_btn = QPushButton("Position Map")
+        self._map_position_btn.setCheckable(True)
+        self._map_position_btn.setEnabled(False)
+        self._map_position_btn.toggled.connect(self._on_position_map_toggled)
+        pos_row.addWidget(self._map_position_btn)
+
+        self._map_reset_btn = QPushButton("Reset to fit")
+        self._map_reset_btn.setEnabled(False)
+        self._map_reset_btn.clicked.connect(self._on_reset_to_fit_clicked)
+        pos_row.addWidget(self._map_reset_btn)
+        map_layout.addLayout(pos_row)
 
         self._layout.addWidget(self._map_group)
         self._map_group.setVisible(False)
@@ -90,6 +107,7 @@ class _MapMixin:
 
         if cached is not None:
             self._map_data = cached
+            self._init_map_view_from_data(cached)
             n = sum(len(v) for v in cached.features.values())
             self._map_status_label.setText(f"Loaded: {n:,} features (cached)")
             self._map_status_label.setStyleSheet("")
@@ -189,6 +207,9 @@ class _MapMixin:
         self._map_status_label.setStyleSheet("")
         self._map_fetch_btn.setEnabled(True)
 
+        # Initialise default map view and enable positioning controls (spec §6.1)
+        self._init_map_view_from_data(map_data)
+
     def _on_map_fetch_error(self, msg: str) -> None:
         """Show error message in red and re-enable the fetch button."""
         self._map_fetch_worker = None
@@ -196,3 +217,65 @@ class _MapMixin:
         self._map_status_label.setText(f"Error: {msg}")
         self._map_status_label.setStyleSheet("color: red;")
         self._map_fetch_btn.setEnabled(True)
+
+    # ------------------------------------------------------------------
+    # Map view initialisation (spec §6.1)
+    # ------------------------------------------------------------------
+
+    def _init_map_view_from_data(self, map_data: object) -> None:
+        """Compute default_map_view from freshly loaded data and enable positioning controls."""
+        try:
+            all_features = [f for flist in map_data.features.values() for f in flist]
+            if not all_features:
+                return
+            project = self._controller.current_project if self._controller is not None else None
+            if project is None:
+                return
+            from plottter.osm.geometry import default_map_view
+
+            self._map_view = default_map_view(all_features, project.canvas)
+        except Exception:  # noqa: BLE001 — positioning is best-effort
+            return
+
+        self._map_position_btn.setEnabled(True)
+        self._map_reset_btn.setEnabled(True)
+
+    # ------------------------------------------------------------------
+    # Positioning button handlers (spec §6.1)
+    # ------------------------------------------------------------------
+
+    def _on_position_map_toggled(self, checked: bool) -> None:
+        """Toggle map-positioning interactive mode on the canvas."""
+        if self._canvas_ref is None:
+            self._map_position_btn.setChecked(False)
+            return
+        self._canvas_ref.set_map_position_active(checked)
+        if checked and self._map_data is not None:
+            try:
+                from plottter.osm.geometry import data_bounds
+
+                all_features = [f for flist in self._map_data.features.values() for f in flist]
+                bounds = data_bounds(all_features)
+                self._canvas_ref.set_map_preview_data(self._map_data, bounds)
+                if self._map_view is not None:
+                    self._canvas_ref.update_map_view(self._map_view)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _on_reset_to_fit_clicked(self) -> None:
+        """Reset the map view to the fit-to-canvas default."""
+        if self._map_data is None:
+            return
+        try:
+            project = self._controller.current_project if self._controller is not None else None
+            if project is None:
+                return
+            from plottter.osm.geometry import default_map_view
+
+            all_features = [f for flist in self._map_data.features.values() for f in flist]
+            self._map_view = default_map_view(all_features, project.canvas)
+        except Exception:  # noqa: BLE001
+            return
+
+        if self._canvas_ref is not None:
+            self._canvas_ref.update_map_view(self._map_view)
