@@ -46,3 +46,79 @@ def test_mercator():
     assert abs(y_45_90 - expected_y) < 1e-6, (
         f"y at (45, 90): expected {expected_y}, got {y_45_90}"
     )
+
+
+def test_fit_to_canvas():
+    """Verify fit_transform() and project_feature() per spec §6.2.
+
+    Uses a small square of features with a known geographic extent and checks:
+    - All projected mm coordinates fall inside canvas.drawing_area().
+    - Aspect ratio is preserved (equal x/y scale).
+    - Northernmost point maps to a smaller canvas-y than southernmost (north-up).
+    """
+    from plottter.osm.geometry import fit_transform, project_feature
+    from plottter.osm.types import MapFeature
+    from plottter.models.canvas import Canvas
+
+    south, north = 10.0, 10.01
+    west, east = 20.0, 20.01
+
+    # A closed square feature whose corners span the geographic bbox.
+    feature = MapFeature(
+        tags={},
+        coords=[
+            (south, west),
+            (south, east),
+            (north, east),
+            (north, west),
+            (south, west),  # closed ring
+        ],
+        is_area=True,
+    )
+
+    # 200 × 150 mm canvas with 10 mm margins → drawing area (10, 10, 190, 140)
+    canvas = Canvas(width_mm=200.0, height_mm=150.0, margin_mm=10.0)
+    left, top, right, bottom = canvas.drawing_area()
+
+    transform = fit_transform([feature], canvas)
+    mm_coords = project_feature(feature, transform)
+
+    xs = [p[0] for p in mm_coords]
+    ys = [p[1] for p in mm_coords]
+
+    # ── All points inside the printable area ──────────────────────────────────
+    tol = 1e-6
+    assert min(xs) >= left - tol, f"left edge violated: {min(xs)} < {left}"
+    assert max(xs) <= right + tol, f"right edge violated: {max(xs)} > {right}"
+    assert min(ys) >= top - tol, f"top edge violated: {min(ys)} < {top}"
+    assert max(ys) <= bottom + tol, f"bottom edge violated: {max(ys)} > {bottom}"
+
+    # ── Aspect ratio preserved (uniform scale) ────────────────────────────────
+    # Ratio of canvas spans must equal ratio of Mercator spans.
+    px_w, _ = mercator(south, west)
+    px_e, _ = mercator(south, east)
+    _, py_s = mercator(south, west)
+    _, py_n = mercator(north, west)
+    merc_span_x = px_e - px_w
+    merc_span_y = py_n - py_s
+
+    proj_span_x = max(xs) - min(xs)
+    proj_span_y = max(ys) - min(ys)
+
+    # Both spans are non-zero for this square input.
+    ratio_merc = merc_span_x / merc_span_y
+    ratio_proj = proj_span_x / proj_span_y
+    assert abs(ratio_proj - ratio_merc) < 1e-6, (
+        f"aspect ratio not preserved: canvas ratio={ratio_proj:.6f}, "
+        f"mercator ratio={ratio_merc:.6f}"
+    )
+
+    # ── North-up: northern coords → smaller canvas-y ──────────────────────────
+    north_ys = [mm_coords[i][1] for i, (lat, _) in enumerate(feature.coords) if lat == north]
+    south_ys = [mm_coords[i][1] for i, (lat, _) in enumerate(feature.coords) if lat == south]
+
+    assert north_ys and south_ys, "Could not identify northern/southern points"
+    assert min(north_ys) < max(south_ys), (
+        f"y-flip wrong: northernmost canvas-y {min(north_ys):.3f} "
+        f"should be less than southernmost {max(south_ys):.3f}"
+    )
