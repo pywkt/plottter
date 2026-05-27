@@ -190,8 +190,11 @@ class SettingsPanel(
         is_mask_paint = mode == "Mask Paint"
         is_shape_draw = mode == "Shape Drawing"
         is_3d = mode == "3D Scene"
+        is_map = mode == "Map"
 
         self._3d_camera_group.setVisible(is_3d)
+        if hasattr(self, "_map_group"):
+            self._map_group.setVisible(is_map)
 
         # Image source and preprocessing are shared between Image-to-Lines and Color Separation
         self._image_source_group.setVisible(is_image_mode or is_color_sep)
@@ -254,6 +257,8 @@ class SettingsPanel(
             generators = get_generators_by_category("image")
         elif mode == "3D Scene":
             generators = get_generators_by_category("3d")
+        elif mode == "Map":
+            generators = get_generators_by_category("map")
         else:
             generators = []
 

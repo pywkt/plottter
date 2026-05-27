@@ -11,7 +11,7 @@ class ModePanel(QWidget):
 
     mode_changed = pyqtSignal(str)
 
-    MODES = ["Math Art", "Image to Lines", "Color Separation", "Mask Paint", "Shape Drawing", "3D Scene"]
+    MODES = ["Math Art", "Image to Lines", "Color Separation", "Mask Paint", "Shape Drawing", "3D Scene", "Map"]
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
