@@ -186,3 +186,143 @@ class TestGenerateLayers:
     def test_get_presets_returns_list(self):
         presets = self.gen.get_presets()
         assert isinstance(presets, list)
+
+
+def _make_line_map_data():
+    """Fixture MapData with roads_major, roads_minor, and rail features."""
+    from plottter.osm.types import MapData, MapFeature
+
+    # Three points spread across a ~0.02° grid near Paris so the fit-transform
+    # produces a non-degenerate scale and all polylines have measurable length.
+    roads_major = [
+        MapFeature(
+            tags={"highway": "primary"},
+            coords=[(48.850, 2.340), (48.855, 2.350), (48.860, 2.360)],
+            is_area=False,
+        )
+    ]
+    roads_minor = [
+        MapFeature(
+            tags={"highway": "residential"},
+            coords=[(48.851, 2.341), (48.853, 2.345), (48.855, 2.348)],
+            is_area=False,
+        )
+    ]
+    rail = [
+        MapFeature(
+            tags={"railway": "rail"},
+            coords=[(48.848, 2.340), (48.850, 2.352), (48.852, 2.360)],
+            is_area=False,
+        )
+    ]
+    return MapData(
+        location="Paris, France",
+        center=(48.855, 2.350),
+        bbox=(48.845, 2.335, 48.865, 2.365),
+        features={
+            "roads_major": roads_major,
+            "roads_minor": roads_minor,
+            "rail": rail,
+        },
+    )
+
+
+def test_line_layers():
+    """Phase 143.1 — generate_layers for line categories.
+
+    Verifies:
+    - Enabling roads+rail with a fixture MapData yields exactly those layers.
+    - Disabled categories produce no LayerSpec.
+    - All output coordinates fall within canvas.drawing_area().
+    - Layer colors match FEATURE_CATEGORIES defaults.
+    """
+    from plottter.generators.map_generator import MapGenerator
+    from plottter.osm.categories import FEATURE_CATEGORIES
+
+    gen = MapGenerator()
+    canvas = make_canvas()
+    map_data = _make_line_map_data()
+
+    base_params = {
+        "_map_data": map_data,
+        "road_detail": "standard",
+        "simplify_mm": 0.0,      # no simplification — keep exact projected points
+        "min_feature_mm": 0.0,   # keep all fragments regardless of length
+        "include_water": False,
+        "include_parks": False,
+        "include_buildings": False,
+    }
+
+    # ------------------------------------------------------------------ #
+    # 1. Enabling roads + rail yields Roads (major), Roads (minor), Rail.
+    # ------------------------------------------------------------------ #
+    params_roads_rail = {
+        **base_params,
+        "include_roads": True,
+        "include_rail": True,
+        "include_waterways": False,
+        "include_coastline": False,
+    }
+    specs = gen.generate_layers(params_roads_rail, canvas)
+    names = {s.name for s in specs}
+    assert "Roads (major)" in names, f"Expected 'Roads (major)' in {names}"
+    assert "Roads (minor)" in names, f"Expected 'Roads (minor)' in {names}"
+    assert "Rail" in names, f"Expected 'Rail' in {names}"
+    assert "Waterways" not in names, f"'Waterways' should be absent; got {names}"
+    assert "Coastline" not in names, f"'Coastline' should be absent; got {names}"
+
+    # ------------------------------------------------------------------ #
+    # 2. Disabled category → no LayerSpec for that category.
+    # ------------------------------------------------------------------ #
+    params_no_rail = {
+        **base_params,
+        "include_roads": True,
+        "include_rail": False,
+        "include_waterways": False,
+        "include_coastline": False,
+    }
+    specs_no_rail = gen.generate_layers(params_no_rail, canvas)
+    names_no_rail = {s.name for s in specs_no_rail}
+    assert "Rail" not in names_no_rail, f"'Rail' should be absent when disabled; got {names_no_rail}"
+    assert "Roads (major)" in names_no_rail
+
+    # ------------------------------------------------------------------ #
+    # 3. All output coords are within canvas.drawing_area() (±0.01 mm).
+    # ------------------------------------------------------------------ #
+    left, top, right, bottom = canvas.drawing_area()
+    tol = 0.01
+    for spec in specs:
+        for path in spec.paths:
+            for x, y in path:
+                assert left - tol <= x <= right + tol, (
+                    f"x={x:.3f} outside [{left:.3f}, {right:.3f}]"
+                )
+                assert top - tol <= y <= bottom + tol, (
+                    f"y={y:.3f} outside [{top:.3f}, {bottom:.3f}]"
+                )
+
+    # ------------------------------------------------------------------ #
+    # 4. Colors match FEATURE_CATEGORIES defaults.
+    # ------------------------------------------------------------------ #
+    spec_by_name = {s.name: s for s in specs}
+    assert spec_by_name["Roads (major)"].color == FEATURE_CATEGORIES["roads_major"]["color"]
+    assert spec_by_name["Roads (minor)"].color == FEATURE_CATEGORIES["roads_minor"]["color"]
+    assert spec_by_name["Rail"].color == FEATURE_CATEGORIES["rail"]["color"]
+
+    # ------------------------------------------------------------------ #
+    # 5. major_only road_detail suppresses Roads (minor).
+    # ------------------------------------------------------------------ #
+    params_major_only = {
+        **base_params,
+        "include_roads": True,
+        "include_rail": False,
+        "include_waterways": False,
+        "include_coastline": False,
+        "road_detail": "major_only",
+    }
+    specs_major = gen.generate_layers(params_major_only, canvas)
+    names_major = {s.name for s in specs_major}
+    assert "Roads (minor)" not in names_major, (
+        f"'Roads (minor)' should be absent for major_only; got {names_major}"
+    )
+    assert "Roads (major)" in names_major

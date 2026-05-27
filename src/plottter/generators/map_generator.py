@@ -195,20 +195,84 @@ class MapGenerator(Generator):
         progress_callback: Any = None,
         cancelled_callback: Any = None,
     ) -> list[LayerSpec]:
-        """Generate one LayerSpec per enabled, non-empty OSM category.
+        """Generate one LayerSpec per enabled, non-empty OSM line category.
 
-        Returns an empty list when no map data has been fetched yet
-        (params["_map_data"] is None or absent).  The full projection,
-        clipping, and fill logic is implemented in a subsequent phase.
+        Line categories (roads_major, roads_minor, rail, waterways, coastline)
+        are emitted in spec §9 draw order (areas are handled in a later phase).
+        Returns an empty list when no map data has been fetched yet.
         """
+        from plottter.osm.categories import FEATURE_CATEGORIES
+        from plottter.osm.geometry import clip_lines, fit_transform, project_feature
+        from plottter.processing.simplify import simplify_paths
+
         map_data = params.get("_map_data")
         if map_data is None:
             return []
 
-        # Full implementation is added in a later phase.
-        # This skeleton returns an empty list for any non-None map_data
-        # until the geometry phase is wired in.
-        return []
+        simplify_mm: float = params.get("simplify_mm", 0.15)
+        min_feature_mm: float = params.get("min_feature_mm", 0.8)
+        road_detail: str = params.get("road_detail", "standard")
+
+        # Spec §9 draw order for line categories (areas come first in a later phase).
+        # Each entry: (category_id, include_param_name, display_name)
+        _LINE_ORDER = [
+            ("waterways", "include_waterways", "Waterways"),
+            ("roads_minor", "include_roads", "Roads (minor)"),
+            ("roads_major", "include_roads", "Roads (major)"),
+            ("rail", "include_rail", "Rail"),
+            ("coastline", "include_coastline", "Coastline"),
+        ]
+
+        # Build the active list, honouring road_detail.
+        category_config: list[tuple[str, bool, str]] = []
+        for cat_id, include_param, display_name in _LINE_ORDER:
+            if cat_id == "roads_minor" and road_detail == "major_only":
+                continue
+            enabled: bool = params.get(include_param, True)
+            category_config.append((cat_id, enabled, display_name))
+
+        # Collect all enabled features to compute a shared fit transform.
+        all_features = []
+        for cat_id, enabled, _ in category_config:
+            if enabled:
+                all_features.extend(map_data.features.get(cat_id, []))
+
+        if not all_features:
+            return []
+
+        transform = fit_transform(all_features, canvas)
+        left, top, right, bottom = canvas.drawing_area()
+        bbox_rect = (left, top, right, bottom)
+
+        specs: list[LayerSpec] = []
+        for cat_id, enabled, display_name in category_config:
+            if not enabled:
+                continue
+
+            features = map_data.features.get(cat_id, [])
+            if not features:
+                continue
+
+            # Project each feature's coords to canvas mm.
+            raw_polylines = [project_feature(f, transform) for f in features]
+
+            # Clip to the printable area; drop fragments shorter than threshold.
+            clipped = clip_lines(raw_polylines, bbox_rect, min_feature_mm)
+
+            # Simplify with Douglas–Peucker (skip when tolerance is zero).
+            if simplify_mm > 0.0 and clipped:
+                clipped = simplify_paths(clipped, simplify_mm)
+
+            if not clipped:
+                continue
+
+            color = FEATURE_CATEGORIES[cat_id]["color"]
+            specs.append(LayerSpec(name=display_name, color=color, paths=clipped))
+
+        if progress_callback is not None:
+            progress_callback(100)
+
+        return specs
 
     def generate(
         self,
