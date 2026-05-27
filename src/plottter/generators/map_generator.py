@@ -561,6 +561,11 @@ class MapGenerator(Generator):
     ) -> list[Polyline]:
         """Single-layer fallback: flatten all enabled categories into one list.
 
-        Full implementation follows in a later phase.
+        Calls generate_layers() and concatenates all LayerSpec paths into a
+        single flat list of polylines, as required for CLI/legacy paths (§9).
         """
-        return []
+        specs = self.generate_layers(params, canvas, progress_callback, cancelled_callback)
+        result: list[Polyline] = []
+        for spec in specs:
+            result.extend(spec.paths)
+        return result

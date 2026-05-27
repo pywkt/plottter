@@ -792,3 +792,57 @@ def test_cross_hatch():
         f"cross_hatch must include lines at perpendicular {angle2:.1f}°; "
         f"seen angles (first 10): {sorted(angles_seen)[:10]}"
     )
+
+
+def test_generate_fallback():
+    """Phase 145.1 — generate() returns a non-empty flat polyline list.
+
+    Verifies:
+    - generate() returns a non-empty list of polylines when map data is present.
+    - All coordinates lie inside the canvas printable area.
+    - The list is flat (each element is a list of (x, y) tuples, not a LayerSpec).
+    """
+    from plottter.generators.map_generator import MapGenerator
+
+    gen = MapGenerator()
+    canvas = make_canvas()
+    map_data = _make_line_map_data()
+    left, top, right, bottom = canvas.drawing_area()
+
+    params = {
+        "_map_data": map_data,
+        "simplify_mm": 0.0,
+        "min_feature_mm": 0.0,
+        "include_roads": True,
+        "include_rail": True,
+        "include_water": False,
+        "include_waterways": False,
+        "include_parks": False,
+        "include_buildings": False,
+        "include_coastline": False,
+    }
+
+    result = gen.generate(params, canvas)
+
+    assert result, "generate() must return a non-empty list when map data is present"
+    assert isinstance(result, list), "generate() must return a list"
+
+    # Each element must be a polyline (list of (x, y) tuples), not a LayerSpec.
+    for polyline in result:
+        assert isinstance(polyline, list), f"Each element must be a list, got {type(polyline)}"
+        assert polyline, "Polylines must be non-empty"
+        for point in polyline:
+            x, y = point
+            assert isinstance(x, (float, int)), f"x must be numeric, got {type(x)}"
+            assert isinstance(y, (float, int)), f"y must be numeric, got {type(y)}"
+
+    # All coordinates must lie inside the printable area (±0.01 mm tolerance).
+    coord_tol = 0.01
+    for polyline in result:
+        for x, y in polyline:
+            assert left - coord_tol <= x <= right + coord_tol, (
+                f"x={x:.3f} outside printable area [{left:.3f}, {right:.3f}]"
+            )
+            assert top - coord_tol <= y <= bottom + coord_tol, (
+                f"y={y:.3f} outside printable area [{top:.3f}, {bottom:.3f}]"
+            )
