@@ -335,3 +335,73 @@ def test_view_transform_scale_and_offset():
     assert abs(canvas_y - (ccy - scale * 1.0)) < 1e-9, (
         f"y offset wrong (north up): got {canvas_y}, expected {ccy - scale}"
     )
+
+
+def test_default_map_view_fit_equivalence():
+    """default_map_view() + view_transform() frames features identically to fit_transform().
+
+    Spec §3.3 / test §8 (phase 149.2): all projected coordinates produced by
+    the view_transform built from default_map_view must match those produced
+    directly by fit_transform() within 1e-6 mm.
+    """
+    from plottter.osm.geometry import (
+        default_map_view,
+        fit_transform,
+        project_feature,
+        view_transform,
+    )
+    from plottter.osm.types import MapFeature
+    from plottter.models.canvas import Canvas
+
+    # A fixture feature set spanning an asymmetric geographic region so that
+    # neither axis trivially cancels.
+    features = [
+        MapFeature(
+            tags={},
+            coords=[
+                (48.85, 2.35),   # Paris-ish
+                (48.90, 2.40),
+                (48.80, 2.30),
+                (48.95, 2.28),
+            ],
+            is_area=False,
+        ),
+        MapFeature(
+            tags={},
+            coords=[
+                (48.87, 2.36),
+                (48.83, 2.42),
+            ],
+            is_area=False,
+        ),
+    ]
+
+    canvas = Canvas(width_mm=200.0, height_mm=150.0, margin_mm=10.0)
+
+    # Ground-truth transform from fit_transform.
+    ft = fit_transform(features, canvas)
+    fit_coords = [project_feature(f, ft) for f in features]
+
+    # Transform built from the default_map_view.
+    view = default_map_view(features, canvas)
+    assert "center_lat" in view
+    assert "center_lon" in view
+    assert "scale" in view
+
+    vt = view_transform(view["center_lat"], view["center_lon"], view["scale"], canvas)
+    view_coords = [project_feature(f, vt) for f in features]
+
+    # Every projected coordinate must agree within 1e-6 mm.
+    for feat_idx, (fc, vc) in enumerate(zip(fit_coords, view_coords)):
+        assert len(fc) == len(vc), (
+            f"feature {feat_idx}: point count mismatch {len(fc)} vs {len(vc)}"
+        )
+        for pt_idx, ((fx, fy), (vx, vy)) in enumerate(zip(fc, vc)):
+            assert abs(fx - vx) < 1e-6, (
+                f"feature {feat_idx} point {pt_idx}: x mismatch "
+                f"fit={fx:.9f} view={vx:.9f} diff={abs(fx - vx):.2e}"
+            )
+            assert abs(fy - vy) < 1e-6, (
+                f"feature {feat_idx} point {pt_idx}: y mismatch "
+                f"fit={fy:.9f} view={vy:.9f} diff={abs(fy - vy):.2e}"
+            )

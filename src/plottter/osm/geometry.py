@@ -157,6 +157,50 @@ def view_transform(
     return FitTransform(scale=scale, x_origin=x_origin, y_origin=y_origin)
 
 
+def default_map_view(features: list, canvas) -> dict:
+    """Return the {center_lat, center_lon, scale} view equivalent to fit_transform.
+
+    The returned dict can be passed to view_transform() to reproduce a FitTransform
+    that frames the data identically to fit_transform() (same projected coordinates
+    within floating-point precision).
+
+    The geographic centre is the inverse-projected Mercator midpoint of the data
+    bbox; the scale is taken directly from fit_transform (spec §3.3).
+
+    Args:
+        features: Iterable of MapFeature objects (each has .coords as a list
+                  of (lat, lon) pairs in decimal degrees).
+        canvas:   Canvas dataclass whose drawing_area() returns
+                  (left, top, right, bottom) in mm.
+
+    Returns:
+        A dict with keys ``center_lat``, ``center_lon``, ``scale``.
+
+    Raises:
+        ValueError: If no coordinates are found across all features.
+    """
+    xs: list[float] = []
+    ys: list[float] = []
+    for feature in features:
+        for lat, lon in feature.coords:
+            px, py = mercator(lat, lon)
+            xs.append(px)
+            ys.append(py)
+
+    if not xs:
+        raise ValueError(
+            "No coordinates found in features; cannot compute default map view."
+        )
+
+    ft = fit_transform(features, canvas)
+
+    mcx = (min(xs) + max(xs)) / 2.0
+    mcy = (min(ys) + max(ys)) / 2.0
+    center_lat, center_lon = inverse_mercator(mcx, mcy)
+
+    return {"center_lat": center_lat, "center_lon": center_lon, "scale": ft.scale}
+
+
 def project_feature(feature, transform: FitTransform) -> list[tuple[float, float]]:
     """Project a MapFeature's coordinates to canvas mm using the given transform.
 
