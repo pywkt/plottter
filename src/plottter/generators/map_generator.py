@@ -328,8 +328,88 @@ class MapGenerator(Generator):
         ]
 
     def get_presets(self) -> list[Preset]:
-        # Presets are added in a later phase (148.1).
-        return []
+        """Return city-style map presets varying enabled categories and fill.
+
+        Preset params only contain keys that appear in get_parameters() so
+        they can be applied safely via the standard preset machinery.
+        """
+        return [
+            Preset(
+                name="Minimal Streets",
+                description=(
+                    "Major and minor road network only — clean, fast, and "
+                    "well-suited for large-format plotting."
+                ),
+                params={
+                    "road_detail": "standard",
+                    "include_roads": True,
+                    "include_rail": False,
+                    "include_water": False,
+                    "include_waterways": False,
+                    "include_parks": False,
+                    "include_buildings": False,
+                    "include_coastline": False,
+                    "area_fill": "none",
+                },
+            ),
+            Preset(
+                name="Roads + Water",
+                description=(
+                    "Road network plus water bodies and waterways. "
+                    "Water areas are hatched for visual contrast."
+                ),
+                params={
+                    "road_detail": "standard",
+                    "include_roads": True,
+                    "include_rail": False,
+                    "include_water": True,
+                    "include_waterways": True,
+                    "include_parks": False,
+                    "include_buildings": False,
+                    "include_coastline": True,
+                    "area_fill": "hatch",
+                    "fill_spacing_mm": 2.0,
+                    "fill_angle_deg": 45.0,
+                },
+            ),
+            Preset(
+                name="Full City",
+                description=(
+                    "All feature categories including buildings. "
+                    "Best for dense urban areas; may be slow for large radii."
+                ),
+                params={
+                    "road_detail": "standard",
+                    "include_roads": True,
+                    "include_rail": True,
+                    "include_water": True,
+                    "include_waterways": True,
+                    "include_parks": True,
+                    "include_buildings": True,
+                    "include_coastline": True,
+                    "area_fill": "none",
+                },
+            ),
+            Preset(
+                name="Transit Map",
+                description=(
+                    "Major roads and rail only, with major roads drawn as "
+                    "double strokes for emphasis — a schematic transit-poster look."
+                ),
+                params={
+                    "road_detail": "major_only",
+                    "include_roads": True,
+                    "include_rail": True,
+                    "include_water": False,
+                    "include_waterways": False,
+                    "include_parks": False,
+                    "include_buildings": False,
+                    "include_coastline": False,
+                    "area_fill": "none",
+                    "major_road_strokes": 2,
+                },
+            ),
+        ]
 
     def generate_layers(
         self,

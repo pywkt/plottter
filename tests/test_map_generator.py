@@ -963,3 +963,152 @@ def test_attribution():
     specs_off = gen.generate_layers({**base_params, "include_attribution": False}, canvas)
     attr_layer_off = next((s for s in specs_off if s.name == "Attribution"), None)
     assert attr_layer_off is None, "Attribution layer must be absent when include_attribution=False"
+
+
+# ---------------------------------------------------------------------------
+# Phase 148.1 — Preset tests
+# ---------------------------------------------------------------------------
+
+
+def _make_all_categories_map_data():
+    """Fixture MapData with at least one feature in every category."""
+    from plottter.osm.types import MapData, MapFeature
+
+    # All features placed near Paris so fit-transform is non-degenerate.
+    roads_major = [
+        MapFeature(
+            tags={"highway": "primary"},
+            coords=[(48.850, 2.340), (48.855, 2.350), (48.860, 2.360)],
+            is_area=False,
+        )
+    ]
+    roads_minor = [
+        MapFeature(
+            tags={"highway": "residential"},
+            coords=[(48.851, 2.341), (48.853, 2.345), (48.855, 2.348)],
+            is_area=False,
+        )
+    ]
+    rail = [
+        MapFeature(
+            tags={"railway": "rail"},
+            coords=[(48.848, 2.340), (48.850, 2.352), (48.852, 2.360)],
+            is_area=False,
+        )
+    ]
+    water = [
+        MapFeature(
+            tags={"natural": "water"},
+            coords=[
+                (48.856, 2.342),
+                (48.858, 2.342),
+                (48.858, 2.346),
+                (48.856, 2.346),
+                (48.856, 2.342),
+            ],
+            is_area=True,
+        )
+    ]
+    waterways = [
+        MapFeature(
+            tags={"waterway": "river"},
+            coords=[(48.849, 2.338), (48.852, 2.344), (48.854, 2.350)],
+            is_area=False,
+        )
+    ]
+    parks = [
+        MapFeature(
+            tags={"leisure": "park"},
+            coords=[
+                (48.855, 2.340),
+                (48.860, 2.340),
+                (48.860, 2.350),
+                (48.855, 2.350),
+                (48.855, 2.340),
+            ],
+            is_area=True,
+        )
+    ]
+    buildings = [
+        MapFeature(
+            tags={"building": "yes"},
+            coords=[
+                (48.856, 2.341),
+                (48.858, 2.341),
+                (48.858, 2.343),
+                (48.856, 2.343),
+                (48.856, 2.341),
+            ],
+            is_area=True,
+        )
+    ]
+    coastline = [
+        MapFeature(
+            tags={"natural": "coastline"},
+            coords=[(48.845, 2.335), (48.850, 2.345), (48.855, 2.355)],
+            is_area=False,
+        )
+    ]
+    return MapData(
+        location="Paris, France",
+        center=(48.855, 2.350),
+        bbox=(48.845, 2.335, 48.865, 2.365),
+        features={
+            "roads_major": roads_major,
+            "roads_minor": roads_minor,
+            "rail": rail,
+            "water": water,
+            "waterways": waterways,
+            "parks": parks,
+            "buildings": buildings,
+            "coastline": coastline,
+        },
+    )
+
+
+def test_presets():
+    """Phase 148.1 — preset param validation and generate_layers round-trip.
+
+    Verifies:
+    - get_presets() returns at least 4 named presets (Minimal Streets,
+      Roads + Water, Full City, Transit Map).
+    - Every key in each preset's params dict is a valid parameter name
+      (exists in get_parameters()).
+    - Merging each preset's params with fixture _map_data and calling
+      generate_layers() succeeds (returns a list, raises no exception).
+    """
+    from plottter.generators.map_generator import MapGenerator
+
+    gen = MapGenerator()
+    canvas = make_canvas()
+    map_data = _make_all_categories_map_data()
+
+    # Collect valid parameter names from the generator's own get_parameters().
+    param_names = {p.name for p in gen.get_parameters()}
+
+    presets = gen.get_presets()
+    assert isinstance(presets, list), "get_presets() must return a list"
+    assert len(presets) >= 4, f"Expected >= 4 presets, got {len(presets)}"
+
+    preset_names = {p.name for p in presets}
+    for expected in ("Minimal Streets", "Roads + Water", "Full City", "Transit Map"):
+        assert expected in preset_names, f"Preset {expected!r} missing from get_presets()"
+
+    for preset in presets:
+        # ---- param name validation ----
+        unknown = set(preset.params) - param_names
+        assert not unknown, (
+            f"Preset {preset.name!r} references unknown param(s): {unknown}"
+        )
+
+        # ---- generate_layers round-trip ----
+        params = {
+            "_map_data": map_data,
+            "simplify_mm": 0.0,   # disable simplification to avoid length drops
+            "min_feature_mm": 0.0,
+            **preset.params,
+        }
+        result = gen.generate_layers(params, canvas)
+        assert isinstance(result, list), (
+            f"Preset {preset.name!r}: generate_layers() must return a list"
+        )
