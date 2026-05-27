@@ -675,3 +675,120 @@ def test_hatch_fill():
     assert len(parks_cross.paths) > len(parks_spec.paths), (
         "cross_hatch must produce more paths than hatch"
     )
+
+
+def test_cross_hatch():
+    """Phase 144.3 — cross-hatch generates lines at fill_angle_deg and its perpendicular.
+
+    Verifies:
+    - cross_hatch yields strictly more fill segments than hatch on the same polygon.
+    - Fill segments in cross_hatch span both fill_angle_deg and (fill_angle_deg + 90°).
+    """
+    import math
+
+    from plottter.generators.map_generator import MapGenerator
+    from plottter.osm.types import MapData, MapFeature
+
+    gen = MapGenerator()
+    canvas = make_canvas()
+
+    # Large rectangular park to guarantee multiple hatch lines per direction.
+    park_outer = [
+        (48.850, 2.330),
+        (48.870, 2.330),
+        (48.870, 2.360),
+        (48.850, 2.360),
+        (48.850, 2.330),
+    ]
+    park_feature = MapFeature(
+        tags={"leisure": "park"},
+        coords=park_outer,
+        is_area=True,
+    )
+    map_data = MapData(
+        location="Paris, France",
+        center=(48.860, 2.345),
+        bbox=(48.845, 2.325, 48.875, 2.365),
+        features={"parks": [park_feature]},
+    )
+
+    fill_angle_deg = 30.0
+    fill_spacing_mm = 4.0
+
+    base_params = {
+        "_map_data": map_data,
+        "simplify_mm": 0.0,
+        "min_feature_mm": 0.0,
+        "include_roads": False,
+        "include_rail": False,
+        "include_water": False,
+        "include_waterways": False,
+        "include_coastline": False,
+        "include_buildings": False,
+        "include_parks": True,
+        "fill_spacing_mm": fill_spacing_mm,
+        "fill_angle_deg": fill_angle_deg,
+    }
+
+    def is_closed(path):
+        return (
+            len(path) >= 2
+            and abs(path[0][0] - path[-1][0]) < 1e-6
+            and abs(path[0][1] - path[-1][1]) < 1e-6
+        )
+
+    def segment_angle_deg(path):
+        """Return the orientation angle (0–180°) of a segment's first→last vector."""
+        dx = path[-1][0] - path[0][0]
+        dy = path[-1][1] - path[0][1]
+        return math.degrees(math.atan2(dy, dx)) % 180.0
+
+    def seg_len(path):
+        return math.hypot(path[-1][0] - path[0][0], path[-1][1] - path[0][1])
+
+    def near_angle(seg_angle, target, tol=5.0):
+        diff = abs(seg_angle - target) % 180.0
+        return min(diff, 180.0 - diff) <= tol
+
+    # ------------------------------------------------------------------ #
+    # 1. cross_hatch → more fill segments than hatch.
+    # ------------------------------------------------------------------ #
+    specs_hatch = gen.generate_layers({**base_params, "area_fill": "hatch"}, canvas)
+    specs_cross = gen.generate_layers({**base_params, "area_fill": "cross_hatch"}, canvas)
+
+    parks_hatch = next((s for s in specs_hatch if s.name == "Parks"), None)
+    parks_cross = next((s for s in specs_cross if s.name == "Parks"), None)
+    assert parks_hatch is not None, "Parks layer missing for hatch"
+    assert parks_cross is not None, "Parks layer missing for cross_hatch"
+
+    hatch_segs = [p for p in parks_hatch.paths if not is_closed(p)]
+    cross_segs = [p for p in parks_cross.paths if not is_closed(p)]
+
+    assert len(hatch_segs) > 0, "hatch must produce at least one fill segment"
+    assert len(cross_segs) > len(hatch_segs), (
+        f"cross_hatch ({len(cross_segs)} segs) must exceed hatch ({len(hatch_segs)} segs)"
+    )
+
+    # ------------------------------------------------------------------ #
+    # 2. Cross-hatch segments span both fill_angle_deg and +90°.
+    # ------------------------------------------------------------------ #
+    angle1 = fill_angle_deg % 180.0
+    angle2 = (fill_angle_deg + 90.0) % 180.0
+
+    # Ignore very short segments that may be numerical noise at polygon edges.
+    meaningful = [p for p in cross_segs if seg_len(p) >= 0.1]
+    assert meaningful, "cross_hatch must produce meaningful (non-degenerate) fill segments"
+
+    angles_seen = [segment_angle_deg(p) for p in meaningful]
+
+    has_angle1 = any(near_angle(a, angle1) for a in angles_seen)
+    has_angle2 = any(near_angle(a, angle2) for a in angles_seen)
+
+    assert has_angle1, (
+        f"cross_hatch must include lines at fill_angle_deg={angle1:.1f}°; "
+        f"seen angles (first 10): {sorted(angles_seen)[:10]}"
+    )
+    assert has_angle2, (
+        f"cross_hatch must include lines at perpendicular {angle2:.1f}°; "
+        f"seen angles (first 10): {sorted(angles_seen)[:10]}"
+    )
