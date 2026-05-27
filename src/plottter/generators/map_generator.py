@@ -119,6 +119,54 @@ def _hatch_polygon(
 
     return polylines
 
+
+def _render_attribution(canvas: "Canvas") -> "list[Polyline]":
+    """Render '© OpenStreetMap contributors' in the bottom margin.
+
+    Places a single line of Hershey Simplex text (~3 mm cap height) centred
+    horizontally in the canvas and vertically within the bottom margin strip
+    (between the drawing-area bottom edge and the canvas edge).
+
+    Returns a list of polylines in canvas mm coordinates.
+    """
+    from plottter.generators._hershey import CAP_HEIGHT, glyph_strokes
+
+    text = "\xa9 OpenStreetMap contributors"  # © = U+00A9 (falls back to ?)
+    font_size_mm = 3.0
+    scale = font_size_mm / CAP_HEIGHT
+
+    # Measure total text width in mm.
+    text_width = 0.0
+    for ch in text:
+        lft, rgt, _ = glyph_strokes(ch, "Simplex")
+        text_width += (rgt - lft) * scale
+
+    # Position: horizontally centred, baseline in the middle of the bottom margin.
+    left_da, _top_da, right_da, bottom_da = canvas.drawing_area()
+    cx = (left_da + right_da) / 2.0
+
+    # Bottom margin centre Y (canvas y is downward)
+    margin_cy = (bottom_da + canvas.height_mm) / 2.0
+    # Baseline sits below the top of the cap: shift down by half cap height.
+    baseline_y = margin_cy + font_size_mm / 2.0
+
+    pen_x = cx - text_width / 2.0
+    paths: list[Polyline] = []
+    for ch in text:
+        lft, rgt, strokes = glyph_strokes(ch, "Simplex")
+        for stroke in strokes:
+            if len(stroke) < 2:
+                continue
+            polyline: Polyline = []
+            for hx, hy in stroke:
+                x_mm = pen_x + (hx - lft) * scale
+                y_mm = baseline_y - hy * scale  # Hershey y is up; canvas y is down
+                polyline.append((x_mm, y_mm))
+            paths.append(polyline)
+        pen_x += (rgt - lft) * scale
+
+    return paths
+
 @register_generator
 class MapGenerator(Generator):
     """Multi-layer generator that renders OpenStreetMap data as pen-plotter art."""
@@ -568,6 +616,17 @@ class MapGenerator(Generator):
         # Full run complete — ensure 100 is reported.
         if progress_callback is not None:
             progress_callback(100)
+
+        # ------------------------------------------------------------------ #
+        # Attribution layer (spec §12, required by ODbL).
+        # ------------------------------------------------------------------ #
+        include_attribution: bool = params.get("include_attribution", True)
+        if include_attribution:
+            attr_paths = _render_attribution(canvas)
+            if attr_paths:
+                specs.append(
+                    LayerSpec(name="Attribution", color="#000000", paths=attr_paths)
+                )
 
         return specs
 

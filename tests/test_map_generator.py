@@ -251,6 +251,7 @@ def test_line_layers():
         "include_water": False,
         "include_parks": False,
         "include_buildings": False,
+        "include_attribution": False,  # attribution lives in margin; checked in test_attribution
     }
 
     # ------------------------------------------------------------------ #
@@ -820,6 +821,7 @@ def test_generate_fallback():
         "include_parks": False,
         "include_buildings": False,
         "include_coastline": False,
+        "include_attribution": False,  # attribution lives in margin; checked in test_attribution
     }
 
     result = gen.generate(params, canvas)
@@ -911,3 +913,53 @@ def test_major_strokes():
         assert len(minor_1.paths) == len(minor_3.paths), (
             "Roads (minor) count must be unaffected by major_road_strokes"
         )
+
+
+def test_attribution():
+    """Phase 145.3 — Attribution layer present/absent based on include_attribution.
+
+    Verifies:
+    - When include_attribution=True (default), generate_layers emits a LayerSpec
+      named "Attribution" with non-empty paths whose Y coordinates fall in the
+      canvas bottom margin (below the drawing-area bottom edge).
+    - When include_attribution=False, no "Attribution" layer is emitted.
+    """
+    from plottter.generators.map_generator import MapGenerator
+
+    gen = MapGenerator()
+    canvas = make_canvas()
+    map_data = _make_line_map_data()
+
+    base_params = {
+        "_map_data": map_data,
+        "road_detail": "standard",
+        "simplify_mm": 0.0,
+        "min_feature_mm": 0.0,
+        "include_water": False,
+        "include_parks": False,
+        "include_buildings": False,
+        "include_waterways": False,
+        "include_coastline": False,
+        "include_rail": False,
+        "include_roads": True,
+    }
+
+    # --- attribution enabled (default) ---
+    specs_on = gen.generate_layers({**base_params, "include_attribution": True}, canvas)
+    attr_layer = next((s for s in specs_on if s.name == "Attribution"), None)
+    assert attr_layer is not None, "Attribution layer must be present when include_attribution=True"
+    assert len(attr_layer.paths) > 0, "Attribution layer must have non-empty paths"
+
+    # All path points should be in the bottom margin (Y > drawing area bottom).
+    _left, _top, _right, bottom_da = canvas.drawing_area()
+    for path in attr_layer.paths:
+        for _x, y in path:
+            assert y > bottom_da, (
+                f"Attribution point y={y:.2f} must be below drawing area "
+                f"bottom={bottom_da:.2f} (in the margin)"
+            )
+
+    # --- attribution disabled ---
+    specs_off = gen.generate_layers({**base_params, "include_attribution": False}, canvas)
+    attr_layer_off = next((s for s in specs_off if s.name == "Attribution"), None)
+    assert attr_layer_off is None, "Attribution layer must be absent when include_attribution=False"
