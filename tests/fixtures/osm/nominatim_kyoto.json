@@ -1,0 +1,21 @@
+[
+  {
+    "place_id": 258449430,
+    "licence": "Data \u00a9 OpenStreetMap contributors, ODbL 1.0. https://osm.org/copyright",
+    "osm_type": "relation",
+    "osm_id": 356429,
+    "boundingbox": [
+      "34.8891437",
+      "35.1328983",
+      "135.6137846",
+      "135.9195690"
+    ],
+    "lat": "35.0116363",
+    "lon": "135.7680294",
+    "display_name": "Kyoto, Kyoto Prefecture, Japan",
+    "place_rank": 14,
+    "category": "boundary",
+    "type": "administrative",
+    "importance": 0.8003499999999999
+  }
+]
