@@ -223,7 +223,11 @@ class _MapMixin:
     # ------------------------------------------------------------------
 
     def _init_map_view_from_data(self, map_data: object) -> None:
-        """Compute default_map_view from freshly loaded data and enable positioning controls."""
+        """Compute or restore map view from data; enable positioning controls.
+
+        Restores from ``project.metadata["map_view"]`` if present (spec §6.3),
+        otherwise falls back to ``default_map_view`` (fit-to-canvas).
+        """
         try:
             all_features = [f for flist in map_data.features.values() for f in flist]
             if not all_features:
@@ -231,9 +235,17 @@ class _MapMixin:
             project = self._controller.current_project if self._controller is not None else None
             if project is None:
                 return
-            from plottter.osm.geometry import default_map_view
 
-            self._map_view = default_map_view(all_features, project.canvas)
+            # Restore persisted view if available (spec §6.3)
+            persisted = project.metadata.get("map_view")
+            if persisted and isinstance(persisted, dict) and all(
+                k in persisted for k in ("center_lat", "center_lon", "scale")
+            ):
+                self._map_view = dict(persisted)
+            else:
+                from plottter.osm.geometry import default_map_view
+
+                self._map_view = default_map_view(all_features, project.canvas)
         except Exception:  # noqa: BLE001 — positioning is best-effort
             return
 

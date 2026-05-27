@@ -718,3 +718,85 @@ class TestCanvasMapViewSync:
         settings_panel._map_view = None
         params = settings_panel.get_params()
         assert "_map_view" not in params
+
+
+class TestMapViewPersistence:
+    """Persistence of map_view in project.metadata (spec §6.3)."""
+
+    def test_view_writes_to_metadata(self, settings_panel, controller):
+        """Setting a view via _on_canvas_map_view_changed writes metadata["map_view"]."""
+        settings_panel._on_canvas_map_view_changed(35.01, 135.76, 2.5)
+        project = controller.current_project
+        assert "map_view" in project.metadata
+        stored = project.metadata["map_view"]
+        assert stored["center_lat"] == pytest.approx(35.01)
+        assert stored["center_lon"] == pytest.approx(135.76)
+        assert stored["scale"] == pytest.approx(2.5)
+
+    def test_reload_restores_view_from_metadata(self, settings_panel, controller):
+        """Round-trip: set a view, then simulate reload — _map_view is restored from metadata."""
+        fake = _make_fake_map_data()
+        # First load to initialise default view
+        settings_panel._on_map_fetch_finished(fake)
+        # Set a custom view (simulates the user panning/zooming)
+        settings_panel._on_canvas_map_view_changed(35.01, 135.76, 2.5)
+
+        # Sanity check: metadata is written
+        project = controller.current_project
+        assert project.metadata.get("map_view") is not None
+
+        # Simulate a "reload" by resetting _map_view and re-calling the init
+        settings_panel._map_view = None
+        settings_panel._init_map_view_from_data(fake)
+
+        assert settings_panel._map_view is not None
+        view = settings_panel._map_view
+        assert view["center_lat"] == pytest.approx(35.01)
+        assert view["center_lon"] == pytest.approx(135.76)
+        assert view["scale"] == pytest.approx(2.5)
+
+    def test_fallback_to_default_when_no_metadata(self, settings_panel, controller):
+        """When project.metadata has no "map_view", _init_map_view_from_data uses default_map_view."""
+        fake = _make_fake_map_data()
+        # Ensure no prior metadata
+        project = controller.current_project
+        project.metadata.pop("map_view", None)
+
+        settings_panel._map_view = None
+        settings_panel._init_map_view_from_data(fake)
+
+        assert settings_panel._map_view is not None
+        view = settings_panel._map_view
+        # Default view must have all required keys
+        assert "center_lat" in view
+        assert "center_lon" in view
+        assert "scale" in view
+        # Scale must be positive (fit-to-canvas result, not a bogus value)
+        assert view["scale"] > 0
+
+    def test_fallback_to_default_when_metadata_malformed(self, settings_panel, controller):
+        """Malformed metadata["map_view"] falls back to default_map_view instead of crashing."""
+        fake = _make_fake_map_data()
+        project = controller.current_project
+        # Store something that is missing required keys
+        project.metadata["map_view"] = {"bad_key": 99}
+
+        settings_panel._map_view = None
+        settings_panel._init_map_view_from_data(fake)
+
+        assert settings_panel._map_view is not None
+        view = settings_panel._map_view
+        assert "center_lat" in view
+        assert "center_lon" in view
+        assert "scale" in view
+
+    def test_metadata_stored_as_copy(self, settings_panel, controller):
+        """project.metadata["map_view"] must be an independent copy, not the live dict."""
+        settings_panel._on_canvas_map_view_changed(10.0, 20.0, 1.0)
+        project = controller.current_project
+        stored = project.metadata["map_view"]
+        # Mutating _map_view must not affect the stored copy
+        settings_panel._map_view["scale"] = 999.0
+        assert project.metadata["map_view"]["scale"] == pytest.approx(1.0), (
+            "metadata[map_view] must be an independent copy"
+        )
