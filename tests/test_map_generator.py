@@ -387,3 +387,137 @@ def test_progress_cancel():
         f"Cancelled run should produce fewer layers than full run ({n_full}); "
         f"got {len(cancelled_specs)}"
     )
+
+
+def _make_area_map_data():
+    """Fixture MapData with a park polygon and a building footprint."""
+    from plottter.osm.types import MapData, MapFeature
+
+    # A rectangular park near Paris (explicitly closed: first == last).
+    park_coords = [
+        (48.855, 2.340),
+        (48.860, 2.340),
+        (48.860, 2.350),
+        (48.855, 2.350),
+        (48.855, 2.340),
+    ]
+    parks = [
+        MapFeature(
+            tags={"leisure": "park"},
+            coords=park_coords,
+            is_area=True,
+        )
+    ]
+    # A small building footprint (open — assemble() must close it).
+    building_coords = [
+        (48.856, 2.341),
+        (48.858, 2.341),
+        (48.858, 2.343),
+        (48.856, 2.343),
+    ]
+    buildings = [
+        MapFeature(
+            tags={"building": "yes"},
+            coords=building_coords,
+            is_area=True,
+        )
+    ]
+    return MapData(
+        location="Paris, France",
+        center=(48.857, 2.345),
+        bbox=(48.850, 2.335, 48.865, 2.360),
+        features={
+            "parks": parks,
+            "buildings": buildings,
+        },
+    )
+
+
+def test_area_outlines():
+    """Phase 144.1 — area outlines as closed polylines.
+
+    Verifies:
+    - A park polygon yields a LayerSpec whose polylines are closed
+      (first ≈ last within float precision).
+    - All park polyline coordinates lie inside canvas.drawing_area().
+    - include_buildings=False → no Buildings LayerSpec.
+    - Parks layer color matches FEATURE_CATEGORIES default.
+    """
+    from plottter.generators.map_generator import MapGenerator
+    from plottter.osm.categories import FEATURE_CATEGORIES
+
+    gen = MapGenerator()
+    canvas = make_canvas()
+    map_data = _make_area_map_data()
+
+    base_params = {
+        "_map_data": map_data,
+        "simplify_mm": 0.0,
+        "min_feature_mm": 0.0,
+        "include_roads": False,
+        "include_rail": False,
+        "include_water": False,
+        "include_waterways": False,
+        "include_coastline": False,
+    }
+
+    # ------------------------------------------------------------------ #
+    # 1. Park polygon → closed polylines inside printable area.
+    # ------------------------------------------------------------------ #
+    params = {
+        **base_params,
+        "include_parks": True,
+        "include_buildings": False,
+    }
+    specs = gen.generate_layers(params, canvas)
+    names = {s.name for s in specs}
+    assert "Parks" in names, f"Expected 'Parks' in {names}"
+    assert "Buildings" not in names, f"'Buildings' should be absent; got {names}"
+
+    parks_spec = next(s for s in specs if s.name == "Parks")
+    assert parks_spec.paths, "Parks layer must have at least one path"
+
+    # Closed polyline: first ≈ last within float precision.
+    tol = 1e-6
+    for path in parks_spec.paths:
+        assert len(path) >= 3, "Park ring must have at least 3 points"
+        dx = abs(path[0][0] - path[-1][0])
+        dy = abs(path[0][1] - path[-1][1])
+        assert dx <= tol and dy <= tol, (
+            f"Park polyline not closed: first={path[0]}, last={path[-1]}"
+        )
+
+    # All coordinates inside printable area (±0.01 mm tolerance).
+    left, top, right, bottom = canvas.drawing_area()
+    coord_tol = 0.01
+    for path in parks_spec.paths:
+        for x, y in path:
+            assert left - coord_tol <= x <= right + coord_tol, (
+                f"x={x:.3f} outside [{left:.3f}, {right:.3f}]"
+            )
+            assert top - coord_tol <= y <= bottom + coord_tol, (
+                f"y={y:.3f} outside [{top:.3f}, {bottom:.3f}]"
+            )
+
+    # ------------------------------------------------------------------ #
+    # 2. include_buildings=False → no Buildings layer;
+    #    include_buildings=True → Buildings layer present.
+    # ------------------------------------------------------------------ #
+    params_with_bld = {
+        **base_params,
+        "include_parks": False,
+        "include_buildings": True,
+    }
+    specs_with_bld = gen.generate_layers(params_with_bld, canvas)
+    assert "Buildings" in {s.name for s in specs_with_bld}, (
+        "'Buildings' must be present when include_buildings=True and data exists"
+    )
+    assert "Parks" not in {s.name for s in specs_with_bld}, (
+        "'Parks' must be absent when include_parks=False"
+    )
+
+    # ------------------------------------------------------------------ #
+    # 3. Parks color matches FEATURE_CATEGORIES default.
+    # ------------------------------------------------------------------ #
+    spec_by_name = {s.name: s for s in specs}
+    assert spec_by_name["Parks"].color == FEATURE_CATEGORIES["parks"]["color"]

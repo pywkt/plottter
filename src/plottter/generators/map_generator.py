@@ -195,10 +195,16 @@ class MapGenerator(Generator):
         progress_callback: Any = None,
         cancelled_callback: Any = None,
     ) -> list[LayerSpec]:
-        """Generate one LayerSpec per enabled, non-empty OSM line category.
+        """Generate one LayerSpec per enabled, non-empty OSM category.
 
-        Line categories (roads_major, roads_minor, rail, waterways, coastline)
-        are emitted in spec §9 draw order (areas are handled in a later phase).
+        Area categories (water, parks, buildings) are emitted first in draw
+        order as closed-polyline outlines (area_fill="none", spec §7), then
+        line categories (waterways, roads_minor, roads_major, rail, coastline)
+        per spec §9.
+
+        For area_fill="none" (default) each area feature becomes a closed
+        polyline (first ≈ last).  Hatch fill is handled in a later phase.
+
         Returns an empty list when no map data has been fetched yet.
 
         Progress is reported in two phases:
@@ -207,7 +213,14 @@ class MapGenerator(Generator):
         Cancellation is checked before each enabled category.
         """
         from plottter.osm.categories import FEATURE_CATEGORIES
-        from plottter.osm.geometry import clip_lines, fit_transform, project_feature
+        from plottter.osm.geometry import (
+            assemble,
+            clip_lines,
+            clip_polygons,
+            fit_transform,
+            mercator,
+            project_feature,
+        )
         from plottter.processing.simplify import simplify_paths
 
         map_data = params.get("_map_data")
@@ -218,8 +231,12 @@ class MapGenerator(Generator):
         min_feature_mm: float = params.get("min_feature_mm", 0.8)
         road_detail: str = params.get("road_detail", "standard")
 
-        # Spec §9 draw order for line categories (areas come first in a later phase).
-        # Each entry: (category_id, include_param_name, display_name)
+        # Spec §9 draw order: areas first, then lines.
+        _AREA_ORDER = [
+            ("water", "include_water", "Water"),
+            ("parks", "include_parks", "Parks"),
+            ("buildings", "include_buildings", "Buildings"),
+        ]
         _LINE_ORDER = [
             ("waterways", "include_waterways", "Waterways"),
             ("roads_minor", "include_roads", "Roads (minor)"),
@@ -228,17 +245,24 @@ class MapGenerator(Generator):
             ("coastline", "include_coastline", "Coastline"),
         ]
 
-        # Build the active list, honouring road_detail.
-        category_config: list[tuple[str, bool, str]] = []
+        # Build area config.
+        area_config: list[tuple[str, bool, str]] = []
+        for cat_id, include_param, display_name in _AREA_ORDER:
+            enabled: bool = params.get(include_param, True)
+            area_config.append((cat_id, enabled, display_name))
+
+        # Build line config, honouring road_detail.
+        line_config: list[tuple[str, bool, str]] = []
         for cat_id, include_param, display_name in _LINE_ORDER:
             if cat_id == "roads_minor" and road_detail == "major_only":
                 continue
-            enabled: bool = params.get(include_param, True)
-            category_config.append((cat_id, enabled, display_name))
+            enabled = params.get(include_param, True)
+            line_config.append((cat_id, enabled, display_name))
 
-        # Collect all enabled features to compute a shared fit transform.
+        # Collect all enabled features (areas + lines) to compute a shared
+        # fit transform that registers all layers perfectly (spec §6.2).
         all_features = []
-        for cat_id, enabled, _ in category_config:
+        for cat_id, enabled, _ in (*area_config, *line_config):
             if enabled:
                 all_features.extend(map_data.features.get(cat_id, []))
 
@@ -257,14 +281,69 @@ class MapGenerator(Generator):
         # distributing the 40–100% range evenly across them.
         enabled_with_data = sum(
             1
-            for cat_id, enabled, _ in category_config
+            for cat_id, enabled, _ in (*area_config, *line_config)
             if enabled and map_data.features.get(cat_id)
         )
         n_cats = max(1, enabled_with_data)
         processed = 0
 
         specs: list[LayerSpec] = []
-        for cat_id, enabled, display_name in category_config:
+
+        # ------------------------------------------------------------------ #
+        # Area categories (water, parks, buildings) — closed polygon outlines.
+        # area_fill="none" → emit the polygon boundary as a closed polyline.
+        # ------------------------------------------------------------------ #
+        for cat_id, enabled, display_name in area_config:
+            if not enabled:
+                continue
+
+            # Check for cancellation between categories (spec §9).
+            if cancelled_callback is not None and cancelled_callback():
+                return specs
+
+            features = map_data.features.get(cat_id, [])
+            if not features:
+                continue
+
+            # Project each area feature ring to canvas mm and ensure closure.
+            raw_rings: list[list[tuple[float, float]]] = []
+            for feature in features:
+                rings, _holes = assemble(feature)
+                for ring in rings:
+                    # Project (lat, lon) → canvas mm via the shared transform.
+                    proj: list[tuple[float, float]] = []
+                    for lat, lon in ring:
+                        px, py = mercator(lat, lon)
+                        cx = transform.x_origin + px * transform.scale
+                        cy = transform.y_origin - py * transform.scale
+                        proj.append((cx, cy))
+                    # Ensure closure (first == last).
+                    if len(proj) >= 2 and proj[0] != proj[-1]:
+                        proj = proj + [proj[0]]
+                    if len(proj) >= 3:
+                        raw_rings.append(proj)
+
+            # Clip to printable area; drop rings below min perimeter.
+            clipped = clip_polygons(raw_rings, bbox_rect, min_feature_mm)
+
+            # Simplify with Douglas–Peucker (skip when tolerance is zero).
+            if simplify_mm > 0.0 and clipped:
+                clipped = simplify_paths(clipped, simplify_mm)
+
+            if not clipped:
+                continue
+
+            color = FEATURE_CATEGORIES[cat_id]["color"]
+            specs.append(LayerSpec(name=display_name, color=color, paths=clipped))
+
+            processed += 1
+            if progress_callback is not None:
+                progress_callback(40 + int(60 * processed / n_cats))
+
+        # ------------------------------------------------------------------ #
+        # Line categories (waterways, roads, rail, coastline).
+        # ------------------------------------------------------------------ #
+        for cat_id, enabled, display_name in line_config:
             if not enabled:
                 continue
 
