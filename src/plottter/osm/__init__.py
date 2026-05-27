@@ -7,8 +7,10 @@ can be imported in a headless/test context without network calls.
 """
 
 from plottter.osm.types import MapData, MapFeature
+from plottter.osm.categories import FEATURE_CATEGORIES
 
 __all__ = [
     "MapData",
     "MapFeature",
+    "FEATURE_CATEGORIES",
 ]
