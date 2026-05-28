@@ -36,9 +36,16 @@ class PlotOutcome:
 
 
 def _safe_xml_id(name: str) -> str:
-    """Strip characters that are invalid in XML IDs from a layer name."""
-    sanitized = re.sub(r'[\\:*?"<>&|]', "_", name).strip()
-    return re.sub(r'\s', '_', sanitized)
+    """Reduce *name* to characters valid in an XML/SVG id.
+
+    Uses an allowlist: any character outside ``[A-Za-z0-9_.-]`` (spaces,
+    parentheses, slashes, punctuation, etc.) becomes ``_``. Runs of underscores
+    are collapsed and stray leading/trailing underscores trimmed. The caller
+    prefixes ``layer_``, so the XML leading-character rule is always satisfied
+    even if *name* reduces to empty. e.g. ``"Roads (minor)" -> "Roads_minor"``.
+    """
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    return re.sub(r"_+", "_", sanitized).strip("_")
 
 
 class AxiDrawNotInstalledError(RuntimeError):

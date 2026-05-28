@@ -70,6 +70,35 @@ class TestLayerSvgList:
         assert "#00ff00" in jobs[1][2]
 
 
+class TestLayerNameXmlIds:
+    """Layer names with characters invalid in XML ids (e.g. the Map generator's
+    "Roads (minor)") must not crash svgwrite's id validation."""
+
+    def test_parenthesised_layer_name_produces_valid_id(self):
+        canvas = Canvas.from_preset("A4")
+        proj = Project(name="Map", canvas=canvas)
+        proj.add_layer(Layer(name="Roads (minor)", color="#444444",
+                             paths=[[(10.0, 10.0), (50.0, 50.0)]]))
+        proj.add_layer(Layer(name="Roads (major)", color="#000000",
+                             paths=[[(20.0, 20.0), (60.0, 40.0)]]))
+        ids = [l.id for l in proj.layers]
+
+        # Must not raise (regression: parentheses previously hit svgwrite's
+        # id validator and crashed the AxiDraw plot).
+        svg = project_to_svg_string(proj, ids, {})
+        assert 'id="layer_Roads_minor"' in svg
+        assert 'id="layer_Roads_major"' in svg
+        assert "(" not in svg.split("<path", 1)[0]  # no '(' in the <g> id attrs
+
+    def test_safe_xml_id_allowlist(self):
+        from plottter.export.axidraw import _safe_xml_id
+
+        assert _safe_xml_id("Roads (minor)") == "Roads_minor"
+        assert _safe_xml_id("© / x*?:") == "x"
+        assert _safe_xml_id("a.b-c_d") == "a.b-c_d"  # valid chars preserved
+        assert _safe_xml_id("(((") == ""             # caller's 'layer_' prefix keeps it valid
+
+
 # ---------------------------------------------------------------------------
 # project_to_svg_string explicit-overrides-visibility rule
 # ---------------------------------------------------------------------------

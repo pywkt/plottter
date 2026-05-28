@@ -13,9 +13,22 @@ from plottter.models.project import Project
 
 
 def _safe_filename(name: str) -> str:
-    """Strip characters that are invalid in file names or XML IDs."""
+    """Strip characters that are invalid in file names."""
     sanitized = re.sub(r'[\\/:*?"<>|]', "_", name).strip()
     return re.sub(r'\s+', '_', sanitized)
+
+
+def _safe_xml_id(name: str) -> str:
+    """Reduce *name* to characters valid in an XML/SVG id.
+
+    Stricter than :func:`_safe_filename` (which allows e.g. parentheses that
+    are fine in filenames but invalid in XML ids). Allowlist: any character
+    outside ``[A-Za-z0-9_.-]`` becomes ``_``; underscore runs are collapsed and
+    trimmed. The caller prefixes ``layer_`` so the leading-character rule holds.
+    e.g. ``"Roads (minor)" -> "Roads_minor"``.
+    """
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]", "_", name)
+    return re.sub(r"_+", "_", sanitized).strip("_")
 
 
 def _add_registration_marks(
@@ -73,7 +86,7 @@ def _layer_group(
 ) -> svgwrite.container.Group:
     """Build a <g> element with all polylines from *layer*."""
     g = dwg.g(
-        id=f"layer_{_safe_filename(layer.name)}",
+        id=f"layer_{_safe_xml_id(layer.name)}",
         stroke=layer.color,
         fill="none",
         **{"stroke-width": f"{stroke_width:.3f}mm"},
@@ -259,7 +272,7 @@ def export_layer_specs_svg(
         lines.append("  </g>")
 
     for spec in layer_specs:
-        safe_id = _safe_filename(spec.name)
+        safe_id = _safe_xml_id(spec.name)
         # Escape XML attribute special characters in the label.
         label = spec.name.replace("&", "&amp;").replace('"', "&quot;")
         lines.append(
