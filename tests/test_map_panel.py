@@ -800,3 +800,342 @@ class TestMapViewPersistence:
         assert project.metadata["map_view"]["scale"] == pytest.approx(1.0), (
             "metadata[map_view] must be an independent copy"
         )
+
+
+class TestMultiLayerRunNotClobbered:
+    """Regression: browsing/selecting layers of a multi-layer run (Map, Pixel Art)
+    while the panel shows a single-layer generator must NOT overwrite the run
+    members' generator_info. Clobbering destroyed the _generator_run_id link,
+    causing re-generation to duplicate the map instead of replacing it."""
+
+    def _project_with_map_run(self):
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        p = Project(name="t", canvas=canvas)
+        m1 = Layer(name="Roads (major)", color="#000000", paths=[[(10.0, 10.0), (50.0, 50.0)]],
+                   generator_info={"_generator_name": "Map", "_generator_run_id": "R1"})
+        m2 = Layer(name="Water", color="#1E6FD0", paths=[[(20.0, 20.0), (60.0, 60.0)]],
+                   generator_info={"_generator_name": "Map", "_generator_run_id": "R1"})
+        txt = Layer(name="My Text", color="#000000", paths=[[(5.0, 5.0), (9.0, 9.0)]])
+        for l in (m1, m2, txt):
+            p.add_layer(l)
+        return p, m1, m2, txt
+
+    def _panel(self, project, qtbot):
+        from plottter.gui.project_controller import ProjectController
+        from plottter.gui.settings_panel import SettingsPanel
+        ctrl = ProjectController(project)
+        panel = SettingsPanel(ctrl)
+        qtbot.addWidget(panel)
+        panel.on_mode_changed("Math Art")  # single-layer generator showing
+        return ctrl, panel
+
+    def test_browsing_map_layers_preserves_run_id(self, qtbot):
+        project, m1, m2, txt = self._project_with_map_run()
+        ctrl, panel = self._panel(project, qtbot)
+
+        # Simulate the user clicking through every map layer, then a text layer.
+        panel._on_active_layer_changed(m1.id)
+        panel._on_active_layer_changed(m2.id)
+        panel._on_active_layer_changed(txt.id)
+
+        still_tagged = [
+            l.id for l in project.layers
+            if isinstance(l.generator_info, dict)
+            and l.generator_info.get("_generator_run_id") == "R1"
+        ]
+        assert set(still_tagged) == {m1.id, m2.id}, (
+            "both map-run layers must keep their _generator_run_id"
+        )
+
+    def test_single_layer_snapshot_still_saved(self, qtbot):
+        """The guard must not break ordinary single-layer settings memory."""
+        project, m1, m2, txt = self._project_with_map_run()
+        ctrl, panel = self._panel(project, qtbot)
+
+        # Start on the text layer, then switch away → its snapshot should save.
+        panel._on_active_layer_changed(txt.id)
+        panel._on_active_layer_changed(m1.id)
+
+        info = project.get_layer(txt.id).generator_info
+        assert isinstance(info, dict)
+        assert info.get("mode") == "Math Art"
+        assert "generator_name" in info
+
+
+class TestMultiLayerRunRestoresOnSelect:
+    """Selecting a map-run layer must restore the Map generator + the exact
+    settings used to produce that run (so the user can edit the existing map
+    instead of seeing the panel stuck on whatever single-layer generator was
+    showing). Mirrors the 3D Scene / single-layer settings-memory behaviour."""
+
+    def _build(self, qtbot, qapp):
+        from plottter.osm.types import MapData, MapFeature
+        from plottter.gui.project_controller import ProjectController
+        from plottter.gui.settings_panel import SettingsPanel
+
+        md = MapData(
+            location="detroit, mi",
+            center=(42.33, -83.05),
+            bbox=(42.32, -83.06, 42.34, -83.04),
+            features={
+                "roads_major": [MapFeature(tags={"highway": "primary"},
+                                           coords=[(42.32, -83.06), (42.34, -83.04)],
+                                           is_area=False)],
+                "water": [MapFeature(tags={"natural": "water"},
+                                     coords=[(42.325, -83.05), (42.335, -83.05),
+                                             (42.335, -83.045), (42.325, -83.045),
+                                             (42.325, -83.05)],
+                                     is_area=True)],
+            },
+        )
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        proj = Project(name="t", canvas=canvas)
+        proj.add_layer(Layer(name="Layer 1"))
+        ctrl = ProjectController(proj)
+        panel = SettingsPanel(ctrl)
+        qtbot.addWidget(panel)
+        # Mirror MainWindow's wiring so mode_change_requested actually
+        # triggers on_mode_changed in this test.
+        panel.mode_change_requested.connect(panel.on_mode_changed)
+        return proj, ctrl, panel, md
+
+    def _generate_map_run(self, panel, proj, md):
+        """Set tweaked Map params, prime the cache to match the resulting key,
+        then dispatch a fake multi-layer generation finish."""
+        from plottter.generators.base import LayerSpec
+        from plottter.generators.map_generator import MapGenerator
+        from plottter.osm.cache import cache_key, store
+
+        panel.on_mode_changed("Map")
+        panel._map_location_edit.setText("detroit, mi")
+        # Restrict to roads + water (matches the user's scenario; keeps the
+        # cache key small and predictable).
+        for k in ("include_rail", "include_waterways", "include_parks",
+                  "include_buildings", "include_coastline"):
+            panel._param_widgets[k].setChecked(False)
+        # Tweak the params we expect the restore to bring back.
+        panel._param_widgets["radius_km"].setValue(2.5)
+        panel._param_widgets["area_fill"].setCurrentText("hatch")
+        panel._param_widgets["fill_spacing_mm"].setValue(3.7)
+
+        # Compute the cache key the same way the panel will on restore,
+        # and prime the cache so reload succeeds.
+        params = panel.get_params()
+        cats = panel._get_enabled_map_categories(params)
+        store(
+            cache_key("detroit, mi", float(params["radius_km"]),
+                      str(params["extent_mode"]), cats),
+            md,
+        )
+
+        idx = panel._layer_combo.findData(proj.layers[0].id)
+        panel._layer_combo.setCurrentIndex(idx)
+        panel._generator = MapGenerator()
+        panel._pending_multilayer_regen_run_id = None
+        # Mirror _on_generate: settings are captured pre-removal (in the real
+        # flow this happens in _on_generate, not in _on_multilayer_generation_finished).
+        panel._pending_multilayer_run_settings = panel._capture_multilayer_run_settings()
+        panel._on_multilayer_generation_finished([
+            LayerSpec(name="Roads (major)", color="#000000", paths=[[(10.0, 10.0), (50.0, 50.0)]]),
+            LayerSpec(name="Water", color="#1E6FD0", paths=[[(20.0, 20.0), (60.0, 60.0)]]),
+        ])
+        return [l for l in proj.layers
+                if isinstance(l.generator_info, dict)
+                and l.generator_info.get("_generator_name") == "Map"]
+
+    def test_user_workflow_restores_full_settings(self, qtbot, qapp):
+        """Reproduces the user's 5-step workflow: generate map → switch to a
+        single-layer generator → click back on a map layer → expect Map + its
+        exact settings restored."""
+        proj, ctrl, panel, md = self._build(qtbot, qapp)
+        map_layers = self._generate_map_run(panel, proj, md)
+        proj.add_layer(Layer(name="Layer 3"))
+        panel.on_mode_changed("Math Art")
+        assert panel._current_mode == "Math Art"  # in single-layer mode
+
+        # Click back on a map layer.
+        panel._on_active_layer_changed(map_layers[0].id)
+
+        assert panel._current_mode == "Map"
+        assert panel._generator_type_combo.currentText() == "Map"
+        # The exact settings that produced the run, not the generator defaults.
+        assert panel._param_widgets["radius_km"].value() == pytest.approx(2.5)
+        assert panel._param_widgets["area_fill"].currentText() == "hatch"
+        assert panel._param_widgets["fill_spacing_mm"].value() == pytest.approx(3.7)
+        # Include flags that were turned off must stay off after restore.
+        assert panel._param_widgets["include_buildings"].isChecked() is False
+        assert panel._param_widgets["include_rail"].isChecked() is False
+        assert panel._map_location_edit.text() == "detroit, mi"
+        # _map_data reloaded from disk cache so a subsequent Generate works
+        # offline (and replaces the run, since the run id is preserved).
+        assert panel._map_data is not None
+
+    def test_other_run_layer_restores_identically(self, qtbot, qapp):
+        proj, ctrl, panel, md = self._build(qtbot, qapp)
+        map_layers = self._generate_map_run(panel, proj, md)
+        panel.on_mode_changed("Math Art")
+        # Selecting the second run layer must restore the same settings.
+        panel._on_active_layer_changed(map_layers[1].id)
+        assert panel._current_mode == "Map"
+        assert panel._param_widgets["radius_km"].value() == pytest.approx(2.5)
+        assert panel._param_widgets["area_fill"].currentText() == "hatch"
+
+    def test_run_layer_carries_generator_settings(self, qtbot, qapp):
+        """Each layer of a run carries the settings dict, so the user can
+        select any of them to restore."""
+        proj, ctrl, panel, md = self._build(qtbot, qapp)
+        map_layers = self._generate_map_run(panel, proj, md)
+        for layer in map_layers:
+            info = layer.generator_info
+            assert isinstance(info, dict)
+            assert "_generator_settings" in info
+            settings = info["_generator_settings"]
+            assert settings["mode"] == "Map"
+            assert settings["generator_name"] == "Map"
+            assert settings["location"] == "detroit, mi"
+            assert settings["params"]["radius_km"] == pytest.approx(2.5)
+
+
+class TestMultiLayerRegenerateKeepsRunSettings:
+    """Regression: after regenerating a multi-layer run (e.g. enabling rails
+    and clicking Generate while on a map layer), the panel must stay on the
+    multi-layer generator AND the new run layers must carry the new run's
+    settings — not whatever the layer panel auto-snapped to during the
+    remove-old-layers step of the macro."""
+
+    def _build(self, qtbot, qapp):
+        from plottter.osm.types import MapData, MapFeature
+        from plottter.gui.project_controller import ProjectController
+        from plottter.gui.settings_panel import SettingsPanel
+
+        md = MapData(
+            location="detroit, mi",
+            center=(42.33, -83.05),
+            bbox=(42.32, -83.06, 42.34, -83.04),
+            features={
+                "roads_major": [MapFeature(tags={"highway": "primary"},
+                                           coords=[(42.32, -83.06), (42.34, -83.04)],
+                                           is_area=False)],
+                "water": [MapFeature(tags={"natural": "water"},
+                                     coords=[(42.325, -83.05), (42.335, -83.05),
+                                             (42.335, -83.045), (42.325, -83.045),
+                                             (42.325, -83.05)],
+                                     is_area=True)],
+            },
+        )
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        proj = Project(name="t", canvas=canvas)
+        proj.add_layer(Layer(name="Layer 1"))
+        ctrl = ProjectController(proj)
+        panel = SettingsPanel(ctrl)
+        qtbot.addWidget(panel)
+        panel.mode_change_requested.connect(panel.on_mode_changed)
+        return proj, ctrl, panel, md
+
+    def _store_cache(self, panel, md):
+        from plottter.osm.cache import cache_key, store
+        params = panel.get_params()
+        cats = panel._get_enabled_map_categories(params)
+        store(
+            cache_key("detroit, mi", float(params["radius_km"]),
+                      str(params["extent_mode"]), cats),
+            md,
+        )
+
+    def _dispatch_run(self, panel, proj, specs):
+        """Mirror _on_generate's pre-emit work, then dispatch the finish."""
+        from plottter.generators.map_generator import MapGenerator
+
+        # Mirror the regen-detection in _on_generate
+        prior_run_id = None
+        for layer in proj.layers:
+            info = layer.generator_info
+            if (isinstance(info, dict)
+                and info.get("_generator_name") == "Map"
+                and info.get("_generator_run_id")):
+                prior_run_id = info["_generator_run_id"]
+        panel._pending_multilayer_regen_run_id = prior_run_id
+        # Capture settings BEFORE removal can side-effect the panel (the fix
+        # this test guards): must happen in _on_generate, not the finish handler.
+        panel._pending_multilayer_run_settings = panel._capture_multilayer_run_settings()
+        panel._generator = MapGenerator()
+        panel._on_multilayer_generation_finished(specs)
+
+    def test_regenerate_stays_on_map_and_stores_correct_settings(self, qtbot, qapp):
+        from plottter.generators.base import LayerSpec
+
+        proj, ctrl, panel, md = self._build(qtbot, qapp)
+
+        # 1. Generate map with streets + water (no rails)
+        panel.on_mode_changed("Map")
+        panel._map_location_edit.setText("detroit, mi")
+        for k in ("include_rail", "include_waterways", "include_parks",
+                  "include_buildings", "include_coastline"):
+            panel._param_widgets[k].setChecked(False)
+        panel._param_widgets["radius_km"].setValue(2.5)
+        self._store_cache(panel, md)
+        idx = panel._layer_combo.findData(proj.layers[0].id)
+        panel._layer_combo.setCurrentIndex(idx)
+        self._dispatch_run(panel, proj, [
+            LayerSpec(name="Roads (major)", color="#000000", paths=[[(10.0, 10.0), (50.0, 50.0)]]),
+            LayerSpec(name="Water", color="#1E6FD0", paths=[[(20.0, 20.0), (60.0, 60.0)]]),
+        ])
+
+        # 2. Create new layer, generate parametric (simulate via Math Art mode)
+        panel.on_mode_changed("Math Art")
+        new_layer = Layer(name="Layer 3")
+        proj.add_layer(new_layer)
+        snap = panel._get_settings_snapshot()
+        if snap:
+            ctrl.set_layer_generator_info(new_layer.id, snap)
+        ctrl.set_active_layer(new_layer.id)
+        panel._on_active_layer_changed(new_layer.id)
+        assert panel._current_mode == "Math Art"
+
+        # 3. Click a map layer — restores Map.
+        map_layers = [l for l in proj.layers
+                      if isinstance(l.generator_info, dict)
+                      and l.generator_info.get("_generator_name") == "Map"]
+        ctrl.set_active_layer(map_layers[0].id)
+        panel._on_active_layer_changed(map_layers[0].id)
+        assert panel._current_mode == "Map"
+        assert panel._param_widgets["include_rail"].isChecked() is False
+
+        # 4. Add Rails, regenerate. Panel must STAY on Map afterwards, and the
+        #    new run layers must carry settings with include_rail=True.
+        panel._param_widgets["include_rail"].setChecked(True)
+        self._store_cache(panel, md)
+        self._dispatch_run(panel, proj, [
+            LayerSpec(name="Roads (major)", color="#000000", paths=[[(10.0, 10.0), (50.0, 50.0)]]),
+            LayerSpec(name="Water", color="#1E6FD0", paths=[[(20.0, 20.0), (60.0, 60.0)]]),
+            LayerSpec(name="Rail", color="#7A4A2B", paths=[[(15.0, 15.0), (45.0, 45.0)]]),
+        ])
+
+        # Panel must stay on Map (regression: previously snapped to Parametric).
+        assert panel._current_mode == "Map", (
+            f"Panel snapped away from Map after regenerate: {panel._current_mode}"
+        )
+        assert panel._param_widgets["include_rail"].isChecked() is True
+
+        # And the new run layers must carry the CURRENT (Map+Rails) settings,
+        # not whatever the panel briefly snapped to during layer removal.
+        new_map_layers = [l for l in proj.layers
+                          if isinstance(l.generator_info, dict)
+                          and l.generator_info.get("_generator_name") == "Map"]
+        assert len(new_map_layers) == 3
+        for layer in new_map_layers:
+            gs = layer.generator_info.get("_generator_settings")
+            assert isinstance(gs, dict)
+            assert gs.get("mode") == "Map", (
+                f"_generator_settings.mode is {gs.get('mode')}, expected 'Map' "
+                f"(capture happened too late and recorded the wrong generator)"
+            )
+            assert gs.get("generator_name") == "Map"
+            assert gs.get("params", {}).get("include_rail") is True
+
+        # 5. After regen, selecting any map layer again must restore the new
+        #    settings (include_rail=True, not the pre-regen False).
+        panel.on_mode_changed("Math Art")
+        panel._on_active_layer_changed(new_map_layers[0].id)
+        assert panel._current_mode == "Map"
+        assert panel._param_widgets["include_rail"].isChecked() is True

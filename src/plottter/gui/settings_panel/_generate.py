@@ -117,6 +117,18 @@ class _GenerateMixin:
                 ):
                     prior_run_id = info["_generator_run_id"]
             self._pending_multilayer_regen_run_id = prior_run_id
+            # Capture the settings NOW — the panel currently shows exactly what
+            # is being generated. Capturing later in _on_multilayer_generation_finished
+            # is unsafe because removing the old run's layers can re-select a
+            # non-map layer in the layer panel, which triggers
+            # _on_active_layer_changed and snaps the panel to that layer's
+            # (single-layer) generator before our capture runs — so we'd store
+            # the wrong generator's settings on every new map layer.
+            self._pending_multilayer_run_settings = (
+                self._capture_multilayer_run_settings()
+                if hasattr(self, "_capture_multilayer_run_settings")
+                else None
+            )
 
         # Merge dynamic overrides as a reserved param key so generators
         # (and future machinery) can inspect them without touching static params.
@@ -208,7 +220,12 @@ class _GenerateMixin:
         new_run_id = str(uuid.uuid4())
         old_run_id = getattr(self, "_pending_multilayer_regen_run_id", None)
         self._pending_multilayer_regen_run_id = None
+        # Settings were captured in _on_generate, before removing old layers
+        # could side-effect the panel into a different mode/generator.
+        run_settings = getattr(self, "_pending_multilayer_run_settings", None)
+        self._pending_multilayer_run_settings = None
 
+        first_new_layer_id: str | None = None
         macro_name = "Regenerate Layers" if old_run_id else "Generate Layers"
         self._controller.undo_stack.beginMacro(macro_name)
         try:
@@ -223,23 +240,38 @@ class _GenerateMixin:
                 for lid in old_ids:
                     self._controller.remove_layer(lid)
 
-            # Add the freshly generated layers, each tagged with both the
-            # generator name and the new run id so a future regenerate can
-            # find them without relying on which layer is active.
+            # Add the freshly generated layers, each tagged with the generator
+            # name + new run id (so future regenerate finds them regardless of
+            # which layer is active) AND a snapshot of the settings that
+            # produced the run (so selecting any run layer can restore the
+            # generator/params in the panel — see _apply_multilayer_run_settings).
             generator_name = getattr(self._generator, "name", "")
             for spec in layer_specs:
+                gen_info: dict = {
+                    "_generator_name": generator_name,
+                    "_generator_run_id": new_run_id,
+                }
+                if run_settings is not None:
+                    gen_info["_generator_settings"] = run_settings
                 layer = Layer(
                     name=spec.name,
                     color=spec.color,
                     paths=spec.paths,
-                    generator_info={
-                        "_generator_name": generator_name,
-                        "_generator_run_id": new_run_id,
-                    },
+                    generator_info=gen_info,
                 )
                 self._controller.add_layer(layer)
+                if first_new_layer_id is None:
+                    first_new_layer_id = layer.id
         finally:
             self._controller.undo_stack.endMacro()
+
+        # Removing old run layers can re-select a non-run layer in the layer
+        # panel (auto-pick on delete), which would leave the panel snapped to
+        # that layer's single-layer generator. Re-activate one of the newly
+        # created run layers so the panel returns to the multi-layer generator
+        # the user just generated with.
+        if first_new_layer_id is not None:
+            self._controller.set_active_layer(first_new_layer_id)
 
     def _on_generation_metadata(self, meta: dict, source_layer_id: str) -> None:
         """Handle side-channel metadata emitted by GeneratorWorker after generation.

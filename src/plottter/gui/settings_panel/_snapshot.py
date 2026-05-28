@@ -401,11 +401,179 @@ class _SnapshotMixin:
             return self._layer_combo.itemData(idx)
         return None
 
+    def _capture_multilayer_run_settings(self) -> dict:
+        """Capture the panel state that produced a multi-layer run.
+
+        Stored under ``_generator_settings`` in each run layer's
+        ``generator_info``. ``_apply_multilayer_run_settings`` consumes this to
+        restore the generator + params when the user later selects one of the
+        run's layers — so they can tweak settings and re-generate in place,
+        instead of seeing the panel stuck on whatever single-layer generator
+        was active when they clicked the map layer.
+        """
+        try:
+            from plottter.gui.widgets.font_picker import FontPicker as _FP
+        except ImportError:
+            _FP = None  # type: ignore[assignment,misc]
+
+        params: dict[str, Any] = {}
+        for name, widget in self._param_widgets.items():
+            if isinstance(widget, (QDoubleSpinBox, QSpinBox)):
+                params[name] = widget.value()
+            elif isinstance(widget, QPlainTextEdit):
+                params[name] = widget.toPlainText()
+            elif isinstance(widget, QLineEdit):
+                sentinel = widget.property("_sentinel")
+                params[name] = sentinel if sentinel is not None else widget.text()
+            elif isinstance(widget, QComboBox):
+                params[name] = widget.currentText()
+            elif isinstance(widget, QCheckBox):
+                params[name] = widget.isChecked()
+            elif _FP is not None and isinstance(widget, _FP):
+                params[name] = widget.font_path()
+
+        settings: dict[str, Any] = {
+            "mode": self._current_mode,
+            "generator_name": (
+                self._generator_type_combo.currentText()
+                if hasattr(self, "_generator_type_combo")
+                else ""
+            ),
+            "params": params,
+        }
+        # Map-specific: persist the location so the cache can be reloaded.
+        # (_map_data itself is too large to store on each layer; reload from
+        # the location-keyed disk cache when the run is later selected.)
+        if self._current_mode == "Map" and hasattr(self, "_map_location_edit"):
+            settings["location"] = self._map_location_edit.text()
+        return settings
+
+    def _apply_multilayer_run_settings(self, info: dict) -> None:
+        """Restore the mode/generator/params from a multi-layer run's stored settings.
+
+        Called from ``_on_active_layer_changed`` when the selected layer carries
+        both ``_generator_run_id`` and ``_generator_settings``. Switches mode +
+        generator, restores widget values, and for Map also reloads the cached
+        ``_map_data`` and re-initialises ``_map_view`` so a subsequent Generate
+        replaces the run with the user's settings (and pan/zoom intact).
+        """
+        settings = info.get("_generator_settings")
+        if not isinstance(settings, dict):
+            return
+
+        mode = settings.get("mode", "")
+        if mode and mode != self._current_mode:
+            # on_mode_changed runs synchronously and rebuilds the generator combo.
+            self.mode_change_requested.emit(mode)
+
+        gen_name = settings.get("generator_name", "")
+        if gen_name:
+            idx = self._generator_type_combo.findText(gen_name)
+            if idx >= 0:
+                self._generator_type_combo.blockSignals(True)
+                self._generator_type_combo.setCurrentIndex(idx)
+                self._generator_type_combo.blockSignals(False)
+                # Always rebuild params UI so subsequent widget-set calls hit
+                # the correct generator's widgets (mirrors _apply_settings_snapshot).
+                self._on_generator_type_changed()
+
+        try:
+            from plottter.gui.widgets.font_picker import FontPicker as _FP
+        except ImportError:
+            _FP = None  # type: ignore[assignment,misc]
+        for name, value in settings.get("params", {}).items():
+            widget = self._param_widgets.get(name)
+            if widget is None:
+                continue
+            if isinstance(widget, (QDoubleSpinBox, QSpinBox)):
+                widget.setValue(value)
+            elif isinstance(widget, QPlainTextEdit):
+                widget.setPlainText(str(value))
+            elif isinstance(widget, QLineEdit):
+                widget.setText(str(value))
+            elif isinstance(widget, QComboBox):
+                combo_idx = widget.findText(str(value))
+                if combo_idx >= 0:
+                    widget.setCurrentIndex(combo_idx)
+            elif isinstance(widget, QCheckBox):
+                widget.setChecked(bool(value))
+            elif _FP is not None and isinstance(widget, _FP):
+                widget.set_font_path(str(value))
+
+        # Map-specific restore: location text, cached map_data, and the map view.
+        if mode == "Map" and hasattr(self, "_map_location_edit"):
+            location = settings.get("location", "")
+            self._map_location_edit.setText(location)
+            cached = None
+            if location:
+                try:
+                    from plottter.osm.cache import (
+                        cache_key as _cache_key,
+                        load as _cache_load,
+                    )
+                    saved_params = settings.get("params", {})
+                    radius = float(saved_params.get("radius_km", 1.5))
+                    extent = str(saved_params.get("extent_mode", "radius"))
+                    cats = (
+                        self._get_enabled_map_categories(saved_params)
+                        if hasattr(self, "_get_enabled_map_categories")
+                        else []
+                    )
+                    cached = _cache_load(_cache_key(location, radius, extent, cats))
+                except Exception:  # noqa: BLE001 — cache errors must not bubble up
+                    cached = None
+            if cached is not None:
+                self._map_data = cached
+                if hasattr(self, "_init_map_view_from_data"):
+                    self._init_map_view_from_data(cached)
+                if hasattr(self, "_map_status_label"):
+                    n = sum(len(v) for v in cached.features.values())
+                    self._map_status_label.setText(
+                        f"Loaded: {n:,} features (cached)"
+                    )
+            elif (
+                self._map_data is not None
+                and getattr(self._map_data, "location", None) == location
+            ):
+                # Cache key didn't match (e.g. user changed radius between
+                # Fetch and Generate, so the cache was written under a
+                # different key) but the in-session payload matches the
+                # location — keep it so the user can re-Generate immediately.
+                if hasattr(self, "_init_map_view_from_data"):
+                    self._init_map_view_from_data(self._map_data)
+            elif hasattr(self, "_map_status_label") and location:
+                # No cached copy and no matching in-session data — prompt refetch.
+                self._map_status_label.setText("Map data not cached — click Fetch")
+
+    def _is_multilayer_run_member(self, layer_id: str | None) -> bool:
+        """True if *layer_id* belongs to a multi-layer generator run.
+
+        Layers emitted by a multi-layer generator (Map, Pixel Art) carry a
+        ``_generator_run_id`` in their ``generator_info``. Their settings are
+        owned by the run as a whole, not by the single-layer snapshot
+        mechanism, so the snapshot save MUST skip them — overwriting a run
+        member with a single-layer snapshot destroys the ``_generator_run_id``
+        link, which makes re-generation append duplicates instead of replacing
+        the run (and mislabels the layer as a different generator's output).
+        """
+        if not layer_id:
+            return False
+        layer = self._controller.get_layer(layer_id)
+        return bool(
+            layer is not None
+            and isinstance(layer.generator_info, dict)
+            and layer.generator_info.get("_generator_run_id")
+        )
+
     def flush_current_snapshot(self) -> None:
         """Save current UI state to the active layer's generator_info."""
         snapshot = self._get_settings_snapshot()
         layer_id = self.current_layer_id()
-        if snapshot is not None and layer_id:
+        if (
+            snapshot is not None
+            and layer_id
+            and not self._is_multilayer_run_member(layer_id)
+        ):
             self._controller.set_layer_generator_info(layer_id, snapshot)
 
     # ------------------------------------------------------------------
@@ -663,9 +831,16 @@ class _SnapshotMixin:
         if self._fmm_btn_alive():
             self._pick_fmm_source_btn.setText("Pick on Canvas")  # type: ignore[union-attr]
 
-        # Save current settings to the layer currently shown in the target combo
+        # Save current settings to the layer currently shown in the target combo.
+        # Skip layers that belong to a multi-layer run — overwriting their
+        # generator_info would destroy the _generator_run_id link (see
+        # _is_multilayer_run_member).
         prev_layer_id = self.current_layer_id()
-        if prev_layer_id and prev_layer_id != layer_id:
+        if (
+            prev_layer_id
+            and prev_layer_id != layer_id
+            and not self._is_multilayer_run_member(prev_layer_id)
+        ):
             snapshot = self._get_settings_snapshot()
             if snapshot is not None:
                 self._controller.set_layer_generator_info(prev_layer_id, snapshot)
@@ -677,11 +852,19 @@ class _SnapshotMixin:
             self._layer_combo.setCurrentIndex(idx)
             self._layer_combo.blockSignals(False)
 
-        # Restore the new layer's saved settings (if any)
+        # Restore the new layer's saved settings (if any). Multi-layer runs
+        # (Map, Pixel Art) take precedence — their settings are stored at
+        # generation time on every run layer so selecting any of them brings
+        # the panel back to that run's exact configuration.
         new_layer = self._controller.get_layer(layer_id)
         if new_layer is not None and isinstance(new_layer.generator_info, dict):
             info = new_layer.generator_info
-            if info.get("mode") in ("Math Art", "Image to Lines", "3D Scene"):
+            if (
+                info.get("_generator_run_id")
+                and isinstance(info.get("_generator_settings"), dict)
+            ):
+                self._apply_multilayer_run_settings(info)
+            elif info.get("mode") in ("Math Art", "Image to Lines", "3D Scene"):
                 self._apply_settings_snapshot(info)
 
     def _on_generator_info_changed(self, layer_id: str) -> None:
