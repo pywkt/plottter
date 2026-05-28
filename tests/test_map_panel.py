@@ -1175,3 +1175,155 @@ class TestGetEnabledMapCategoriesPlaces:
         assert key_on != key_off, (
             "cache key must differ when include_place_labels toggles"
         )
+
+
+class TestLabelParamRestoreOnSelect:
+    """Label params (include_*_labels, label_font_size_mm, label_min_feature_mm,
+    label_language) live in ordinary ``_param_widgets`` entries and must be
+    captured by ``_capture_multilayer_run_settings`` / restored by
+    ``_apply_multilayer_run_settings`` just like any other map param.
+
+    Regression guard for task 156.1: setting label params away from their
+    defaults, generating a run, switching modes, then selecting a run layer
+    must restore every label param to the tweaked value.
+    """
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _build(self, qtbot, qapp):
+        from plottter.osm.types import MapData, MapFeature
+        from plottter.gui.project_controller import ProjectController
+        from plottter.gui.settings_panel import SettingsPanel
+
+        md = MapData(
+            location="detroit, mi",
+            center=(42.33, -83.05),
+            bbox=(42.32, -83.06, 42.34, -83.04),
+            features={
+                "roads_major": [MapFeature(tags={"highway": "primary"},
+                                           coords=[(42.32, -83.06), (42.34, -83.04)],
+                                           is_area=False)],
+                "water": [MapFeature(tags={"natural": "water"},
+                                     coords=[(42.325, -83.05), (42.335, -83.05),
+                                             (42.335, -83.045), (42.325, -83.045),
+                                             (42.325, -83.05)],
+                                     is_area=True)],
+            },
+        )
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        proj = Project(name="t", canvas=canvas)
+        proj.add_layer(Layer(name="Layer 1"))
+        ctrl = ProjectController(proj)
+        panel = SettingsPanel(ctrl)
+        qtbot.addWidget(panel)
+        panel.mode_change_requested.connect(panel.on_mode_changed)
+        return proj, ctrl, panel, md
+
+    def _generate_label_run(self, panel, proj, md):
+        """Set label params away from their defaults, prime the cache, dispatch
+        a fake multi-layer generation finish, and return the resulting run layers."""
+        from plottter.generators.base import LayerSpec
+        from plottter.generators.map_generator import MapGenerator
+        from plottter.osm.cache import cache_key, store
+
+        panel.on_mode_changed("Map")
+        panel._map_location_edit.setText("detroit, mi")
+
+        # Tweak every label param away from its default value so we can
+        # detect any param that is silently dropped from the snapshot loop.
+        panel._param_widgets["include_water_labels"].setChecked(False)    # default True
+        panel._param_widgets["include_park_labels"].setChecked(False)     # default True
+        panel._param_widgets["include_waterway_labels"].setChecked(True)  # default False
+        panel._param_widgets["include_place_labels"].setChecked(False)    # default True
+        panel._param_widgets["include_road_labels"].setChecked(True)      # default False
+        panel._param_widgets["label_font_size_mm"].setValue(5.0)          # default 3.5
+        panel._param_widgets["label_min_feature_mm"].setValue(12.0)       # default 8.0
+        panel._param_widgets["label_language"].setText("en")              # default ""
+
+        # Compute cache key from the tweaked panel state and prime the cache.
+        params = panel.get_params()
+        cats = panel._get_enabled_map_categories(params)
+        store(
+            cache_key("detroit, mi", float(params["radius_km"]),
+                      str(params["extent_mode"]), cats),
+            md,
+        )
+
+        idx = panel._layer_combo.findData(proj.layers[0].id)
+        panel._layer_combo.setCurrentIndex(idx)
+        panel._generator = MapGenerator()
+        panel._pending_multilayer_regen_run_id = None
+        panel._pending_multilayer_run_settings = panel._capture_multilayer_run_settings()
+        panel._on_multilayer_generation_finished([
+            LayerSpec(name="Roads (major)", color="#000000",
+                      paths=[[(10.0, 10.0), (50.0, 50.0)]]),
+            LayerSpec(name="Water", color="#1E6FD0",
+                      paths=[[(20.0, 20.0), (60.0, 60.0)]]),
+        ])
+        return [
+            layer for layer in proj.layers
+            if isinstance(layer.generator_info, dict)
+            and layer.generator_info.get("_generator_name") == "Map"
+        ]
+
+    # ------------------------------------------------------------------
+    # Tests
+    # ------------------------------------------------------------------
+
+    def test_label_params_restored_after_mode_switch(self, qtbot, qapp):
+        """Generate a map run with non-default label params → switch mode →
+        select a run layer → every label param must be restored to the tweaked
+        value (not the generator default)."""
+        proj, ctrl, panel, md = self._build(qtbot, qapp)
+        map_layers = self._generate_label_run(panel, proj, md)
+
+        panel.on_mode_changed("Math Art")
+        assert panel._current_mode == "Math Art"
+
+        panel._on_active_layer_changed(map_layers[0].id)
+
+        assert panel._current_mode == "Map"
+        assert panel._param_widgets["include_water_labels"].isChecked() is False
+        assert panel._param_widgets["include_park_labels"].isChecked() is False
+        assert panel._param_widgets["include_waterway_labels"].isChecked() is True
+        assert panel._param_widgets["include_place_labels"].isChecked() is False
+        assert panel._param_widgets["include_road_labels"].isChecked() is True
+        assert panel._param_widgets["label_font_size_mm"].value() == pytest.approx(5.0)
+        assert panel._param_widgets["label_min_feature_mm"].value() == pytest.approx(12.0)
+        assert panel._param_widgets["label_language"].text() == "en"
+
+    def test_label_params_in_settings_snapshot(self, qtbot, qapp):
+        """Every run layer's ``_generator_settings`` must carry the tweaked label
+        param values so any layer of the run can restore the full configuration."""
+        proj, ctrl, panel, md = self._build(qtbot, qapp)
+        map_layers = self._generate_label_run(panel, proj, md)
+
+        for layer in map_layers:
+            settings = layer.generator_info.get("_generator_settings", {})
+            params = settings.get("params", {})
+            assert params.get("include_water_labels") is False
+            assert params.get("include_park_labels") is False
+            assert params.get("include_waterway_labels") is True
+            assert params.get("include_place_labels") is False
+            assert params.get("include_road_labels") is True
+            assert params.get("label_font_size_mm") == pytest.approx(5.0)
+            assert params.get("label_min_feature_mm") == pytest.approx(12.0)
+            assert params.get("label_language") == "en"
+
+    def test_second_run_layer_restores_label_params(self, qtbot, qapp):
+        """Selecting the *second* run layer (not just the first) must also
+        restore every label param — all run layers carry the same snapshot."""
+        proj, ctrl, panel, md = self._build(qtbot, qapp)
+        map_layers = self._generate_label_run(panel, proj, md)
+        assert len(map_layers) >= 2, "need ≥2 run layers for this test"
+
+        panel.on_mode_changed("Math Art")
+        panel._on_active_layer_changed(map_layers[1].id)
+
+        assert panel._current_mode == "Map"
+        assert panel._param_widgets["include_waterway_labels"].isChecked() is True
+        assert panel._param_widgets["include_road_labels"].isChecked() is True
+        assert panel._param_widgets["label_font_size_mm"].value() == pytest.approx(5.0)
+        assert panel._param_widgets["label_language"].text() == "en"
