@@ -706,3 +706,103 @@ def collect_road_labels(
         )
 
     return labels
+
+
+def _hershey_text_width(text: str, font_size_mm: float) -> float:
+    """Return the rendered width of *text* in mm at *font_size_mm* cap height.
+
+    Uses the Simplex Hershey font advance widths, scaled so that the cap
+    height equals *font_size_mm*.  No letter-spacing is added.
+    """
+    from plottter.generators._hershey import CAP_HEIGHT, glyph_strokes
+
+    if not text:
+        return 0.0
+    scale = font_size_mm / CAP_HEIGHT
+    width = 0.0
+    for ch in text:
+        left, right, _ = glyph_strokes(ch)
+        width += (right - left) * scale
+    return width
+
+
+def place_with_collision(
+    labels: list[Label],
+    font_size_mm: float,
+    clip_box_mm: tuple[float, float, float, float],
+) -> list[Label]:
+    """Place labels with axis-aligned bbox collision detection.
+
+    Implements the greedy placement algorithm from spec §6.2:
+
+    1. Compute each label's axis-aligned bounding box (bbox) per §6.1
+       using Hershey-measured text width, cap-height, and 0.25·font_size_mm
+       padding on all four sides.
+    2. Drop labels whose bbox falls (even partially) outside *clip_box_mm*.
+    3. Sort by ``(priority desc, feature_size_mm desc, text)`` so that
+       high-priority and large features win tie-breaks deterministically.
+    4. Greedy accept: keep a label if its bbox does not intersect any
+       already-accepted label's bbox.
+    5. Return accepted labels sorted by ``(category, text)`` for a stable,
+       deterministic plotting order.
+
+    Args:
+        labels:       Candidate labels from one or more ``collect_*`` calls.
+        font_size_mm: Rendered font cap height in mm.  Governs both the bbox
+                      height and the padding amount.
+        clip_box_mm:  Printable area as ``(left, top, right, bottom)`` in mm.
+                      Labels with any bbox corner outside this rectangle are
+                      discarded before collision testing.
+
+    Returns:
+        Accepted labels in ``(category, text)`` order.
+    """
+    pad = font_size_mm * 0.25
+    cl, ct, cr, cb = clip_box_mm
+
+    def _bbox(label: Label) -> tuple[float, float, float, float]:
+        x, y = label.position
+        w = _hershey_text_width(label.text, font_size_mm)
+        h = font_size_mm
+        return (
+            x - w / 2 - pad,
+            y - h / 2 - pad,
+            x + w / 2 + pad,
+            y + h / 2 + pad,
+        )
+
+    def _overlaps(
+        a: tuple[float, float, float, float],
+        b: tuple[float, float, float, float],
+    ) -> bool:
+        """Return True if the two axis-aligned bboxes intersect."""
+        al, at, ar, ab = a
+        bl, bt, br, bb = b
+        return al < br and ar > bl and at < bb and ab > bt
+
+    # 1. Compute bboxes and drop labels whose bbox falls outside clip_box_mm
+    candidates: list[tuple[Label, tuple[float, float, float, float]]] = []
+    for label in labels:
+        bbox = _bbox(label)
+        bl, bt, br, bb = bbox
+        if bl < cl or bt < ct or br > cr or bb > cb:
+            continue
+        candidates.append((label, bbox))
+
+    # 2. Sort: priority desc, feature_size_mm desc, text asc (deterministic)
+    candidates.sort(
+        key=lambda item: (-item[0].priority, -item[0].feature_size_mm, item[0].text)
+    )
+
+    # 3. Greedy placement: accept if no overlap with already-accepted bboxes
+    accepted_bboxes: list[tuple[float, float, float, float]] = []
+    accepted: list[Label] = []
+    for label, bbox in candidates:
+        if any(_overlaps(bbox, other) for other in accepted_bboxes):
+            continue
+        accepted_bboxes.append(bbox)
+        accepted.append(label)
+
+    # 4. Return in stable (category, text) order for deterministic plotting
+    accepted.sort(key=lambda lb: (lb.category, lb.text))
+    return accepted

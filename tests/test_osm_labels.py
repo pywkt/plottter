@@ -26,6 +26,7 @@ from plottter.osm.labels import (
     collect_road_labels,
     collect_water_labels,
     collect_waterway_labels,
+    place_with_collision,
 )
 from plottter.osm.types import MapData, MapFeature
 
@@ -984,3 +985,153 @@ class TestCollectRoadLabels:
 
         assert len(labels) == 1
         assert labels[0].text == "Named Road"
+
+
+# ---------------------------------------------------------------------------
+# TestPlaceWithCollision
+# ---------------------------------------------------------------------------
+
+
+class TestPlaceWithCollision:
+    """Tests for place_with_collision — bbox placement and collision logic."""
+
+    from plottter.osm.labels import Label, place_with_collision
+
+    # Convenient large clip box that won't interfere with placement tests
+    _BOX = (0.0, 0.0, 500.0, 500.0)
+    _FONT = 5.0  # mm cap height
+
+    def _label(
+        self,
+        text: str,
+        x: float,
+        y: float,
+        priority: int = 50,
+        category: str = "water",
+        feature_size_mm: float = 10.0,
+    ) -> "Label":
+        from plottter.osm.labels import Label
+
+        return Label(
+            text=text,
+            position=(x, y),
+            priority=priority,
+            category=category,
+            feature_size_mm=feature_size_mm,
+        )
+
+    def test_higher_priority_kept_lower_dropped_on_overlap(self):
+        """When two labels overlap, the higher-priority one is kept."""
+        from plottter.osm.labels import place_with_collision
+
+        # Both labels placed at the same position → identical bboxes (full overlap)
+        high = self._label("High Priority", 100.0, 100.0, priority=100)
+        low = self._label("Low Priority", 100.0, 100.0, priority=50)
+
+        result = place_with_collision([low, high], self._FONT, self._BOX)
+
+        texts = {lb.text for lb in result}
+        assert "High Priority" in texts
+        assert "Low Priority" not in texts
+
+    def test_non_overlapping_labels_both_kept(self):
+        """Labels far apart (no bbox overlap) are both accepted."""
+        from plottter.osm.labels import place_with_collision
+
+        a = self._label("Lake Alpha", 50.0, 50.0)
+        b = self._label("Lake Beta", 400.0, 400.0)
+
+        result = place_with_collision([a, b], self._FONT, self._BOX)
+
+        assert len(result) == 2
+        assert {lb.text for lb in result} == {"Lake Alpha", "Lake Beta"}
+
+    def test_off_canvas_label_dropped(self):
+        """A label whose bbox extends outside clip_box_mm is dropped."""
+        from plottter.osm.labels import place_with_collision
+
+        # Place a label right at the edge — its padded bbox will fall outside
+        edge = self._label("Edge Label", 0.5, 0.5, priority=100)
+        inside = self._label("Inside Label", 250.0, 250.0)
+
+        clip = (0.0, 0.0, 500.0, 500.0)
+        result = place_with_collision([edge, inside], self._FONT, clip)
+
+        texts = {lb.text for lb in result}
+        # edge label bbox extends below 0 (left = 0.5 - w/2 - pad < 0)
+        assert "Edge Label" not in texts
+        assert "Inside Label" in texts
+
+    def test_label_fully_outside_clip_box_dropped(self):
+        """A label positioned outside the canvas entirely is dropped."""
+        from plottter.osm.labels import place_with_collision
+
+        outside = self._label("Way Outside", 1000.0, 1000.0)
+        result = place_with_collision([outside], self._FONT, (0.0, 0.0, 200.0, 200.0))
+        assert result == []
+
+    def test_stable_output_order_on_shuffled_input(self):
+        """Output order is (category, text) regardless of input order."""
+        import random
+        from plottter.osm.labels import place_with_collision
+
+        labels = [
+            self._label("Zephyr River", 100.0, 100.0, category="waterways"),
+            self._label("Alpha Lake", 200.0, 200.0, category="water"),
+            self._label("Metro Road", 300.0, 300.0, category="roads"),
+            self._label("Beta Park", 400.0, 400.0, category="parks"),
+        ]
+
+        # Shuffle and run twice; output should be identical
+        shuffled = labels[:]
+        random.shuffle(shuffled)
+        result1 = place_with_collision(labels, self._FONT, self._BOX)
+        result2 = place_with_collision(shuffled, self._FONT, self._BOX)
+
+        assert [lb.text for lb in result1] == [lb.text for lb in result2]
+        # Expected (category, text) order:
+        category_texts = [(lb.category, lb.text) for lb in result1]
+        assert category_texts == sorted(category_texts)
+
+    def test_feature_size_breaks_priority_tie(self):
+        """When priority is equal, larger feature_size_mm wins the overlap."""
+        from plottter.osm.labels import place_with_collision
+
+        # Same position, same priority — larger feature_size_mm should win
+        big = self._label("Big Lake", 100.0, 100.0, priority=50, feature_size_mm=100.0)
+        small = self._label("Small Pond", 100.0, 100.0, priority=50, feature_size_mm=1.0)
+
+        result = place_with_collision([small, big], self._FONT, self._BOX)
+
+        texts = {lb.text for lb in result}
+        assert "Big Lake" in texts
+        assert "Small Pond" not in texts
+
+    def test_empty_input_returns_empty(self):
+        """Empty label list returns empty list."""
+        from plottter.osm.labels import place_with_collision
+
+        assert place_with_collision([], self._FONT, self._BOX) == []
+
+    def test_single_label_within_canvas_returned(self):
+        """A single on-canvas label is always returned."""
+        from plottter.osm.labels import place_with_collision
+
+        label = self._label("Only Label", 250.0, 250.0)
+        result = place_with_collision([label], self._FONT, self._BOX)
+        assert len(result) == 1
+        assert result[0].text == "Only Label"
+
+    def test_text_tiebreak_is_alphabetical(self):
+        """When priority and feature_size are equal and positions don't overlap,
+        text sorting is used as deterministic tie-break (both kept here)."""
+        from plottter.osm.labels import place_with_collision
+
+        a = self._label("Alpha", 100.0, 100.0, priority=50, feature_size_mm=10.0)
+        b = self._label("Beta", 400.0, 400.0, priority=50, feature_size_mm=10.0)
+
+        result = place_with_collision([b, a], self._FONT, self._BOX)
+        assert len(result) == 2
+        # Output sorted by (category, text)
+        assert result[0].text == "Alpha"
+        assert result[1].text == "Beta"
