@@ -1139,3 +1139,39 @@ class TestMultiLayerRegenerateKeepsRunSettings:
         panel._on_active_layer_changed(new_map_layers[0].id)
         assert panel._current_mode == "Map"
         assert panel._param_widgets["include_rail"].isChecked() is True
+
+
+# ---------------------------------------------------------------------------
+# _get_enabled_map_categories — places category — task 155.3
+# ---------------------------------------------------------------------------
+
+
+class TestGetEnabledMapCategoriesPlaces:
+    """_get_enabled_map_categories appends 'places' iff include_place_labels is True."""
+
+    def test_places_included_when_true(self, settings_panel):
+        cats = settings_panel._get_enabled_map_categories({"include_place_labels": True})
+        assert "places" in cats
+
+    def test_places_included_by_default(self, settings_panel):
+        """Default value is True, so omitting the key must still include 'places'."""
+        cats = settings_panel._get_enabled_map_categories({})
+        assert "places" in cats
+
+    def test_places_excluded_when_false(self, settings_panel):
+        cats = settings_panel._get_enabled_map_categories({"include_place_labels": False})
+        assert "places" not in cats
+
+    def test_toggling_changes_cache_key(self, settings_panel):
+        """Different include_place_labels values must produce different cache keys."""
+        from plottter.osm.cache import cache_key
+
+        cats_on = settings_panel._get_enabled_map_categories({"include_place_labels": True})
+        cats_off = settings_panel._get_enabled_map_categories({"include_place_labels": False})
+
+        key_on = cache_key("TestCity", 1.5, "radius", cats_on)
+        key_off = cache_key("TestCity", 1.5, "radius", cats_off)
+
+        assert key_on != key_off, (
+            "cache key must differ when include_place_labels toggles"
+        )
