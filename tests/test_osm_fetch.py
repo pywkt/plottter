@@ -321,3 +321,75 @@ def test_attribution_default():
     """MapData must carry the OSM attribution string."""
     result = _call_fetch()
     assert "OpenStreetMap" in result.attribution
+
+
+# ---------------------------------------------------------------------------
+# Places category — node elements
+# ---------------------------------------------------------------------------
+
+_PLACES_FIXTURE = (
+    __import__("pathlib").Path(__file__).parent / "fixtures" / "osm" / "places_small.json"
+)
+
+
+def _load_places_features():
+    """Parse the places fixture into MapFeature objects via _parse_elements."""
+    import json
+
+    from plottter.osm.overpass import _parse_elements
+
+    data = json.loads(_PLACES_FIXTURE.read_text())
+    return _parse_elements(data["elements"])
+
+
+def test_places_category_populated_in_features():
+    """fetch_map_data with 'places' enabled must populate features['places']."""
+    place_features = _load_places_features()
+
+    with patch("plottter.osm.geocode.geocode", return_value=_geocode_result()), \
+         patch("plottter.osm.overpass.fetch_overpass", return_value=place_features):
+        result = fetch_map_data(
+            "Kyoto",
+            radius_km=1.5,
+            enabled_categories=["places"],
+            endpoint=_TEST_ENDPOINT,
+            user_agent=_TEST_UA,
+        )
+
+    assert "places" in result.features
+    assert len(result.features["places"]) == 2
+
+
+def test_places_features_are_point_nodes():
+    """Place node features from the fixture must have a single coord and is_area=False."""
+    place_features = _load_places_features()
+
+    for feat in place_features:
+        assert len(feat.coords) == 1, "place node must have exactly one coordinate"
+        assert feat.is_area is False, "place node must not be flagged as an area"
+
+
+def test_places_feature_tags_include_place_values():
+    """Fixture place features must carry the expected place tag values."""
+    place_features = _load_places_features()
+
+    place_vals = {f.tags.get("place") for f in place_features}
+    assert "island" in place_vals
+    assert "neighbourhood" in place_vals
+
+
+def test_places_absent_when_not_enabled():
+    """'places' must be absent from features when it is not in enabled_categories."""
+    place_features = _load_places_features()
+
+    with patch("plottter.osm.geocode.geocode", return_value=_geocode_result()), \
+         patch("plottter.osm.overpass.fetch_overpass", return_value=place_features):
+        result = fetch_map_data(
+            "Kyoto",
+            radius_km=1.5,
+            enabled_categories=["roads_major"],
+            endpoint=_TEST_ENDPOINT,
+            user_agent=_TEST_UA,
+        )
+
+    assert "places" not in result.features

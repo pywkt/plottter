@@ -1,0 +1,21 @@
+{
+  "version": 0.6,
+  "generator": "test fixture",
+  "osm3s": {},
+  "elements": [
+    {
+      "type": "node",
+      "id": 1001,
+      "lat": 35.010,
+      "lon": 135.710,
+      "tags": {"place": "island", "name": "Test Island"}
+    },
+    {
+      "type": "node",
+      "id": 1002,
+      "lat": 35.020,
+      "lon": 135.720,
+      "tags": {"place": "neighbourhood", "name": "Test Neighbourhood"}
+    }
+  ]
+}
