@@ -26,18 +26,18 @@ def _is_bracketed_tag_filter(selector: str) -> bool:
 # FEATURE_CATEGORIES structure
 # ---------------------------------------------------------------------------
 
-def test_all_eight_categories_present():
+def test_all_nine_categories_present():
     expected = {
         "roads_major", "roads_minor", "rail", "water",
-        "waterways", "parks", "buildings", "coastline",
+        "waterways", "parks", "buildings", "coastline", "places",
     }
     assert set(ALL_CATS) == expected
 
 
 def test_category_keys_ordered():
-    """Declaration order matches the spec table (roads first, coastline last)."""
+    """Declaration order matches the spec table (roads first, places last)."""
     assert ALL_CATS[0] == "roads_major"
-    assert ALL_CATS[-1] == "coastline"
+    assert ALL_CATS[-1] == "places"
 
 
 def test_each_category_has_required_fields():
@@ -66,10 +66,10 @@ def test_colors_are_hex():
 
 
 def test_kind_values():
-    valid = {"line", "area"}
+    valid = {"line", "area", "labels_only"}
     for cat_id, cat in FEATURE_CATEGORIES.items():
         assert cat["kind"] in valid, (
-            f"{cat_id}: kind {cat['kind']!r} is not 'line' or 'area'"
+            f"{cat_id}: kind {cat['kind']!r} is not 'line', 'area', or 'labels_only'"
         )
 
 
@@ -208,10 +208,51 @@ def test_all_returned_selectors_are_bracketed_tag_filters():
             )
 
 
-def test_selectors_start_with_way_or_relation():
+def test_selectors_start_with_way_relation_or_node():
     for detail in ("major_only", "standard", "all_streets"):
         selectors = selectors_for_categories(ALL_ENABLED, detail)
         for sel in selectors:
-            assert sel.startswith("way[") or sel.startswith("relation["), (
-                f"selector {sel!r} does not start with 'way[' or 'relation['"
+            assert (
+                sel.startswith("way[")
+                or sel.startswith("relation[")
+                or sel.startswith("node[")
+            ), (
+                f"selector {sel!r} does not start with 'way[', 'relation[', or 'node['"
             )
+
+
+# ---------------------------------------------------------------------------
+# places category
+# ---------------------------------------------------------------------------
+
+def test_places_kind_is_labels_only():
+    assert FEATURE_CATEGORIES["places"]["kind"] == "labels_only"
+
+
+def test_places_selectors_well_formed():
+    selectors = FEATURE_CATEGORIES["places"]["selectors"]
+    assert len(selectors) == 3
+    for sel in selectors:
+        assert _is_bracketed_tag_filter(sel), (
+            f"places selector {sel!r} has no bracketed tag filter"
+        )
+    # node selector covers all four place values
+    assert 'node["place"~"^(island|islet|neighbourhood|suburb)$"]' in selectors
+    # way and relation selectors cover islands and islets only
+    assert 'way["place"~"^(island|islet)$"]' in selectors
+    assert 'relation["place"~"^(island|islet)$"]' in selectors
+
+
+def test_selectors_for_categories_places_standard():
+    selectors = selectors_for_categories(["places"], "standard")
+    assert selectors == FEATURE_CATEGORIES["places"]["selectors"]
+
+
+def test_selectors_for_categories_places_major_only():
+    selectors = selectors_for_categories(["places"], "major_only")
+    assert selectors == FEATURE_CATEGORIES["places"]["selectors"]
+
+
+def test_selectors_for_categories_places_all_streets():
+    selectors = selectors_for_categories(["places"], "all_streets")
+    assert selectors == FEATURE_CATEGORIES["places"]["selectors"]

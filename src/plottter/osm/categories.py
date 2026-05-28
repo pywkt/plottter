@@ -116,6 +116,15 @@ FEATURE_CATEGORIES: dict[str, dict] = {
         "color": "#1E6FD0",
         "kind": "line",
     },
+    "places": {
+        "selectors": [
+            'node["place"~"^(island|islet|neighbourhood|suburb)$"]',
+            'way["place"~"^(island|islet)$"]',
+            'relation["place"~"^(island|islet)$"]',
+        ],
+        "color": "#000000",
+        "kind": "labels_only",
+    },
 }
 
 # Ensure the declaration order above is preserved as insertion order (Python
@@ -129,6 +138,7 @@ _EXPECTED_ORDER = [
     "parks",
     "buildings",
     "coastline",
+    "places",
 ]
 assert list(FEATURE_CATEGORIES.keys()) == _EXPECTED_ORDER, (
     "FEATURE_CATEGORIES key order changed; update _EXPECTED_ORDER."
