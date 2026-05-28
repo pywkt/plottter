@@ -247,6 +247,71 @@ an open, airy texture.
 
 ---
 
+## Labels
+
+The Map generator can overlay feature names as vector text on the **Labels** layer — drawn
+as Hershey Simplex strokes so every letter plots as a pen path. Labels are de-cluttered
+automatically: a greedy collision-detection pass discards candidates whose bounding boxes
+overlap a higher-priority label, so the output never has overlapping text.
+
+### Label categories
+
+Five label-category toggles control which feature names appear. They are independent of
+the geometry-category toggles — you can have water labels without water areas, or road
+labels without roads.
+
+| Toggle | Labels drawn | Default |
+|--------|-------------|---------|
+| **Water Labels** | Names of lakes, ponds, and sea polygons | **on** |
+| **Park Labels** | Names of parks, forests, gardens, and green spaces | **on** |
+| **Place Labels** | Names of islands, islets, neighbourhoods, and suburbs | **on** |
+| **Waterway Labels** | Names of rivers, streams, and canals (midpoint of longest segment) | off |
+| **Road Labels** | Names of major roads (one label per distinct road name) | off |
+
+Water and park labels are placed at the representative point of the clipped polygon (a
+point guaranteed to lie inside the shape). Waterway and road labels are placed at the
+midpoint of the longest contiguous clipped segment. Place labels on point nodes (e.g.
+neighbourhood markers) are placed at the node location.
+
+### Label parameters
+
+| Parameter | Range | Default | Description |
+|-----------|-------|---------|-------------|
+| `label_font_size_mm` | 2.0–8.0 mm | **3.5 mm** | Cap height of label glyphs |
+| `label_min_feature_mm` | 0.0 mm+ | **8.0 mm** | Skip area features whose √area is smaller than this (prevents tiny ponds or parks getting labels) |
+| `label_language` | BCP-47 code | *(empty)* | Prefer `name:<language>` OSM tag (e.g. `en`, `ja`); falls back to the plain `name` tag when absent |
+
+**Label font size** governs the cap height of every rendered character. At the default
+3.5 mm a typical city-block label is legible on A4/Letter; increase to 5–6 mm for larger
+prints or coarser pens.
+
+**Label min feature** filters out small area features before labelling. The default
+8.0 mm means a water body must be at least 8 mm across (as √area in canvas mm) before
+it earns a label. Set to 0 to label all named features regardless of size.
+
+**Label language** selects the preferred language for OSM name tags. Leave empty for the
+OSM default (`name` tag, usually the local language). Set to `en` for English names where
+available, `ja` for Japanese, `de` for German, and so on. The generator falls back to the
+plain `name` tag whenever the requested language variant is absent.
+
+### Place labels and the extra Overpass query
+
+The **places** data category (islands, islets, neighbourhoods, suburbs) is fetched
+alongside the other geometry categories — but **only when Place Labels is enabled**. It
+adds one additional Overpass request to the Fetch step, querying
+`node/way/relation["place"~"^(island|islet|neighbourhood|suburb)$"]`. On a small radius
+this is fast; on a large radius it may add a few extra seconds. The data is cached to disk
+along with all other categories, so subsequent Generate calls are fully offline.
+
+### Attribution note
+
+Place names, water names, park names, and road names all come from OSM contributor data
+and are therefore covered by the same ODbL attribution that applies to the geometric
+features. The existing **Include Attribution** setting (see [Attribution (ODbL)](#attribution-odbl))
+covers label data — no additional credit step is needed.
+
+---
+
 ## Presets
 
 Four built-in presets cover common use cases:
@@ -283,6 +348,14 @@ Apply a preset from the **Preset** dropdown, then adjust individual parameters a
 | `simplify_mm` | float | 0.0–2.0 | 0.15 | Douglas–Peucker tolerance; higher = smoother, fewer points |
 | `min_feature_mm` | float | 0.0–10.0 | 0.8 | Drop polyline fragments shorter than this |
 | `include_attribution` | bool | — | true | Emit ODbL attribution credit (see below) |
+| `include_water_labels` | bool | — | true | Label named water bodies (lakes, ponds, sea) |
+| `include_park_labels` | bool | — | true | Label named parks, forests, gardens |
+| `include_place_labels` | bool | — | true | Label islands, islets, neighbourhoods, suburbs (triggers an extra Overpass query at Fetch) |
+| `include_waterway_labels` | bool | — | false | Label named rivers and canals |
+| `include_road_labels` | bool | — | false | Label named major roads |
+| `label_font_size_mm` | float | 2.0–8.0 | 3.5 | Cap height of label glyphs in mm |
+| `label_min_feature_mm` | float | 0.0+ | 8.0 | Minimum √area (mm) for area features to receive a label |
+| `label_language` | string | BCP-47 | *(empty)* | Preferred language for `name:<lang>` OSM tags; falls back to `name` |
 
 ---
 
@@ -403,8 +476,8 @@ text label on top, overlay a math-art pattern as a background, or apply post-pro
 - **Rail/transit** shows physical track ways only (no named route lines or colored
   routes by line).
 - **Coastline** is drawn as open line segments, not as a filled land polygon.
-- **Labels and street names** are not included; use the Text generator for place-name
-  overlays.
+- **Road labels** name only **major roads** (`roads_major` tier). Minor road names are
+  not labelled even with `include_road_labels` enabled.
 - **True-scale output** (e.g. exactly 1:10 000 with a scale bar) is not yet supported —
   the map is fit-to-canvas (or fit-to-positioned-view).
 - Re-opening a saved project does not eagerly re-load the map data. Selecting any

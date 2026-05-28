@@ -74,7 +74,7 @@ plottter --list-generators  # Show all available generators
 | [Getting Started](docs/getting-started.md) | Installation, first project, basic workflow |
 | [Math Art Guide](docs/math-art-guide.md) | All math generators with parameters and presets |
 | [Image-to-Lines Guide](docs/image-to-lines-guide.md) | 13 image conversion algorithms |
-| [Map Guide](docs/map-guide.md) | OpenStreetMap-based map art: fetch, interactive pan/zoom positioning, edit-in-place, categories, fills, attribution, CLI |
+| [Map Guide](docs/map-guide.md) | OpenStreetMap-based map art: fetch, interactive pan/zoom positioning, edit-in-place, categories, fills, labels (water/park/place/road), attribution, CLI |
 | [Layers & Colors](docs/layers-and-colors.md) | Multi-layer workflows and color separation |
 | [Export & Plotting](docs/export-and-plotting.md) | SVG, HPGL, G-code, Mural export and AxiDraw control |
 | [Preview & Simulation](docs/preview-and-simulation.md) | Animation, travel metrics, pen jitter |
