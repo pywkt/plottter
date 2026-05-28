@@ -18,7 +18,7 @@ import pytest
 from shapely.geometry import Point, Polygon
 
 from plottter.osm.geometry import FitTransform, mercator
-from plottter.osm.labels import Label, _resolve_name, collect_water_labels
+from plottter.osm.labels import Label, _resolve_name, collect_park_labels, collect_water_labels
 from plottter.osm.types import MapData, MapFeature
 
 
@@ -314,3 +314,144 @@ class TestCollectWaterLabels:
             md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
         )
         assert labels == []
+
+
+# ---------------------------------------------------------------------------
+# Helpers for park label tests
+# ---------------------------------------------------------------------------
+
+
+def _park_feature(
+    lat: float,
+    lon: float,
+    half_deg: float = 0.001,
+    name: str | None = None,
+    is_area: bool = True,
+) -> MapFeature:
+    """Square park polygon centred at (lat, lon), spanning ±half_deg."""
+    coords = [
+        (lat - half_deg, lon - half_deg),
+        (lat - half_deg, lon + half_deg),
+        (lat + half_deg, lon + half_deg),
+        (lat + half_deg, lon - half_deg),
+        (lat - half_deg, lon - half_deg),  # close the ring
+    ]
+    tags: dict[str, str] = {}
+    if name is not None:
+        tags["name"] = name
+    return MapFeature(tags=tags, coords=coords, is_area=is_area)
+
+
+def _park_map_data(features: list[MapFeature]) -> MapData:
+    return MapData(
+        location="Test",
+        center=(0.0, 0.0),
+        bbox=(-1.0, -1.0, 1.0, 1.0),
+        features={"parks": features},
+    )
+
+
+# ---------------------------------------------------------------------------
+# TestCollectParkLabels
+# ---------------------------------------------------------------------------
+
+
+class TestCollectParkLabels:
+    @pytest.fixture
+    def tf(self) -> FitTransform:
+        return _transform()
+
+    @pytest.fixture
+    def box(self) -> tuple[float, float, float, float]:
+        return _clip_box()
+
+    def test_two_named_features_yield_two_labels(self, tf, box):
+        """Fixture MapData with 2 named park polygons → exactly 2 Labels."""
+        f1 = _park_feature(0.01, 0.01, name="Central Park")
+        f2 = _park_feature(0.05, 0.05, name="Hyde Park")
+        md = _park_map_data([f1, f2])
+
+        labels = collect_park_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+
+        assert len(labels) == 2
+        assert {lb.text for lb in labels} == {"Central Park", "Hyde Park"}
+
+    def test_priority_is_70(self, tf, box):
+        """Park labels must carry priority 70."""
+        md = _park_map_data([_park_feature(0.01, 0.01, name="Green Park")])
+        labels = collect_park_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+        assert len(labels) == 1
+        assert labels[0].priority == 70
+
+    def test_category_is_parks(self, tf, box):
+        md = _park_map_data([_park_feature(0.01, 0.01, name="Green Park")])
+        labels = collect_park_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+        assert labels[0].category == "parks"
+
+    def test_unnamed_feature_skipped(self, tf, box):
+        named = _park_feature(0.01, 0.01, name="Named Park")
+        unnamed = _park_feature(0.05, 0.05)  # no name tag
+        md = _park_map_data([named, unnamed])
+
+        labels = collect_park_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+
+        assert len(labels) == 1
+        assert labels[0].text == "Named Park"
+
+    def test_sub_min_size_skipped(self, tf, box):
+        """Features whose √area < min_size_mm are excluded."""
+        tiny = _park_feature(0.01, 0.01, half_deg=0.00001, name="Tiny Garden")
+        large = _park_feature(0.05, 0.05, half_deg=0.1, name="Big Forest")
+        md = _park_map_data([tiny, large])
+
+        labels = collect_park_labels(
+            md, tf, language="en", min_size_mm=1.0, clip_box_mm=box
+        )
+
+        assert len(labels) == 1
+        assert labels[0].text == "Big Forest"
+
+    def test_empty_parks_features_returns_empty_list(self, tf, box):
+        md = MapData(
+            location="Empty",
+            center=(0.0, 0.0),
+            bbox=(-1.0, -1.0, 1.0, 1.0),
+            features={},
+        )
+        labels = collect_park_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+        assert labels == []
+
+    def test_non_area_feature_skipped(self, tf, box):
+        """Features with is_area=False are not labelled."""
+        line_feature = _park_feature(0.01, 0.01, name="Park Path", is_area=False)
+        md = _park_map_data([line_feature])
+
+        labels = collect_park_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+        assert labels == []
+
+    def test_label_position_inside_polygon(self, tf, box):
+        """Label position (representative_point) lies inside the projected polygon."""
+        f = _park_feature(0.01, 0.01, half_deg=0.002, name="Test Park")
+        md = _park_map_data([f])
+
+        labels = collect_park_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+
+        assert len(labels) == 1
+        poly = _projected_polygon(f, tf)
+        px, py = labels[0].position
+        pt = Point(px, py)
+        assert poly.contains(pt) or poly.distance(pt) < 1e-6
