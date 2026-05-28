@@ -1327,3 +1327,76 @@ class TestLabelParamRestoreOnSelect:
         assert panel._param_widgets["include_road_labels"].isChecked() is True
         assert panel._param_widgets["label_font_size_mm"].value() == pytest.approx(5.0)
         assert panel._param_widgets["label_language"].text() == "en"
+
+
+class TestFetchWorkerLifetime:
+    """Regression: the worker's run() emits `finished` as its last action, so
+    when the queued slot fires on the main thread the worker thread is still
+    wrapping up. Dropping the QThread reference there used to abort with
+    'QThread: Destroyed while thread is still running' + SIGABRT. The fix is
+    to call worker.wait() before clearing the reference."""
+
+    def test_finished_handler_waits_before_clearing_ref(self, qtbot, qapp):
+        from plottter.gui.project_controller import ProjectController
+        from plottter.gui.settings_panel import SettingsPanel
+
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        proj = Project(name="t", canvas=canvas)
+        proj.add_layer(Layer(name="Layer 1"))
+        ctrl = ProjectController(proj)
+        panel = SettingsPanel(ctrl)
+        qtbot.addWidget(panel)
+        panel.on_mode_changed("Map")
+
+        mock_worker = MagicMock()
+        mock_worker.wait = MagicMock(return_value=True)
+        panel._map_fetch_worker = mock_worker
+
+        fake_map_data = _make_fake_map_data()
+        panel._on_map_fetch_finished(fake_map_data)
+
+        mock_worker.wait.assert_called_once()
+        # Ref cleared only AFTER wait() — and the only acceptable order is
+        # capture local, clear attr, wait. So after the slot returns the
+        # attribute is None and wait was called exactly once on the original.
+        assert panel._map_fetch_worker is None
+
+    def test_error_handler_waits_before_clearing_ref(self, qtbot, qapp):
+        from plottter.gui.project_controller import ProjectController
+        from plottter.gui.settings_panel import SettingsPanel
+
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        proj = Project(name="t", canvas=canvas)
+        proj.add_layer(Layer(name="Layer 1"))
+        ctrl = ProjectController(proj)
+        panel = SettingsPanel(ctrl)
+        qtbot.addWidget(panel)
+        panel.on_mode_changed("Map")
+
+        mock_worker = MagicMock()
+        mock_worker.wait = MagicMock(return_value=True)
+        panel._map_fetch_worker = mock_worker
+
+        panel._on_map_fetch_error("boom")
+
+        mock_worker.wait.assert_called_once()
+        assert panel._map_fetch_worker is None
+
+    def test_handlers_tolerate_already_cleared_worker(self, qtbot, qapp):
+        """Edge case: handler called when _map_fetch_worker is already None.
+        Must not raise (no wait() call possible, but nothing should crash)."""
+        from plottter.gui.project_controller import ProjectController
+        from plottter.gui.settings_panel import SettingsPanel
+
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        proj = Project(name="t", canvas=canvas)
+        proj.add_layer(Layer(name="Layer 1"))
+        ctrl = ProjectController(proj)
+        panel = SettingsPanel(ctrl)
+        qtbot.addWidget(panel)
+        panel.on_mode_changed("Map")
+
+        panel._map_fetch_worker = None
+        # Should not raise
+        panel._on_map_fetch_finished(_make_fake_map_data())
+        panel._on_map_fetch_error("boom")

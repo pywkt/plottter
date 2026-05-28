@@ -208,6 +208,11 @@ class _MapFetchWorker(QThread):
         cache_dir: "str | None" = None,
     ) -> None:
         super().__init__()  # no parent — prevent Qt parent-child destruction
+        # Give the thread a descriptive name so any future "QThread: Destroyed
+        # while thread is still running" warning identifies which worker is at
+        # fault (the panel calls wait() before dropping the ref, so this
+        # shouldn't fire — but the name is cheap diagnostics).
+        self.setObjectName("MapFetchWorker")
         self._location = location
         self._radius_km = radius_km
         self._extent_mode = extent_mode
@@ -230,6 +235,10 @@ class _MapFetchWorker(QThread):
                 user_agent=user_agent,
                 progress_callback=self.progress.emit,
             )
+            # The receiving slot in _MapMixin._on_map_fetch_finished must
+            # call self.wait() before dropping its reference to this QThread;
+            # otherwise Python GC can destroy the QThread object while the
+            # thread is still terminating (SIGABRT). See _map.py.
             self.finished.emit(map_data)
         except Exception as exc:  # noqa: BLE001
             self.error.emit(str(exc))

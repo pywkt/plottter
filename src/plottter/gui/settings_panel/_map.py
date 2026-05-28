@@ -180,8 +180,19 @@ class _MapMixin:
 
     def _on_map_fetch_finished(self, map_data: object) -> None:
         """Store MapData, write disk cache, update project metadata, re-enable button."""
-        self._map_data = map_data
+        # The `finished` signal is emitted from INSIDE _MapFetchWorker.run(),
+        # so when this slot runs (via a queued connection on the main thread)
+        # the worker thread is still wrapping up. If we drop the Python ref
+        # right now, the QThread destructor fires before run() has actually
+        # returned -> "QThread: Destroyed while thread is still running" +
+        # SIGABRT. wait() blocks until the thread truly terminates (in
+        # practice sub-millisecond, since emit is run()'s last statement).
+        worker = self._map_fetch_worker
         self._map_fetch_worker = None
+        if worker is not None:
+            worker.wait(5000)
+
+        self._map_data = map_data
 
         # Write to disk cache — best-effort, never crash
         try:
@@ -214,7 +225,12 @@ class _MapMixin:
 
     def _on_map_fetch_error(self, msg: str) -> None:
         """Show error message in red and re-enable the fetch button."""
+        # Same lifetime concern as _on_map_fetch_finished — wait for run() to
+        # truly return before letting the QThread object be destroyed.
+        worker = self._map_fetch_worker
         self._map_fetch_worker = None
+        if worker is not None:
+            worker.wait(5000)
         self._map_fetch_cache_key = None
         self._map_status_label.setText(f"Error: {msg}")
         self._map_status_label.setStyleSheet("color: red;")
