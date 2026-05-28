@@ -244,7 +244,12 @@ class _MapMixin:
         """Compute or restore map view from data; enable positioning controls.
 
         Restores from ``project.metadata["map_view"]`` if present (spec §6.3),
-        otherwise falls back to ``default_map_view`` (fit-to-canvas).
+        otherwise falls back to ``default_map_view`` (fit-to-canvas). Always
+        pushes the result to the canvas so the panel-side ``self._map_view``
+        and the canvas's ``_map_view`` stay in lock-step — the canvas's pan
+        handler reads its own ``_map_view`` as the starting point for each
+        drag, so any desync between the two leaks into the next pan as
+        position drift.
         """
         try:
             all_features = [f for flist in map_data.features.values() for f in flist]
@@ -266,6 +271,15 @@ class _MapMixin:
                 self._map_view = default_map_view(all_features, project.canvas)
         except Exception:  # noqa: BLE001 — positioning is best-effort
             return
+
+        # Mirror the panel view onto the canvas so a subsequent pan starts from
+        # the same position the panel will inject into the next Generate. Push
+        # a copy so panel-side mutations don't leak across the boundary.
+        if self._canvas_ref is not None and self._map_view is not None:
+            try:
+                self._canvas_ref.update_map_view(dict(self._map_view))
+            except Exception:  # noqa: BLE001
+                pass
 
         self._map_position_btn.setEnabled(True)
         self._map_reset_btn.setEnabled(True)

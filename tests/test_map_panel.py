@@ -1400,3 +1400,133 @@ class TestFetchWorkerLifetime:
         # Should not raise
         panel._on_map_fetch_finished(_make_fake_map_data())
         panel._on_map_fetch_error("boom")
+
+
+class TestMapViewPanelCanvasSync:
+    """Regression: after a multi-layer regenerate, the canvas's _map_view must
+    match the panel's self._map_view so the next pan starts from the correct
+    position. Symptom of the bug: pan #1 generates correctly, pan #2's preview
+    moves but the generated layers render at the pan-#1 position because the
+    panel/canvas views drift apart."""
+
+    def _build(self, qtbot, qapp):
+        from plottter.gui.project_controller import ProjectController
+        from plottter.gui.settings_panel import SettingsPanel
+        from plottter.osm.types import MapData, MapFeature
+        from plottter.osm.cache import cache_key, store
+
+        # Minimal MapData + cache priming so _apply_multilayer_run_settings
+        # finds the data on restore.
+        md = MapData(
+            location="x", center=(42.33, -83.05),
+            bbox=(42.30, -83.10, 42.36, -83.00),
+            features={"roads_major": [MapFeature(
+                tags={"highway": "primary"},
+                coords=[(42.32, -83.06), (42.34, -83.04)], is_area=False)]},
+        )
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        proj = Project(name="t", canvas=canvas)
+        proj.add_layer(Layer(name="Layer 1"))
+        ctrl = ProjectController(proj)
+        panel = SettingsPanel(ctrl)
+        qtbot.addWidget(panel)
+        panel.mode_change_requested.connect(panel.on_mode_changed)
+        panel.on_mode_changed("Map")
+        panel._map_location_edit.setText("x")
+        for k in ("include_rail", "include_waterways", "include_parks",
+                  "include_buildings", "include_coastline"):
+            panel._param_widgets[k].setChecked(False)
+        params = panel.get_params()
+        cats = panel._get_enabled_map_categories(params)
+        store(cache_key("x", float(params["radius_km"]),
+                        str(params["extent_mode"]), cats), md)
+        panel._map_data = md
+        return proj, ctrl, panel, md
+
+    def _run_generate_cycle(self, panel, proj):
+        from plottter.generators.base import LayerSpec
+        from plottter.generators.map_generator import MapGenerator
+        # Mirror _on_generate's pre-worker work
+        prior_run_id = None
+        for layer in proj.layers:
+            info = layer.generator_info
+            if (isinstance(info, dict)
+                and info.get("_generator_name") == "Map"
+                and info.get("_generator_run_id")):
+                prior_run_id = info["_generator_run_id"]
+        panel._pending_multilayer_regen_run_id = prior_run_id
+        panel._pending_multilayer_run_settings = panel._capture_multilayer_run_settings()
+        panel._generator = MapGenerator()
+        # Single dummy spec — we just need the macro to run.
+        panel._on_multilayer_generation_finished([
+            LayerSpec(name="Roads (major)", color="#000",
+                      paths=[[(10.0, 10.0), (50.0, 50.0)]]),
+        ])
+
+    def test_panel_and_canvas_views_stay_in_sync_across_regens(self, qtbot, qapp):
+        """After each pan + regen, the canvas must have been pushed the same
+        view that the panel holds (i.e. the user's latest drag)."""
+        from unittest.mock import MagicMock
+        proj, ctrl, panel, md = self._build(qtbot, qapp)
+        # Mock canvas so we can introspect what update_map_view received.
+        panel._canvas_ref = MagicMock()
+        idx = panel._layer_combo.findData(proj.layers[0].id)
+        panel._layer_combo.setCurrentIndex(idx)
+
+        # --- Initial: simulate fetch-finish initialising the view ---
+        panel._init_map_view_from_data(md)
+        # Canvas should have been pushed the panel's view at init.
+        assert panel._canvas_ref.update_map_view.called
+        last_pushed = panel._canvas_ref.update_map_view.call_args.args[0]
+        assert last_pushed == panel._map_view
+
+        # --- Pan #1 → view_1 ---
+        panel._on_canvas_map_view_changed(42.340, -83.040, 100.0)
+        view_1 = dict(panel._map_view)
+        # In get_params, _map_view should be view_1
+        assert panel.get_params()["_map_view"] == view_1
+
+        # --- Generate #1 (replaces Layer 1's slot, then auto-reactivates run) ---
+        panel._canvas_ref.update_map_view.reset_mock()
+        self._run_generate_cycle(panel, proj)
+        # After regen + auto-reactivate, canvas should have been pushed view_1
+        # (so the canvas pan-start matches the panel for the next drag).
+        assert panel._canvas_ref.update_map_view.called, (
+            "auto-reactivate after regen must push the restored view to the canvas"
+        )
+        pushed_after_regen_1 = panel._canvas_ref.update_map_view.call_args.args[0]
+        assert pushed_after_regen_1 == view_1
+        assert panel._map_view == view_1
+
+        # --- Pan #2 → view_2 ---
+        panel._on_canvas_map_view_changed(42.350, -83.030, 150.0)
+        view_2 = dict(panel._map_view)
+        assert view_2 != view_1
+        # The generator will receive view_2 on the next Generate.
+        assert panel.get_params()["_map_view"] == view_2
+
+        # --- Generate #2 ---
+        panel._canvas_ref.update_map_view.reset_mock()
+        self._run_generate_cycle(panel, proj)
+        # Auto-reactivate after the second regen must push view_2 (not view_1).
+        pushed_after_regen_2 = panel._canvas_ref.update_map_view.call_args.args[0]
+        assert pushed_after_regen_2 == view_2, (
+            f"canvas must be pushed view_2 ({view_2}) after second regen, "
+            f"got {pushed_after_regen_2}"
+        )
+        assert panel._map_view == view_2
+
+    def test_update_map_view_copies_dict_to_avoid_alias(self, qtbot, qapp):
+        """Canvas.update_map_view must store a copy so a later panel-side
+        mutation can't desync the two."""
+        from plottter.gui.canvas_widget import CanvasWidget
+        canvas = CanvasWidget(controller=MagicMock(current_project=MagicMock(
+            canvas=Canvas.from_preset("A4", margin=10.0))))
+        qtbot.addWidget(canvas)
+        view = {"center_lat": 1.0, "center_lon": 2.0, "scale": 100.0}
+        canvas.update_map_view(view)
+        # Mutate the original; canvas's copy must be unaffected.
+        view["center_lat"] = 999.0
+        assert canvas._map_view["center_lat"] == 1.0, (
+            "update_map_view aliased its input dict instead of copying"
+        )

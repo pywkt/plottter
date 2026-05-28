@@ -589,7 +589,13 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
             view: ``{center_lat, center_lon, scale}`` dict (same format as the
                   ``_map_view`` param injected into the generator).
         """
-        self._map_view = view
+        # Store a copy — several call sites pass their own ``self._map_view``
+        # by reference, so aliasing would let later panel-side replacements
+        # drift away from the canvas's view (and vice-versa). The pan handler
+        # reassigns ``self._map_view`` to a fresh dict per drag so it's safe
+        # on that side, but defensive copying here removes one whole class of
+        # subtle desync bugs.
+        self._map_view = dict(view) if view is not None else None
         if self._map_position_active:
             self.update()
 
