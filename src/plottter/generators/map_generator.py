@@ -847,6 +847,94 @@ class MapGenerator(Generator):
             progress_callback(100)
 
         # ------------------------------------------------------------------ #
+        # Labels layer (task 155.2).                                          #
+        # Collect name labels from enabled feature categories, de-clutter      #
+        # with greedy collision detection, then render via Hershey Simplex     #
+        # glyphs.  The 'places' category (kind="labels_only") is handled only  #
+        # here — it does NOT appear in _AREA_ORDER or _LINE_ORDER so it is     #
+        # naturally skipped by the area/line geometry loops above.             #
+        # ------------------------------------------------------------------ #
+        _label_font_size_mm: float = float(params.get("label_font_size_mm", 3.5))
+        _label_min_size_mm: float = float(params.get("label_min_feature_mm", 8.0))
+        _label_language: str = str(params.get("label_language", "") or "")
+
+        from plottter.osm.labels import (
+            collect_park_labels,
+            collect_place_labels,
+            collect_road_labels,
+            collect_water_labels,
+            collect_waterway_labels,
+            place_with_collision,
+            render_labels,
+        )
+
+        _label_candidates: list = []
+
+        if params.get("include_water_labels", True):
+            _label_candidates.extend(
+                collect_water_labels(
+                    map_data,
+                    transform,
+                    language=_label_language,
+                    min_size_mm=_label_min_size_mm,
+                    clip_box_mm=bbox_rect,
+                )
+            )
+
+        if params.get("include_park_labels", True):
+            _label_candidates.extend(
+                collect_park_labels(
+                    map_data,
+                    transform,
+                    language=_label_language,
+                    min_size_mm=_label_min_size_mm,
+                    clip_box_mm=bbox_rect,
+                )
+            )
+
+        if params.get("include_waterway_labels", False):
+            _label_candidates.extend(
+                collect_waterway_labels(
+                    map_data,
+                    transform,
+                    language=_label_language,
+                    clip_box_mm=bbox_rect,
+                )
+            )
+
+        if params.get("include_place_labels", True):
+            _label_candidates.extend(
+                collect_place_labels(
+                    map_data,
+                    transform,
+                    language=_label_language,
+                    min_size_mm=_label_min_size_mm,
+                    clip_box_mm=bbox_rect,
+                )
+            )
+
+        if params.get("include_road_labels", False):
+            _label_candidates.extend(
+                collect_road_labels(
+                    map_data,
+                    transform,
+                    language=_label_language,
+                    clip_box_mm=bbox_rect,
+                )
+            )
+
+        if _label_candidates:
+            _placed = place_with_collision(
+                _label_candidates, _label_font_size_mm, bbox_rect
+            )
+            if _placed:
+                _label_paths = render_labels(_placed, _label_font_size_mm)
+                if _label_paths:
+                    specs.append(
+                        LayerSpec(name="Labels", color="#000000", paths=_label_paths)
+                    )
+
+        # ------------------------------------------------------------------ #
         # Attribution layer (spec §12, required by ODbL).
         # ------------------------------------------------------------------ #
         include_attribution: bool = params.get("include_attribution", True)

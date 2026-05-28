@@ -1329,3 +1329,228 @@ def test_generate_layers_with_map_view():
                 assert top - tol <= y <= bottom + tol, (
                     f"y={y:.3f} outside [{top:.3f}, {bottom:.3f}]"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Phase 155.2 — Labels LayerSpec tests
+# ---------------------------------------------------------------------------
+
+
+def _make_label_test_map_data():
+    """Fixture MapData with a named water body and a named place node.
+
+    The water polygon is a 0.004° × 0.004° square near the canvas center so
+    that its representative_point lies well inside the drawing area.  The place
+    node (neighbourhood) provides a second named feature to test
+    collect_place_labels.
+    """
+    from plottter.osm.types import MapData, MapFeature
+
+    water = [
+        MapFeature(
+            tags={"natural": "water", "name": "Lake North"},
+            coords=[
+                (48.853, 2.343),
+                (48.857, 2.343),
+                (48.857, 2.347),
+                (48.853, 2.347),
+                (48.853, 2.343),
+            ],
+            is_area=True,
+        )
+    ]
+    places = [
+        MapFeature(
+            tags={"place": "neighbourhood", "name": "Le Marais"},
+            coords=[(48.855, 2.350)],
+            is_area=False,
+        )
+    ]
+    return MapData(
+        location="Paris, France",
+        center=(48.855, 2.345),
+        bbox=(48.845, 2.335, 48.865, 2.355),
+        features={
+            "water": water,
+            "places": places,
+        },
+    )
+
+
+def test_labels_layer_enabled():
+    """Phase 155.2 — Labels LayerSpec present when labels enabled.
+
+    Verifies:
+    - A MapData with a named water feature + include_water_labels=True produces
+      a 'Labels' LayerSpec with non-empty paths.
+    - All path coordinates lie inside canvas.drawing_area() (±0.01 mm).
+    - The Labels layer color is '#000000'.
+    """
+    from plottter.generators.map_generator import MapGenerator
+
+    gen = MapGenerator()
+    canvas = make_canvas()
+    map_data = _make_label_test_map_data()
+
+    params = {
+        "_map_data": map_data,
+        "simplify_mm": 0.0,
+        "min_feature_mm": 0.0,
+        "include_roads": False,
+        "include_rail": False,
+        "include_water": True,
+        "include_waterways": False,
+        "include_parks": False,
+        "include_buildings": False,
+        "include_coastline": False,
+        "include_attribution": False,
+        # label settings
+        "include_water_labels": True,
+        "include_park_labels": False,
+        "include_waterway_labels": False,
+        "include_place_labels": False,
+        "include_road_labels": False,
+        "label_font_size_mm": 3.5,
+        "label_min_feature_mm": 0.0,  # no size filter — accept all named features
+        "label_language": "",
+    }
+
+    specs = gen.generate_layers(params, canvas)
+    names = {s.name for s in specs}
+    assert "Labels" in names, f"Expected 'Labels' layer; got {names}"
+
+    labels_spec = next(s for s in specs if s.name == "Labels")
+    assert labels_spec.paths, "Labels layer must have non-empty paths"
+    assert labels_spec.color == "#000000", (
+        f"Labels layer color must be '#000000'; got {labels_spec.color}"
+    )
+
+    # All label stroke points must lie inside canvas.drawing_area() (±0.01 mm).
+    left, top, right, bottom = canvas.drawing_area()
+    tol = 0.01
+    for path in labels_spec.paths:
+        for x, y in path:
+            assert left - tol <= x <= right + tol, (
+                f"Label stroke x={x:.3f} outside drawing area [{left:.3f}, {right:.3f}]"
+            )
+            assert top - tol <= y <= bottom + tol, (
+                f"Label stroke y={y:.3f} outside drawing area [{top:.3f}, {bottom:.3f}]"
+            )
+
+
+def test_labels_layer_disabled():
+    """Phase 155.2 — No Labels layer when all include_*_labels are False.
+
+    Verifies:
+    - Setting every include_*_labels param to False produces no 'Labels'
+      LayerSpec even when the MapData contains named features.
+    """
+    from plottter.generators.map_generator import MapGenerator
+
+    gen = MapGenerator()
+    canvas = make_canvas()
+    map_data = _make_label_test_map_data()
+
+    params = {
+        "_map_data": map_data,
+        "simplify_mm": 0.0,
+        "min_feature_mm": 0.0,
+        "include_roads": False,
+        "include_rail": False,
+        "include_water": True,
+        "include_waterways": False,
+        "include_parks": False,
+        "include_buildings": False,
+        "include_coastline": False,
+        "include_attribution": False,
+        # all labels off
+        "include_water_labels": False,
+        "include_park_labels": False,
+        "include_waterway_labels": False,
+        "include_place_labels": False,
+        "include_road_labels": False,
+        "label_font_size_mm": 3.5,
+        "label_min_feature_mm": 0.0,
+    }
+
+    specs = gen.generate_layers(params, canvas)
+    names = {s.name for s in specs}
+    assert "Labels" not in names, (
+        f"'Labels' layer must be absent when all include_*_labels are False; got {names}"
+    )
+
+
+def test_places_category_no_geometry():
+    """Phase 155.2 — 'places' category produces no geometry in area/line loops.
+
+    Verifies that a MapData containing 'places' features does not produce any
+    area or line geometry for those features — only the road geometry expected
+    from roads_major is emitted (as 'Roads (major)'), and no layer named
+    'Places' appears.
+
+    The places category has kind='labels_only' and is intentionally absent from
+    _AREA_ORDER and _LINE_ORDER in generate_layers, so it is naturally excluded
+    from geometry rendering.
+    """
+    from plottter.generators.map_generator import MapGenerator
+    from plottter.osm.types import MapData, MapFeature
+
+    gen = MapGenerator()
+    canvas = make_canvas()
+
+    road = MapFeature(
+        tags={"highway": "primary"},
+        coords=[(48.850, 2.340), (48.855, 2.350), (48.860, 2.360)],
+        is_area=False,
+    )
+    # Place node that should NOT produce any drawn geometry.
+    place = MapFeature(
+        tags={"place": "suburb", "name": "Suburb Test"},
+        coords=[(48.855, 2.350)],
+        is_area=False,
+    )
+    map_data = MapData(
+        location="Paris, France",
+        center=(48.855, 2.350),
+        bbox=(48.845, 2.335, 48.865, 2.365),
+        features={
+            "roads_major": [road],
+            "places": [place],
+        },
+    )
+
+    params = {
+        "_map_data": map_data,
+        "simplify_mm": 0.0,
+        "min_feature_mm": 0.0,
+        "include_roads": True,
+        "include_rail": False,
+        "include_water": False,
+        "include_waterways": False,
+        "include_parks": False,
+        "include_buildings": False,
+        "include_coastline": False,
+        "include_attribution": False,
+        # labels off so we only get geometry layers
+        "include_water_labels": False,
+        "include_park_labels": False,
+        "include_waterway_labels": False,
+        "include_place_labels": False,
+        "include_road_labels": False,
+    }
+
+    specs = gen.generate_layers(params, canvas)
+    names = {s.name for s in specs}
+
+    # Roads (major) must be present — it has geometry data.
+    assert "Roads (major)" in names, f"Expected 'Roads (major)'; got {names}"
+
+    # No layer named 'Places' — places are labels-only.
+    assert "Places" not in names, (
+        f"'Places' layer must never appear (labels-only category); got {names}"
+    )
+
+    # Labels layer also absent because all label flags are False.
+    assert "Labels" not in names, (
+        f"'Labels' layer should be absent when all include_*_labels are False; got {names}"
+    )
