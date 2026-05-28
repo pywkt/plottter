@@ -475,3 +475,234 @@ def collect_place_labels(
         )
 
     return labels
+
+
+def collect_waterway_labels(
+    map_data: "MapData",
+    transform: "FitTransform",
+    *,
+    language: str,
+    clip_box_mm: tuple[float, float, float, float],
+) -> list[Label]:
+    """Collect labels for linear waterway features in *map_data*.
+
+    For each feature in ``map_data.features["waterways"]``:
+
+    1. Project ``(lat, lon)`` coordinates to canvas mm using *transform*.
+    2. Clip the projected line to *clip_box_mm*; drop empty results.
+    3. When the clipped result is a multi-part geometry, find the longest
+       contiguous segment.
+    4. Resolve the feature name via :func:`_resolve_name`; skip unnamed
+       features.
+    5. Place the label at ``longest_segment.interpolate(length * 0.5)``
+       (midpoint of the longest contiguous clipped segment).
+
+    Area features (``is_area=True``) are silently skipped -- waterways are
+    linear in OSM.
+
+    Args:
+        map_data:    Fetched OSM payload from
+                     :func:`plottter.osm.fetch_map_data`.
+        transform:   Canvas projection transform from
+                     :func:`plottter.osm.geometry.fit_transform`.
+        language:    Preferred display language (BCP-47 code).
+        clip_box_mm: Clipping rectangle as ``(left, top, right, bottom)``
+                     in mm.  Features entirely outside this rectangle are
+                     dropped.
+
+    Returns:
+        List of :class:`Label` objects, one per qualifying named waterway
+        feature, in the order they appear in *map_data*.
+    """
+    from shapely.geometry import LineString, MultiLineString
+    from shapely.geometry import box as shapely_box
+
+    from plottter.osm.geometry import mercator
+
+    left, top, right, bottom = clip_box_mm
+    clip_box = shapely_box(left, top, right, bottom)
+
+    waterway_features = map_data.features.get("waterways", [])
+    labels: list[Label] = []
+
+    for feature in waterway_features:
+        if feature.is_area or len(feature.coords) < 2:
+            continue
+
+        # --- resolve name; skip unnamed ---------------------------------
+        name = _resolve_name(feature.tags, language)
+        if not name:
+            continue
+
+        # --- project (lat, lon) -> canvas mm ----------------------------
+        projected: list[tuple[float, float]] = []
+        for lat, lon in feature.coords:
+            px, py = mercator(lat, lon)
+            projected.append(
+                (
+                    transform.x_origin + px * transform.scale,
+                    transform.y_origin - py * transform.scale,
+                )
+            )
+
+        line = LineString(projected)
+        clipped = line.intersection(clip_box)
+
+        if clipped.is_empty:
+            continue
+
+        # --- find the longest contiguous segment -----------------------
+        if isinstance(clipped, MultiLineString):
+            longest = max(clipped.geoms, key=lambda g: g.length)
+        else:
+            longest = clipped
+
+        if longest.length == 0:
+            continue
+
+        # --- midpoint at 50% along the longest segment -----------------
+        midpoint = longest.interpolate(longest.length * 0.5)
+        labels.append(
+            Label(
+                text=name,
+                position=(midpoint.x, midpoint.y),
+                priority=60,
+                category="waterways",
+                feature_size_mm=longest.length,
+            )
+        )
+
+    return labels
+
+
+def collect_road_labels(
+    map_data: "MapData",
+    transform: "FitTransform",
+    *,
+    language: str,
+    clip_box_mm: tuple[float, float, float, float],
+) -> list[Label]:
+    """Collect labels for major road features in *map_data*.
+
+    Groups ``map_data.features["roads_major"]`` by ``tags["name"]``, stitches
+    all segments of the same road name into connected runs via
+    ``shapely.ops.linemerge``, picks the longest run, and places a single
+    label at the midpoint of that run.
+
+    Algorithm per road name:
+
+    1. Project each segment's ``(lat, lon)`` coordinates to canvas mm.
+    2. Clip each projected segment to *clip_box_mm*; discard empty results.
+    3. Stitch the clipped segments with :func:`shapely.ops.linemerge` --
+       segments sharing endpoints are joined into a single LineString.
+    4. When multiple disconnected runs remain, pick the longest.
+    5. Place the label at ``longest_run.interpolate(run.length * 0.5)``.
+
+    Unnamed roads (no ``name`` tag) are silently skipped.  Exactly one
+    :class:`Label` is emitted per distinct road name.
+
+    Args:
+        map_data:    Fetched OSM payload from
+                     :func:`plottter.osm.fetch_map_data`.
+        transform:   Canvas projection transform from
+                     :func:`plottter.osm.geometry.fit_transform`.
+        language:    Preferred display language (BCP-47 code).
+        clip_box_mm: Clipping rectangle as ``(left, top, right, bottom)``
+                     in mm.  Segments entirely outside this rectangle are
+                     dropped.
+
+    Returns:
+        List of :class:`Label` objects, one per distinct named road, ordered
+        by first occurrence of the road name in *map_data*.
+    """
+    from collections import defaultdict
+
+    from shapely.geometry import LineString, MultiLineString
+    from shapely.geometry import box as shapely_box
+    from shapely.ops import linemerge
+
+    from plottter.osm.geometry import mercator
+
+    left, top, right, bottom = clip_box_mm
+    clip_box = shapely_box(left, top, right, bottom)
+
+    road_features = map_data.features.get("roads_major", [])
+
+    # --- group segments by base road name (insertion-order preserved) ---
+    name_order: list[str] = []
+    name_to_features: dict[str, list] = defaultdict(list)
+    for feature in road_features:
+        road_name = feature.tags.get("name", "").strip()
+        if not road_name:
+            continue
+        if road_name not in name_to_features:
+            name_order.append(road_name)
+        name_to_features[road_name].append(feature)
+
+    labels: list[Label] = []
+
+    for road_name in name_order:
+        features = name_to_features[road_name]
+
+        # --- project + clip each segment --------------------------------
+        clipped_segments = []
+        for feature in features:
+            if len(feature.coords) < 2:
+                continue
+
+            projected: list[tuple[float, float]] = []
+            for lat, lon in feature.coords:
+                px, py = mercator(lat, lon)
+                projected.append(
+                    (
+                        transform.x_origin + px * transform.scale,
+                        transform.y_origin - py * transform.scale,
+                    )
+                )
+
+            seg = LineString(projected)
+            clipped = seg.intersection(clip_box)
+
+            if clipped.is_empty:
+                continue
+
+            # Flatten multi-part intersection results
+            if isinstance(clipped, MultiLineString):
+                clipped_segments.extend(clipped.geoms)
+            else:
+                clipped_segments.append(clipped)
+
+        if not clipped_segments:
+            continue
+
+        # --- stitch connected segments into runs ------------------------
+        if len(clipped_segments) == 1:
+            merged = clipped_segments[0]
+        else:
+            merged = linemerge(clipped_segments)
+
+        # --- pick the longest run ---------------------------------------
+        if isinstance(merged, MultiLineString):
+            longest = max(merged.geoms, key=lambda g: g.length)
+        else:
+            longest = merged
+
+        if longest.length == 0:
+            continue
+
+        # --- resolve display name (language preference) -----------------
+        display_name = _resolve_name(features[0].tags, language) or road_name
+
+        # --- midpoint at 50% along the longest run ----------------------
+        midpoint = longest.interpolate(longest.length * 0.5)
+        labels.append(
+            Label(
+                text=display_name,
+                position=(midpoint.x, midpoint.y),
+                priority=50,
+                category="roads",
+                feature_size_mm=longest.length,
+            )
+        )
+
+    return labels

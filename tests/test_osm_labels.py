@@ -18,7 +18,15 @@ import pytest
 from shapely.geometry import Point, Polygon
 
 from plottter.osm.geometry import FitTransform, mercator
-from plottter.osm.labels import Label, _resolve_name, collect_park_labels, collect_place_labels, collect_water_labels
+from plottter.osm.labels import (
+    Label,
+    _resolve_name,
+    collect_park_labels,
+    collect_place_labels,
+    collect_road_labels,
+    collect_water_labels,
+    collect_waterway_labels,
+)
 from plottter.osm.types import MapData, MapFeature
 
 
@@ -653,3 +661,326 @@ class TestCollectPlaceLabels:
         by_text = {lb.text: lb for lb in labels}
         assert by_text["Isle A"].priority == 90
         assert by_text["Quarter B"].priority == 80
+
+
+# ---------------------------------------------------------------------------
+# Helpers for waterway label tests
+# ---------------------------------------------------------------------------
+
+
+def _waterway_feature(
+    coords: list[tuple[float, float]],
+    name: str | None = None,
+    is_area: bool = False,
+) -> MapFeature:
+    """A linear waterway feature with the given (lat, lon) coordinate list."""
+    tags: dict[str, str] = {}
+    if name is not None:
+        tags["name"] = name
+    return MapFeature(tags=tags, coords=coords, is_area=is_area)
+
+
+def _waterway_map_data(features: list[MapFeature]) -> MapData:
+    return MapData(
+        location="Test",
+        center=(0.0, 0.0),
+        bbox=(-1.0, -1.0, 1.0, 1.0),
+        features={"waterways": features},
+    )
+
+
+# ---------------------------------------------------------------------------
+# TestCollectWaterwayLabels
+# ---------------------------------------------------------------------------
+
+
+class TestCollectWaterwayLabels:
+    @pytest.fixture
+    def tf(self) -> FitTransform:
+        return _transform()
+
+    @pytest.fixture
+    def box(self) -> tuple[float, float, float, float]:
+        return _clip_box()
+
+    def test_named_waterway_yields_label(self, tf, box):
+        """A single named waterway produces exactly one Label."""
+        f = _waterway_feature([(0.01, 0.01), (0.01, 0.05)], name="River Test")
+        md = _waterway_map_data([f])
+
+        labels = collect_waterway_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert len(labels) == 1
+        assert labels[0].text == "River Test"
+
+    def test_unnamed_waterway_skipped(self, tf, box):
+        """A waterway without a name tag produces no Label."""
+        f = _waterway_feature([(0.01, 0.01), (0.01, 0.05)])
+        md = _waterway_map_data([f])
+
+        labels = collect_waterway_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert labels == []
+
+    def test_priority_is_60(self, tf, box):
+        """Waterway labels must carry priority 60."""
+        f = _waterway_feature([(0.01, 0.01), (0.01, 0.05)], name="Brook")
+        md = _waterway_map_data([f])
+
+        labels = collect_waterway_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert len(labels) == 1
+        assert labels[0].priority == 60
+
+    def test_category_is_waterways(self, tf, box):
+        """Waterway labels have category 'waterways'."""
+        f = _waterway_feature([(0.01, 0.01), (0.01, 0.05)], name="Canal")
+        md = _waterway_map_data([f])
+
+        labels = collect_waterway_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert len(labels) == 1
+        assert labels[0].category == "waterways"
+
+    def test_midpoint_position(self, tf, box):
+        """Label position is the midpoint of the projected line."""
+        from shapely.geometry import LineString
+
+        coords = [(0.01, 0.01), (0.01, 0.05)]
+        f = _waterway_feature(coords, name="Midpoint River")
+        md = _waterway_map_data([f])
+
+        labels = collect_waterway_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert len(labels) == 1
+
+        # Independently compute expected midpoint
+        projected = []
+        for lat, lon in coords:
+            px, py = mercator(lat, lon)
+            projected.append((tf.x_origin + px * tf.scale, tf.y_origin - py * tf.scale))
+        line = LineString(projected)
+        expected = line.interpolate(line.length * 0.5)
+
+        assert math.isclose(labels[0].position[0], expected.x, abs_tol=1e-9)
+        assert math.isclose(labels[0].position[1], expected.y, abs_tol=1e-9)
+
+    def test_area_feature_skipped(self, tf, box):
+        """Features with is_area=True are not labelled (waterways are lines)."""
+        f = _waterway_feature(
+            [(0.0, 0.0), (0.0, 0.05), (0.05, 0.05), (0.05, 0.0), (0.0, 0.0)],
+            name="Fake Pond",
+            is_area=True,
+        )
+        md = _waterway_map_data([f])
+
+        labels = collect_waterway_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert labels == []
+
+    def test_empty_waterways_returns_empty_list(self, tf, box):
+        """MapData with no 'waterways' key returns an empty list."""
+        md = MapData(
+            location="Empty",
+            center=(0.0, 0.0),
+            bbox=(-1.0, -1.0, 1.0, 1.0),
+            features={},
+        )
+
+        labels = collect_waterway_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert labels == []
+
+    def test_feature_outside_clip_box_dropped(self, tf):
+        """Feature projected entirely outside clip box is dropped."""
+        # lat=10, lon=10 projects to coordinates outside (0,0,200,200)
+        f = _waterway_feature([(10.0, 10.0), (10.0, 10.1)], name="Far River")
+        md = _waterway_map_data([f])
+
+        labels = collect_waterway_labels(
+            md, tf, language="en", clip_box_mm=(0.0, 0.0, 200.0, 200.0)
+        )
+
+        assert labels == []
+
+    def test_multi_clipped_uses_longest(self, tf):
+        """When a waterway is clipped into multiple segments, the longest is used."""
+        from shapely.geometry import LineString
+
+        # Use a narrow clip box that splits the line into two segments.
+        # The line goes from lon=0.00 to lon=0.20, passing through a gap.
+        # We'll fake the scenario by having two separate features of different lengths.
+        clip = (49.0, 49.0, 51.5, 51.5)  # narrow box in mm-space
+
+        # Short segment: stays mostly near the clip edge
+        short_f = _waterway_feature([(0.0, 0.0), (0.0, 0.005)], name="Split Creek")
+        # Long segment: longer, well within the clip box
+        long_f = _waterway_feature([(0.01, 0.0), (0.01, 0.05)], name="Split Creek")
+        md = _waterway_map_data([short_f, long_f])
+
+        # Use a generous clip box so both survive
+        big_clip = (0.0, 0.0, 200.0, 200.0)
+        labels = collect_waterway_labels(md, tf, language="en", clip_box_mm=big_clip)
+
+        # Both features are separate in the features list, so we get two labels
+        # (one per feature). Verify the longer one has a greater feature_size_mm.
+        assert len(labels) == 2
+        sizes = [lb.feature_size_mm for lb in labels]
+        assert max(sizes) > min(sizes)
+
+
+# ---------------------------------------------------------------------------
+# Helpers for road label tests
+# ---------------------------------------------------------------------------
+
+
+def _road_feature(
+    coords: list[tuple[float, float]],
+    name: str | None = None,
+) -> MapFeature:
+    """A road segment with the given (lat, lon) coordinate list."""
+    tags: dict[str, str] = {}
+    if name is not None:
+        tags["name"] = name
+    return MapFeature(tags=tags, coords=coords, is_area=False)
+
+
+def _road_map_data(features: list[MapFeature]) -> MapData:
+    return MapData(
+        location="Test",
+        center=(0.0, 0.0),
+        bbox=(-1.0, -1.0, 1.0, 1.0),
+        features={"roads_major": features},
+    )
+
+
+# ---------------------------------------------------------------------------
+# TestCollectRoadLabels
+# ---------------------------------------------------------------------------
+
+
+class TestCollectRoadLabels:
+    @pytest.fixture
+    def tf(self) -> FitTransform:
+        return _transform()
+
+    @pytest.fixture
+    def box(self) -> tuple[float, float, float, float]:
+        return _clip_box()
+
+    def test_multi_segment_same_name_yields_one_label(self, tf, box):
+        """Multi-segment road with same name yields exactly one Label."""
+        seg1 = _road_feature([(0.01, 0.01), (0.01, 0.02)], name="Main Street")
+        seg2 = _road_feature([(0.02, 0.01), (0.02, 0.02)], name="Main Street")
+        seg3 = _road_feature([(0.03, 0.01), (0.03, 0.02)], name="Main Street")
+        md = _road_map_data([seg1, seg2, seg3])
+
+        labels = collect_road_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert len(labels) == 1
+        assert labels[0].text == "Main Street"
+
+    def test_label_at_longest_segment_midpoint(self, tf, box):
+        """Label position is the midpoint of the longest road segment."""
+        from shapely.geometry import LineString
+
+        # Short segment: 2 points ~0.01 deg apart
+        short_seg = _road_feature([(0.01, 0.01), (0.01, 0.02)], name="Oak Avenue")
+        # Long segment: 6 points spanning ~0.05 deg (clearly longer)
+        long_seg = _road_feature(
+            [(0.05, 0.01), (0.05, 0.02), (0.05, 0.03), (0.05, 0.04), (0.05, 0.05), (0.05, 0.06)],
+            name="Oak Avenue",
+        )
+        md = _road_map_data([short_seg, long_seg])
+
+        labels = collect_road_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert len(labels) == 1
+        assert labels[0].priority == 50
+
+        # Independently compute expected midpoint for the long segment
+        long_projected = []
+        for lat, lon in long_seg.coords:
+            px, py = mercator(lat, lon)
+            long_projected.append((tf.x_origin + px * tf.scale, tf.y_origin - py * tf.scale))
+        long_line = LineString(long_projected)
+        expected = long_line.interpolate(long_line.length * 0.5)
+
+        assert math.isclose(labels[0].position[0], expected.x, abs_tol=1e-6)
+        assert math.isclose(labels[0].position[1], expected.y, abs_tol=1e-6)
+
+    def test_unnamed_road_skipped(self, tf, box):
+        """Road segments without a 'name' tag produce no Label."""
+        f = _road_feature([(0.01, 0.01), (0.01, 0.05)])  # no name
+        md = _road_map_data([f])
+
+        labels = collect_road_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert labels == []
+
+    def test_priority_is_50(self, tf, box):
+        """Road labels must carry priority 50."""
+        f = _road_feature([(0.01, 0.01), (0.01, 0.05)], name="High Road")
+        md = _road_map_data([f])
+
+        labels = collect_road_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert len(labels) == 1
+        assert labels[0].priority == 50
+
+    def test_category_is_roads(self, tf, box):
+        """Road labels have category 'roads'."""
+        f = _road_feature([(0.01, 0.01), (0.01, 0.05)], name="Low Road")
+        md = _road_map_data([f])
+
+        labels = collect_road_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert len(labels) == 1
+        assert labels[0].category == "roads"
+
+    def test_different_names_yield_separate_labels(self, tf, box):
+        """Two roads with different names produce two Labels."""
+        f1 = _road_feature([(0.01, 0.01), (0.01, 0.05)], name="Elm Street")
+        f2 = _road_feature([(0.05, 0.01), (0.05, 0.05)], name="Oak Avenue")
+        md = _road_map_data([f1, f2])
+
+        labels = collect_road_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert len(labels) == 2
+        assert {lb.text for lb in labels} == {"Elm Street", "Oak Avenue"}
+
+    def test_empty_roads_returns_empty_list(self, tf, box):
+        """MapData with no 'roads_major' key returns an empty list."""
+        md = MapData(
+            location="Empty",
+            center=(0.0, 0.0),
+            bbox=(-1.0, -1.0, 1.0, 1.0),
+            features={},
+        )
+
+        labels = collect_road_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert labels == []
+
+    def test_road_outside_clip_box_dropped(self, tf):
+        """Segments entirely outside clip box produce no Label."""
+        # lat=10, lon=10 projects far outside (0,0,200,200)
+        f = _road_feature([(10.0, 10.0), (10.0, 10.1)], name="Far Road")
+        md = _road_map_data([f])
+
+        labels = collect_road_labels(
+            md, tf, language="en", clip_box_mm=(0.0, 0.0, 200.0, 200.0)
+        )
+
+        assert labels == []
+
+    def test_mixed_named_and_unnamed_roads(self, tf, box):
+        """Named roads produce labels; unnamed roads are silently skipped."""
+        named = _road_feature([(0.01, 0.01), (0.01, 0.05)], name="Named Road")
+        unnamed = _road_feature([(0.05, 0.01), (0.05, 0.05)])  # no name
+        md = _road_map_data([named, unnamed])
+
+        labels = collect_road_labels(md, tf, language="en", clip_box_mm=box)
+
+        assert len(labels) == 1
+        assert labels[0].text == "Named Road"
