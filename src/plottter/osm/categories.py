@@ -149,6 +149,87 @@ assert list(FEATURE_CATEGORIES.keys()) == _EXPECTED_ORDER, (
 # Selector derivation
 # ---------------------------------------------------------------------------
 
+def classify_feature(
+    tags: dict,
+    enabled: Iterable[str],
+    road_detail: str,
+) -> str | None:
+    """Return the FEATURE_CATEGORIES id this feature belongs to, or None.
+
+    Used after a single union Overpass query (``fetch_map_data`` makes one
+    request with all enabled selectors OR-ed together) to bucket each returned
+    feature back into a category. Priority order is hand-picked so that a
+    feature matching multiple selectors lands in the most-specific category:
+    place > building > water > coastline > parks > rail > waterways > roads.
+
+    Only categories that are in *enabled* can be returned — a feature that
+    only matches a disabled category (rare, only happens if multiple of our
+    selectors overlap on the same OSM tag value) returns None.
+
+    Mirrors the tag conditions used in ``FEATURE_CATEGORIES`` selectors above;
+    keep the two in sync.
+    """
+    enabled_set = set(enabled)
+
+    # 1. Places (most distinctive — typically nodes).
+    if "places" in enabled_set and tags.get("place") in {
+        "island", "islet", "neighbourhood", "suburb",
+    }:
+        return "places"
+
+    # 2. Buildings (any non-"no" value).
+    if "buildings" in enabled_set:
+        b = tags.get("building")
+        if b and b != "no":
+            return "buildings"
+
+    # 3. Water polygons (area).
+    if "water" in enabled_set and tags.get("natural") == "water":
+        return "water"
+
+    # 4. Coastline (line).
+    if "coastline" in enabled_set and tags.get("natural") == "coastline":
+        return "coastline"
+
+    # 5. Parks / green space (area).
+    if "parks" in enabled_set:
+        if tags.get("leisure") in {
+            "park", "garden", "nature_reserve", "recreation_ground",
+        }:
+            return "parks"
+        if tags.get("landuse") in {
+            "forest", "grass", "meadow", "cemetery", "orchard",
+        }:
+            return "parks"
+        if tags.get("natural") in {"wood", "scrub", "grassland"}:
+            return "parks"
+
+    # 6. Rail / transit ways.
+    if "rail" in enabled_set and tags.get("railway") in {
+        "rail", "light_rail", "subway", "tram", "monorail", "narrow_gauge",
+    }:
+        return "rail"
+
+    # 7. Waterways (linear water).
+    if "waterways" in enabled_set and tags.get("waterway") in {
+        "river", "stream", "canal",
+    }:
+        return "waterways"
+
+    # 8. Roads — major before minor.
+    highway = tags.get("highway")
+    if highway:
+        if "roads_major" in enabled_set and highway in ROAD_MAJOR_TYPES:
+            return "roads_major"
+        if "roads_minor" in enabled_set and road_detail != "major_only":
+            if highway in ROAD_MINOR_STANDARD_TYPES:
+                return "roads_minor"
+            if road_detail == "all_streets" and highway in ROAD_MINOR_EXTRA_TYPES:
+                return "roads_minor"
+
+    return None
+
+
 def selectors_for_categories(
     enabled: Iterable[str],
     road_detail: str,

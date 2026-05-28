@@ -371,3 +371,35 @@ class TestRetryBehavior:
                 fetch_overpass(_BBOX, [], user_agent=_UA)
 
         assert call_count == 1
+
+
+class TestUrlErrorRetry:
+    """fetch_overpass retries on transient URLError (DNS failure, connection
+    refused, timeout) and raises a helpful OverpassError after exhaustion."""
+
+    def test_url_error_then_success_retries(self):
+        """A single URLError followed by 200 must succeed after one sleep(2)."""
+        err = urllib.error.URLError("Temporary failure in name resolution")
+        ok = _make_urlopen_ok(_FIXTURE_DATA)()  # the ctx-manager response
+        urlopen_mock = MagicMock(side_effect=[err, ok])
+
+        with (
+            patch("plottter.osm.overpass.urllib.request.urlopen", urlopen_mock),
+            patch("plottter.osm.overpass.time.sleep") as sleep_mock,
+        ):
+            features = fetch_overpass(_BBOX, [], user_agent=_UA)
+        assert urlopen_mock.call_count == 2
+        assert len(features) == 4
+        sleep_mock.assert_called_once_with(2)
+
+    def test_persistent_url_error_raises_overpass_error_with_hint(self):
+        """Three consecutive URLErrors must raise OverpassError with a
+        network-failure hint pointing at the endpoint preference."""
+        err = urllib.error.URLError("Temporary failure in name resolution")
+
+        with (
+            patch("plottter.osm.overpass.urllib.request.urlopen", side_effect=err),
+            patch("plottter.osm.overpass.time.sleep"),
+        ):
+            with pytest.raises(OverpassError, match="Network error"):
+                fetch_overpass(_BBOX, [], user_agent=_UA)

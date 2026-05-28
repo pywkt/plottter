@@ -248,9 +248,22 @@ def fetch_overpass(
                 f"Overpass API returned HTTP {exc.code}: {exc.reason}"
             ) from exc
         except urllib.error.URLError as exc:
-            raise OverpassError(f"Network error querying Overpass: {exc.reason}") from exc
+            # URLError covers DNS lookup failures, connection refused, socket
+            # timeouts, and other transport-level glitches. Retry the same way
+            # we do for 429/504 — a transient network blip shouldn't abort a
+            # whole map fetch when one more attempt usually succeeds.
+            last_exc = exc
+            continue
 
     assert last_exc is not None
+    if isinstance(last_exc, urllib.error.URLError) and not isinstance(
+        last_exc, urllib.error.HTTPError
+    ):
+        raise OverpassError(
+            f"Network error querying Overpass after {len(_RETRY_DELAYS) + 1} "
+            f"attempts: {last_exc.reason}. Check your internet connection or "
+            "try a different endpoint in Preferences."
+        ) from last_exc
     raise OverpassError(
         f"Overpass API overloaded (HTTP {last_exc.code}) after {len(_RETRY_DELAYS) + 1} "  # type: ignore[attr-defined]
         "attempts. Try a smaller radius or an alternate endpoint."

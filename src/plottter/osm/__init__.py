@@ -71,8 +71,8 @@ def fetch_map_data(
         ``User-Agent`` header for all outbound requests.
     progress_callback:
         Optional callable ``(int) -> None`` called with integer percentages.
-        Geocode completion is reported at ~10 %; the remainder reaches 100 %
-        after all category fetches complete.
+        Geocode completion is reported at 10 %; the (single) Overpass union
+        query completion at 90 %; 100 % once classification finishes.
 
     Returns
     -------
@@ -93,7 +93,7 @@ def fetch_map_data(
     from math import cos, radians
 
     from .categories import FEATURE_CATEGORIES as _CATS
-    from .categories import selectors_for_categories
+    from .categories import classify_feature, selectors_for_categories
     from .geocode import geocode as _geocode
     from .overpass import fetch_overpass
 
@@ -126,32 +126,32 @@ def fetch_map_data(
         bbox = (lat - dlat, lon - dlon, lat + dlat, lon + dlon)
 
     # ------------------------------------------------------------------
-    # Step 3 & 4: One Overpass request per enabled category.
+    # Step 3: One union Overpass request for ALL enabled categories.
     #
-    # Calling fetch_overpass per category gives unambiguous categorisation
-    # without requiring tag re-matching of a flat result list.
+    # The previous implementation made one HTTP request per category, which
+    # multiplied the failure surface (a single DNS hiccup or rate-limit on
+    # any of N requests aborted the whole fetch) and put unnecessary load
+    # on the public Overpass server. A union query gets us everything in
+    # one round-trip; classification of the returned features is done
+    # locally via classify_feature.
     # ------------------------------------------------------------------
-    features: dict = {}
     active_cats = [c for c in enabled_categories if c in _CATS]
-    n_cats = len(active_cats)
+    all_selectors = selectors_for_categories(active_cats, road_detail)
 
-    for i, cat_id in enumerate(active_cats):
-        cat_selectors = selectors_for_categories([cat_id], road_detail)
-        if cat_selectors:
-            cat_features = fetch_overpass(
-                bbox,
-                cat_selectors,
-                endpoint=endpoint,
-                user_agent=user_agent,
-            )
-            if cat_features:
-                features[cat_id] = cat_features
+    features: dict = {}
+    if all_selectors:
+        flat = fetch_overpass(
+            bbox,
+            all_selectors,
+            endpoint=endpoint,
+            user_agent=user_agent,
+        )
+        _progress(90)
+        for feat in flat:
+            cat_id = classify_feature(feat.tags, active_cats, road_detail)
+            if cat_id is not None:
+                features.setdefault(cat_id, []).append(feat)
 
-        # Intermediate progress (11 % … 99 %) only when more than one category.
-        if n_cats > 1:
-            _progress(10 + int((i + 1) / n_cats * 89))
-
-    # Always end at exactly 100 %.
     _progress(100)
 
     return MapData(

@@ -195,20 +195,26 @@ def test_disabled_category_absent():
 
 
 def test_multiple_enabled_categories():
-    """Multiple enabled categories each with data appear in features."""
+    """Multiple enabled categories each with data appear in features.
+
+    fetch_map_data now makes ONE union Overpass call and classifies returned
+    features locally, so the mock returns a single flat list combining all
+    expected features."""
     result = _call_fetch(
         enabled_categories=["roads_major", "parks"],
-        overpass_side_effect=[[_road_feature()], [_park_feature()]],
+        overpass_return_value=[_road_feature(), _park_feature()],
     )
     assert "roads_major" in result.features
     assert "parks" in result.features
 
 
 def test_category_with_empty_overpass_response_absent():
-    """A category whose Overpass query returns [] must be absent from features."""
+    """A category whose union-query response contributes no matching features
+    must be absent from features."""
     result = _call_fetch(
         enabled_categories=["roads_major", "rail"],
-        overpass_side_effect=[[_road_feature()], []],
+        # Union call returns only a road feature — rail has nothing to classify.
+        overpass_return_value=[_road_feature()],
     )
     assert "roads_major" in result.features
     assert "rail" not in result.features
@@ -271,7 +277,7 @@ def test_progress_monotone():
     values: list[int] = []
     _call_fetch(
         enabled_categories=["roads_major", "rail", "parks"],
-        overpass_side_effect=[[_road_feature()], [], [_park_feature()]],
+        overpass_return_value=[_road_feature(), _park_feature()],
         progress_callback=values.append,
     )
     assert values == sorted(values), f"progress not monotone: {values}"
@@ -393,3 +399,47 @@ def test_places_absent_when_not_enabled():
         )
 
     assert "places" not in result.features
+
+
+# ---------------------------------------------------------------------------
+# Single-union-request behaviour (the whole point of the refactor)
+# ---------------------------------------------------------------------------
+
+
+def test_one_overpass_call_regardless_of_category_count():
+    """Even with many categories enabled, fetch_overpass must be called once
+    (union query) — previously made one HTTP request per category."""
+    with patch("plottter.osm.geocode.geocode", return_value=_geocode_result()), \
+         patch("plottter.osm.overpass.fetch_overpass",
+               return_value=[_road_feature(), _park_feature()]) as mock_op:
+        fetch_map_data(
+            "Kyoto", radius_km=1.5, extent_mode="center_radius",
+            enabled_categories=[
+                "roads_major", "roads_minor", "rail", "water",
+                "waterways", "parks", "buildings", "coastline", "places",
+            ],
+            road_detail="standard",
+            endpoint=_TEST_ENDPOINT, user_agent=_TEST_UA,
+        )
+    assert mock_op.call_count == 1, (
+        f"Expected one union Overpass call; got {mock_op.call_count}"
+    )
+
+
+def test_features_classified_by_tags():
+    """A flat union response is bucketed back into per-category lists by tags."""
+    result = _call_fetch(
+        enabled_categories=["roads_major", "parks", "water"],
+        overpass_return_value=[
+            _road_feature(),
+            _park_feature(),
+            MapFeature(tags={"natural": "water"},
+                       coords=[(_LAT, _LON), (_LAT + 0.001, _LON),
+                               (_LAT + 0.001, _LON + 0.001), (_LAT, _LON + 0.001),
+                               (_LAT, _LON)],
+                       is_area=True),
+        ],
+    )
+    assert list(result.features["roads_major"][0].tags.keys()) == ["highway"]
+    assert list(result.features["parks"][0].tags.keys()) == ["leisure"]
+    assert list(result.features["water"][0].tags.keys()) == ["natural"]
