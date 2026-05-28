@@ -526,6 +526,14 @@ class _SnapshotMixin:
                 self._map_data = cached
                 if hasattr(self, "_init_map_view_from_data"):
                     self._init_map_view_from_data(cached)
+                # Re-push the preview features to the canvas so its
+                # _map_features / _map_preview_polylines match the freshly-
+                # reloaded MapData. Without this the canvas keeps the
+                # features it captured when "Position Map" was first toggled
+                # on, and clamp_map_view / preview projection diverge from
+                # the panel's current data over time — symptom: after a few
+                # regens the pan feels stuck or the rendered crop drifts.
+                self._sync_canvas_map_preview()
                 if hasattr(self, "_map_status_label"):
                     n = sum(len(v) for v in cached.features.values())
                     self._map_status_label.setText(
@@ -541,9 +549,35 @@ class _SnapshotMixin:
                 # location — keep it so the user can re-Generate immediately.
                 if hasattr(self, "_init_map_view_from_data"):
                     self._init_map_view_from_data(self._map_data)
+                self._sync_canvas_map_preview()
             elif hasattr(self, "_map_status_label") and location:
                 # No cached copy and no matching in-session data — prompt refetch.
                 self._map_status_label.setText("Map data not cached — click Fetch")
+
+    def _sync_canvas_map_preview(self) -> None:
+        """Re-push the current self._map_data to the canvas so its preview
+        features, bounds, and decimated polylines match. Safe no-op when the
+        canvas isn't active or there's no data yet."""
+        if self._canvas_ref is None or getattr(self, "_map_data", None) is None:
+            return
+        if not getattr(self._canvas_ref, "_map_position_active", False):
+            # Positioning mode isn't on — no preview to keep in sync. The
+            # next "Position Map" click will re-push fresh data anyway.
+            return
+        try:
+            from plottter.osm.geometry import data_bounds
+
+            all_features = [
+                f for flist in self._map_data.features.values() for f in flist
+            ]
+            if not all_features:
+                return
+            bounds = data_bounds(all_features)
+            self._canvas_ref.set_map_preview_data(self._map_data, bounds)
+            if self._map_view is not None:
+                self._canvas_ref.update_map_view(dict(self._map_view))
+        except Exception:  # noqa: BLE001 — best-effort, never crash the restore
+            pass
 
     def _is_multilayer_run_member(self, layer_id: str | None) -> bool:
         """True if *layer_id* belongs to a multi-layer generator run.

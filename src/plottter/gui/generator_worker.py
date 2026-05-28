@@ -33,6 +33,12 @@ class GeneratorWorker(QThread):
         parent: Any = None,
     ) -> None:
         super().__init__(parent)
+        # Descriptive name so any future "QThread: Destroyed while thread is
+        # still running" warning identifies the worker.
+        try:
+            self.setObjectName(f"GeneratorWorker[{type(generator).__name__}]")
+        except Exception:  # noqa: BLE001
+            self.setObjectName("GeneratorWorker")
         self._generator = generator
         self._params = params
         self._canvas = canvas

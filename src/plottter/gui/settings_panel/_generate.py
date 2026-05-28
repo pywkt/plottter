@@ -217,6 +217,20 @@ class _GenerateMixin:
         import uuid
         from plottter.models import Layer
 
+        # GeneratorWorker.layers_finished is emitted from inside the worker's
+        # run() (last statement), so when this slot fires via a queued
+        # connection the worker thread is still terminating. The state
+        # mutations below (remove layers, add layers, set active layer) trigger
+        # cascading signals that the worker thread could race with during its
+        # final wind-down. Block here briefly until run() truly returns so
+        # everything that follows runs against a quiesced worker. Same pattern
+        # the MapFetchWorker handler uses.
+        if self._worker is not None:
+            try:
+                self._worker.wait(5000)
+            except Exception:  # noqa: BLE001 — wait must never bubble up
+                pass
+
         new_run_id = str(uuid.uuid4())
         old_run_id = getattr(self, "_pending_multilayer_regen_run_id", None)
         self._pending_multilayer_regen_run_id = None

@@ -1530,3 +1530,92 @@ class TestMapViewPanelCanvasSync:
         assert canvas._map_view["center_lat"] == 1.0, (
             "update_map_view aliased its input dict instead of copying"
         )
+
+
+class TestApplyMultilayerResyncsCanvasPreview:
+    """Regression: after a multi-layer regen, the canvas's _map_features /
+    _map_preview_polylines must be re-pushed from the freshly-reloaded
+    MapData. Without this the canvas keeps the features it captured when
+    'Position Map' was first toggled on; over several regens any divergence
+    leaks into clamping and projection, causing the preview to feel 'stuck'
+    or the rendered crop to drift from the preview."""
+
+    def _build(self, qtbot, qapp):
+        from plottter.gui.project_controller import ProjectController
+        from plottter.gui.settings_panel import SettingsPanel
+        from plottter.osm.types import MapData, MapFeature
+        from plottter.osm.cache import cache_key, store
+
+        md = MapData(
+            location="x", center=(42.33, -83.05),
+            bbox=(42.30, -83.10, 42.36, -83.00),
+            features={"roads_major": [MapFeature(
+                tags={"highway": "primary"},
+                coords=[(42.32, -83.06), (42.34, -83.04)], is_area=False)]},
+        )
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        proj = Project(name="t", canvas=canvas)
+        proj.add_layer(Layer(name="Layer 1"))
+        ctrl = ProjectController(proj)
+        panel = SettingsPanel(ctrl)
+        qtbot.addWidget(panel)
+        panel.mode_change_requested.connect(panel.on_mode_changed)
+        panel.on_mode_changed("Map")
+        panel._map_location_edit.setText("x")
+        for k in ("include_rail", "include_waterways", "include_parks",
+                  "include_buildings", "include_coastline"):
+            panel._param_widgets[k].setChecked(False)
+        params = panel.get_params()
+        cats = panel._get_enabled_map_categories(params)
+        store(cache_key("x", float(params["radius_km"]),
+                        str(params["extent_mode"]), cats), md)
+        panel._map_data = md
+        return proj, ctrl, panel, md
+
+    def test_canvas_preview_data_repushed_on_restore(self, qtbot, qapp):
+        """When _apply_multilayer_run_settings reloads MapData from cache, it
+        must re-push set_map_preview_data to the canvas (if positioning is
+        active) so canvas features stay in sync with panel._map_data."""
+        from plottter.generators.base import LayerSpec
+        from plottter.generators.map_generator import MapGenerator
+        proj, ctrl, panel, md = self._build(qtbot, qapp)
+        mock_canvas = MagicMock()
+        # Simulate positioning being active (the only state in which sync runs).
+        mock_canvas._map_position_active = True
+        panel._canvas_ref = mock_canvas
+        idx = panel._layer_combo.findData(proj.layers[0].id)
+        panel._layer_combo.setCurrentIndex(idx)
+        # Run a generation cycle to create a run layer with _generator_settings.
+        panel._pending_multilayer_regen_run_id = None
+        panel._pending_multilayer_run_settings = panel._capture_multilayer_run_settings()
+        panel._generator = MapGenerator()
+        panel._on_multilayer_generation_finished([
+            LayerSpec(name="Roads (major)", color="#000", paths=[[(10.0, 10.0), (50.0, 50.0)]]),
+        ])
+        # The auto-reactivate inside _on_multilayer_generation_finished should
+        # have routed through _apply_multilayer_run_settings, which should
+        # have called set_map_preview_data on the canvas.
+        assert mock_canvas.set_map_preview_data.called, (
+            "canvas.set_map_preview_data must be re-pushed during multi-layer "
+            "restore so features stay in sync with the reloaded MapData"
+        )
+
+    def test_canvas_resync_skipped_when_positioning_inactive(self, qtbot, qapp):
+        """If positioning isn't active there's no preview to keep in sync; the
+        re-push must be a no-op (avoids unnecessary work)."""
+        from plottter.generators.base import LayerSpec
+        from plottter.generators.map_generator import MapGenerator
+        proj, ctrl, panel, md = self._build(qtbot, qapp)
+        mock_canvas = MagicMock()
+        mock_canvas._map_position_active = False  # positioning OFF
+        panel._canvas_ref = mock_canvas
+        idx = panel._layer_combo.findData(proj.layers[0].id)
+        panel._layer_combo.setCurrentIndex(idx)
+        panel._pending_multilayer_regen_run_id = None
+        panel._pending_multilayer_run_settings = panel._capture_multilayer_run_settings()
+        panel._generator = MapGenerator()
+        panel._on_multilayer_generation_finished([
+            LayerSpec(name="Roads (major)", color="#000", paths=[[(10.0, 10.0), (50.0, 50.0)]]),
+        ])
+        # No preview to keep in sync → no re-push.
+        assert not mock_canvas.set_map_preview_data.called
