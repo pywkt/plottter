@@ -298,9 +298,29 @@ class _MapMixin:
             try:
                 from plottter.osm.geometry import data_bounds
 
-                all_features = [f for flist in self._map_data.features.values() for f in flist]
-                bounds = data_bounds(all_features)
-                self._canvas_ref.set_map_preview_data(self._map_data, bounds)
+                # Match the preview to what Generate will produce: only the
+                # categories currently enabled in the panel contribute to the
+                # visible preview AND the clamp feature set.
+                enabled_cats = self._get_enabled_map_categories(self.get_params())
+                allow = set(enabled_cats)
+                enabled_features = [
+                    f
+                    for cat, flist in self._map_data.features.items()
+                    if cat in allow
+                    for f in flist
+                ]
+                if not enabled_features:
+                    # User disabled every category — fall back to full extent
+                    # so the bounds outline isn't degenerate.
+                    enabled_features = [
+                        f
+                        for flist in self._map_data.features.values()
+                        for f in flist
+                    ]
+                bounds = data_bounds(enabled_features)
+                self._canvas_ref.set_map_preview_data(
+                    self._map_data, bounds, enabled_categories=enabled_cats
+                )
                 if self._map_view is not None:
                     self._canvas_ref.update_map_view(self._map_view)
             except Exception:  # noqa: BLE001

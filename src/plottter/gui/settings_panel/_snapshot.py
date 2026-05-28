@@ -556,8 +556,14 @@ class _SnapshotMixin:
 
     def _sync_canvas_map_preview(self) -> None:
         """Re-push the current self._map_data to the canvas so its preview
-        features, bounds, and decimated polylines match. Safe no-op when the
-        canvas isn't active or there's no data yet."""
+        features, bounds, and decimated polylines match the enabled
+        categories. Safe no-op when the canvas isn't active or there's no
+        data yet.
+
+        Filters to the currently-enabled categories so the preview reflects
+        what Generate will produce (the user disabling Water shouldn't see
+        water polygons in the preview behind their generated roads).
+        """
         if self._canvas_ref is None or getattr(self, "_map_data", None) is None:
             return
         if not getattr(self._canvas_ref, "_map_position_active", False):
@@ -567,13 +573,35 @@ class _SnapshotMixin:
         try:
             from plottter.osm.geometry import data_bounds
 
-            all_features = [
-                f for flist in self._map_data.features.values() for f in flist
-            ]
-            if not all_features:
-                return
-            bounds = data_bounds(all_features)
-            self._canvas_ref.set_map_preview_data(self._map_data, bounds)
+            enabled_cats = (
+                self._get_enabled_map_categories(self.get_params())
+                if hasattr(self, "_get_enabled_map_categories")
+                else None
+            )
+            if enabled_cats is not None:
+                allow = set(enabled_cats)
+                enabled_features = [
+                    f
+                    for cat, flist in self._map_data.features.items()
+                    if cat in allow
+                    for f in flist
+                ]
+            else:
+                enabled_features = [
+                    f for flist in self._map_data.features.values() for f in flist
+                ]
+            if not enabled_features:
+                # Every category disabled — fall back to full extent so
+                # bounds aren't degenerate.
+                enabled_features = [
+                    f for flist in self._map_data.features.values() for f in flist
+                ]
+                if not enabled_features:
+                    return
+            bounds = data_bounds(enabled_features)
+            self._canvas_ref.set_map_preview_data(
+                self._map_data, bounds, enabled_categories=enabled_cats
+            )
             if self._map_view is not None:
                 self._canvas_ref.update_map_view(dict(self._map_view))
         except Exception:  # noqa: BLE001 — best-effort, never crash the restore

@@ -1619,3 +1619,136 @@ class TestApplyMultilayerResyncsCanvasPreview:
         ])
         # No preview to keep in sync → no re-push.
         assert not mock_canvas.set_map_preview_data.called
+
+
+class TestPreviewFilteredByEnabledCategories:
+    """Regression: the canvas preview must contain only the categories the
+    user has enabled, not every fetched category. Symptom of the bug:
+    Generate-with-roads-only renders roads, but toggling Position Map shows
+    a faded preview with water + parks + buildings behind it. The user can
+    then pan over data extents the generator won't draw, which feels like
+    'movement not working' (the generated layer is empty in those spots)."""
+
+    def _build_panel_with_multi_cat_data(self, qtbot, qapp):
+        from plottter.gui.project_controller import ProjectController
+        from plottter.gui.settings_panel import SettingsPanel
+        from plottter.osm.types import MapData, MapFeature
+
+        md = MapData(
+            location="x", center=(42.33, -83.05),
+            bbox=(42.30, -83.10, 42.36, -83.00),
+            features={
+                "roads_major": [MapFeature(
+                    tags={"highway": "primary"},
+                    coords=[(42.32, -83.06), (42.34, -83.04)], is_area=False)],
+                "water": [MapFeature(
+                    tags={"natural": "water"},
+                    coords=[(42.325, -83.05), (42.335, -83.05),
+                            (42.335, -83.045), (42.325, -83.045),
+                            (42.325, -83.05)], is_area=True)],
+                "parks": [MapFeature(
+                    tags={"leisure": "park"},
+                    coords=[(42.330, -83.060), (42.331, -83.058),
+                            (42.330, -83.058), (42.330, -83.060)], is_area=True)],
+            },
+        )
+        canvas = Canvas.from_preset("A4", margin=10.0)
+        proj = Project(name="t", canvas=canvas)
+        proj.add_layer(Layer(name="Layer 1"))
+        ctrl = ProjectController(proj)
+        panel = SettingsPanel(ctrl)
+        qtbot.addWidget(panel)
+        panel.mode_change_requested.connect(panel.on_mode_changed)
+        panel.on_mode_changed("Map")
+        panel._map_location_edit.setText("x")
+        panel._map_data = md
+        panel._init_map_view_from_data(md)
+        return proj, ctrl, panel, md
+
+    def test_position_map_toggle_passes_enabled_categories(self, qtbot, qapp):
+        """When the user toggles Position Map with only roads enabled, the
+        canvas's preview features must contain only road features — not
+        water/parks."""
+        proj, ctrl, panel, md = self._build_panel_with_multi_cat_data(qtbot, qapp)
+        # Disable everything except roads.
+        for k in ("include_rail", "include_water", "include_waterways",
+                  "include_parks", "include_buildings", "include_coastline"):
+            panel._param_widgets[k].setChecked(False)
+        mock_canvas = MagicMock()
+        panel._canvas_ref = mock_canvas
+
+        panel._on_position_map_toggled(True)
+
+        assert mock_canvas.set_map_preview_data.called
+        kwargs = mock_canvas.set_map_preview_data.call_args.kwargs
+        # enabled_categories argument must be passed
+        assert "enabled_categories" in kwargs, (
+            "set_map_preview_data must be called with enabled_categories so "
+            "the preview matches what Generate produces"
+        )
+        enabled = kwargs["enabled_categories"]
+        # Roads enabled by default, plus include_roads ⇒ roads_major + roads_minor
+        assert "roads_major" in enabled
+        assert "water" not in enabled, (
+            f"water was disabled but appears in preview categories: {enabled}"
+        )
+        assert "parks" not in enabled
+
+    def test_sync_after_regen_also_filters(self, qtbot, qapp):
+        """The same filter must apply when _apply_multilayer_run_settings
+        re-syncs the canvas preview after regen."""
+        from plottter.generators.base import LayerSpec
+        from plottter.generators.map_generator import MapGenerator
+        proj, ctrl, panel, md = self._build_panel_with_multi_cat_data(qtbot, qapp)
+        # Disable everything except roads, before generating.
+        for k in ("include_rail", "include_water", "include_waterways",
+                  "include_parks", "include_buildings", "include_coastline"):
+            panel._param_widgets[k].setChecked(False)
+        mock_canvas = MagicMock()
+        mock_canvas._map_position_active = True
+        panel._canvas_ref = mock_canvas
+        idx = panel._layer_combo.findData(proj.layers[0].id)
+        panel._layer_combo.setCurrentIndex(idx)
+
+        # Run a multi-layer generate cycle — _sync_canvas_map_preview fires
+        # during auto-reactivate inside _on_multilayer_generation_finished.
+        panel._pending_multilayer_regen_run_id = None
+        panel._pending_multilayer_run_settings = panel._capture_multilayer_run_settings()
+        panel._generator = MapGenerator()
+        panel._on_multilayer_generation_finished([
+            LayerSpec(name="Roads (major)", color="#000",
+                      paths=[[(10.0, 10.0), (50.0, 50.0)]]),
+        ])
+
+        # The auto-reactivate's re-push must also filter.
+        assert mock_canvas.set_map_preview_data.called
+        kwargs = mock_canvas.set_map_preview_data.call_args.kwargs
+        assert "enabled_categories" in kwargs
+        enabled = kwargs["enabled_categories"]
+        assert "water" not in enabled
+        assert "parks" not in enabled
+
+    def test_canvas_filter_excludes_disabled_features_from_preview(self, qtbot, qapp):
+        """End-to-end through the real canvas: features stored for preview
+        must be ONLY those of the enabled categories."""
+        from plottter.gui.canvas_widget import CanvasWidget
+        from plottter.osm.geometry import data_bounds
+        proj, ctrl, panel, md = self._build_panel_with_multi_cat_data(qtbot, qapp)
+        canvas_widget = CanvasWidget(controller=ctrl)
+        qtbot.addWidget(canvas_widget)
+        # Filter to roads only.
+        all_features_count = sum(len(v) for v in md.features.values())
+        roads_only_features = md.features["roads_major"]
+
+        canvas_widget.set_map_preview_data(
+            md,
+            data_bounds(roads_only_features),
+            enabled_categories=["roads_major"],
+        )
+        # Only roads_major features should appear in _map_features.
+        assert len(canvas_widget._map_features) == len(roads_only_features)
+        assert len(canvas_widget._map_features) < all_features_count, (
+            "filter didn't reduce the feature count"
+        )
+        for feat in canvas_widget._map_features:
+            assert feat.tags.get("highway") == "primary"

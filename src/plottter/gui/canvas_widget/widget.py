@@ -545,6 +545,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         self,
         map_data: object,
         data_bounds: tuple[float, float, float, float],
+        enabled_categories: list[str] | None = None,
     ) -> None:
         """Store fetched MapData and extract decimated Mercator preview polylines.
 
@@ -552,22 +553,33 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
             map_data:    A MapData instance (``map_data.features`` dict).
             data_bounds: Geographic bounds ``(min_lat, min_lon, max_lat, max_lon)``
                          used to draw the faint bounds outline and for clamping.
+            enabled_categories: If provided, only features from these category
+                ids contribute to the preview (visible polylines AND the
+                clamping feature set). When None (legacy callers), every
+                fetched category is included. Callers should pass the same
+                category list used to drive generation so the preview matches
+                what Generate will produce — otherwise the user sees water /
+                parks in the preview that the generator (with those toggles
+                off) doesn't draw, and ``clamp_map_view`` allows panning into
+                feature-empty regions.
         """
         from plottter.osm.geometry import mercator
 
         self._map_data_bounds = data_bounds
 
+        if enabled_categories is None:
+            items = list(map_data.features.items())
+        else:
+            allow = set(enabled_categories)
+            items = [(c, f) for c, f in map_data.features.items() if c in allow]
+
         # Store flattened feature list for clamp_map_view during interaction.
-        self._map_features = [
-            feature
-            for features in map_data.features.values()
-            for feature in features
-        ]
+        self._map_features = [feature for _, features in items for feature in features]
 
         # Convert all features to Mercator-coord polylines.
         # Include lines and area outlines; skip inner rings (building fills etc.)
         raw: list[list[tuple[float, float]]] = []
-        for _category, features in map_data.features.items():
+        for _category, features in items:
             for feature in features:
                 if len(feature.coords) < 2:
                     continue
