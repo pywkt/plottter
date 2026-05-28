@@ -46,12 +46,16 @@ def load(key: str) -> "MapData | None":
     Returns ``None`` if the entry does not exist or the file is corrupt.
     Never raises.
     """
-    from plottter.osm.types import MapData  # local import — avoid circular at module level
+    from plottter.osm.types import MapData, MAPDATA_SCHEMA_VERSION  # local import — avoid circular at module level
 
     try:
         path = cache_dir() / f"{key}.json"
         with path.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
+        # Discard payloads written by an older parser (e.g. pre-multipolygon
+        # stitching); a missing/old schema_version forces a re-fetch.
+        if data.get("schema_version") != MAPDATA_SCHEMA_VERSION:
+            return None
         return MapData.from_json(data)
     except Exception:  # noqa: BLE001 — silently ignore corrupt / missing / inaccessible files
         return None

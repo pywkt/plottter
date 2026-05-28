@@ -8,6 +8,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+#: Bump when the parsed MapData/MapFeature structure changes in a way that makes
+#: previously-cached payloads invalid. ``cache.load`` discards any cached entry
+#: whose ``schema_version`` differs, forcing a re-fetch with the current parser.
+#: v2 (2026-05-27): multipolygon relations now stitch member ways into closed
+#: rings instead of emitting one force-closed feature per member.
+MAPDATA_SCHEMA_VERSION = 2
+
 
 @dataclass
 class MapFeature:
@@ -64,6 +71,7 @@ class MapData:
         Tags are plain dicts.  All other fields are primitives.
         """
         return {
+            "schema_version": MAPDATA_SCHEMA_VERSION,
             "location": self.location,
             "center": list(self.center),
             "bbox": list(self.bbox),

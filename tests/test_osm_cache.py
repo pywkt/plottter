@@ -153,6 +153,32 @@ class TestStoreLoad:
         result = cache_mod.load(key)
         assert result is None
 
+    def test_load_rejects_outdated_schema_version(self, tmp_path, monkeypatch):
+        """A structurally valid payload from an older parser (lower
+        schema_version) is discarded so the caller re-fetches with the current
+        parser. This is the stale-cache scenario that caused mis-stitched water."""
+        monkeypatch.setattr(cache_mod.pathlib.Path, "home", staticmethod(lambda: tmp_path))
+        key = "oldschema12345ab"
+        maps_dir = tmp_path / ".plottter" / "maps"
+        maps_dir.mkdir(parents=True, exist_ok=True)
+        payload = _make_map_data().to_json()
+        payload["schema_version"] = 1  # older than current
+        (maps_dir / f"{key}.json").write_text(json.dumps(payload))
+
+        assert cache_mod.load(key) is None
+
+    def test_store_writes_current_schema_version(self, tmp_path, monkeypatch):
+        from plottter.osm.types import MAPDATA_SCHEMA_VERSION
+
+        monkeypatch.setattr(cache_mod.pathlib.Path, "home", staticmethod(lambda: tmp_path))
+        md = _make_map_data()
+        key = "schemaverkey1234"
+        cache_mod.store(key, md)
+        on_disk = json.loads((tmp_path / ".plottter" / "maps" / f"{key}.json").read_text())
+        assert on_disk["schema_version"] == MAPDATA_SCHEMA_VERSION
+        # And it round-trips through load (version matches).
+        assert cache_mod.load(key) is not None
+
     def test_store_creates_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr(cache_mod.pathlib.Path, "home", staticmethod(lambda: tmp_path))
         md = _make_map_data()
