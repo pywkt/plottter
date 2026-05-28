@@ -806,3 +806,51 @@ def place_with_collision(
     # 4. Return in stable (category, text) order for deterministic plotting
     accepted.sort(key=lambda lb: (lb.category, lb.text))
     return accepted
+
+
+def render_labels(labels: list[Label], font_size_mm: float) -> list:
+    """Generate Hershey Simplex strokes for each label centred at label.position.
+
+    For each :class:`Label` in *labels*:
+
+    * Measures the total rendered width using :func:`_hershey_text_width`.
+    * Places the left edge of the baseline at
+      ``(label.position[0] - width/2, label.position[1] + font_size_mm/2)``.
+    * Emits Hershey Simplex strokes scaled so that the cap height equals
+      *font_size_mm*, with Hershey's y-up coordinate flipped to canvas y-down.
+
+    Missing glyphs fall back to ``"?"`` (handled by :func:`glyph_strokes`).
+
+    Args:
+        labels:       Placed labels (typically the output of
+                      :func:`place_with_collision`).
+        font_size_mm: Cap height of the rendered text in mm.
+
+    Returns:
+        A flat ``list[Polyline]`` in canvas mm coordinates.
+    """
+    from plottter.generators._hershey import CAP_HEIGHT, glyph_strokes
+
+    scale = font_size_mm / CAP_HEIGHT
+    paths: list = []
+
+    for label in labels:
+        text = label.text
+        width = _hershey_text_width(text, font_size_mm)
+        pen_x = label.position[0] - width / 2.0
+        baseline_y = label.position[1] + font_size_mm / 2.0
+
+        for ch in text:
+            lft, rgt, strokes = glyph_strokes(ch, "Simplex")
+            for stroke in strokes:
+                if len(stroke) < 2:
+                    continue
+                polyline = []
+                for hx, hy in stroke:
+                    x_mm = pen_x + (hx - lft) * scale
+                    y_mm = baseline_y - hy * scale  # Hershey y-up → canvas y-down
+                    polyline.append((x_mm, y_mm))
+                paths.append(polyline)
+            pen_x += (rgt - lft) * scale
+
+    return paths

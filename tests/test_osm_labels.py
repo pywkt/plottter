@@ -1135,3 +1135,96 @@ class TestPlaceWithCollision:
         # Output sorted by (category, text)
         assert result[0].text == "Alpha"
         assert result[1].text == "Beta"
+
+
+class TestRenderLabels:
+    """Tests for :func:`plottter.osm.labels.render_labels`."""
+
+    _FONT = 4.0  # font_size_mm cap height
+
+    def _label(
+        self,
+        text: str,
+        x: float,
+        y: float,
+        priority: int = 50,
+        category: str = "water",
+        feature_size_mm: float = 10.0,
+    ):
+        from plottter.osm.labels import Label
+
+        return Label(
+            text=text,
+            position=(x, y),
+            priority=priority,
+            category=category,
+            feature_size_mm=feature_size_mm,
+        )
+
+    def test_renders_nonzero_polylines(self):
+        """A single Label with text 'ABC' produces at least one polyline."""
+        from plottter.osm.labels import render_labels
+
+        label = self._label("ABC", 50.0, 50.0)
+        result = render_labels([label], self._FONT)
+        assert len(result) > 0
+
+    def test_all_points_within_bbox(self):
+        """Every rendered point lies within the predicted text bbox (±0.5 mm)."""
+        from plottter.osm.labels import _hershey_text_width, render_labels
+
+        tol = 0.5
+        font_size = self._FONT
+        label = self._label("ABC", 50.0, 50.0)
+        width = _hershey_text_width("ABC", font_size)
+
+        cx, cy = label.position
+        x_min = cx - width / 2.0 - tol
+        x_max = cx + width / 2.0 + tol
+        # baseline is at cy + font_size/2; cap tops are font_size above baseline
+        y_min = cy - font_size / 2.0 - tol   # top of capitals in canvas y-down
+        y_max = cy + font_size / 2.0 + tol   # baseline level
+
+        result = render_labels([label], font_size)
+        assert len(result) > 0
+        for polyline in result:
+            for x, y in polyline:
+                assert x_min <= x <= x_max, f"x={x} outside [{x_min}, {x_max}]"
+                assert y_min <= y <= y_max, f"y={y} outside [{y_min}, {y_max}]"
+
+    def test_empty_labels_returns_empty(self):
+        """An empty label list yields an empty polyline list."""
+        from plottter.osm.labels import render_labels
+
+        assert render_labels([], self._FONT) == []
+
+    def test_empty_text_label_returns_no_polylines(self):
+        """A label with empty text contributes no polylines."""
+        from plottter.osm.labels import render_labels
+
+        label = self._label("", 50.0, 50.0)
+        result = render_labels([label], self._FONT)
+        assert result == []
+
+    def test_multiple_labels_all_rendered(self):
+        """Multiple labels each contribute polylines; total count is additive."""
+        from plottter.osm.labels import render_labels
+
+        label_a = self._label("A", 10.0, 10.0)
+        label_b = self._label("B", 100.0, 100.0)
+        result_a = render_labels([label_a], self._FONT)
+        result_b = render_labels([label_b], self._FONT)
+        result_ab = render_labels([label_a, label_b], self._FONT)
+        assert len(result_ab) == len(result_a) + len(result_b)
+
+    def test_label_centred_horizontally(self):
+        """The rendered strokes are symmetric about label.position.x (±0.5 mm)."""
+        from plottter.osm.labels import render_labels
+
+        cx = 50.0
+        label = self._label("ABA", cx, 50.0)
+        result = render_labels([label], self._FONT)
+        assert len(result) > 0
+        all_x = [x for poly in result for x, _y in poly]
+        mid = (min(all_x) + max(all_x)) / 2.0
+        assert abs(mid - cx) < 0.5, f"Centre x={mid} not close to {cx}"
