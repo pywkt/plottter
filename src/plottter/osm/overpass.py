@@ -130,8 +130,8 @@ def _parse_elements(elements: list) -> list:
             tags = elem.get("tags") or {}
             members = elem.get("members") or []
 
-            outer_rings: list = []
-            inner_rings: list = []
+            outer_ways: list = []
+            inner_ways: list = []
 
             for member in members:
                 if member.get("type") != "way":
@@ -142,16 +142,34 @@ def _parse_elements(elements: list) -> list:
                 coords = [(g["lat"], g["lon"]) for g in geometry]
                 role = member.get("role", "outer")
                 if role == "inner":
-                    inner_rings.append(coords)
+                    inner_ways.append(coords)
                 else:
-                    outer_rings.append(coords)
+                    outer_ways.append(coords)
 
-            for outer_coords in outer_rings:
+            # Stitch fragmented member ways into closed rings (spec §6.4). A big
+            # river's outer boundary is split across many open bank segments;
+            # joining them head-to-tail yields one valid ring instead of bogus
+            # per-segment slivers.
+            from .geometry import assemble_rings, point_in_ring
+
+            outer_rings = assemble_rings(outer_ways)
+            inner_rings = assemble_rings(inner_ways)
+
+            for outer in outer_rings:
+                if len(outer_rings) == 1:
+                    holes = inner_rings
+                else:
+                    # Assign each inner ring to the outer ring that contains it.
+                    holes = [
+                        inr
+                        for inr in inner_rings
+                        if inr and point_in_ring(inr[0], outer)
+                    ]
                 features.append(MapFeature(
                     tags=tags,
-                    coords=outer_coords,
+                    coords=outer,
                     is_area=True,
-                    inner_coords=inner_rings,
+                    inner_coords=holes,
                 ))
 
     return features

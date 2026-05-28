@@ -540,3 +540,48 @@ def test_clamp_map_view_in_bounds_passes_through():
     assert clamped["scale"] == pytest.approx(view["scale"], rel=1e-9)
     assert clamped["center_lat"] == pytest.approx(view["center_lat"], abs=1e-6)
     assert clamped["center_lon"] == pytest.approx(view["center_lon"], abs=1e-6)
+
+
+def test_assemble_rings_stitches_fragmented_outer():
+    """Open member ways sharing endpoints stitch into one closed ring."""
+    from plottter.osm.geometry import assemble_rings
+
+    # A unit square split across 3 open ways; the third is reversed.
+    seg_a = [(0.0, 0.0), (0.0, 1.0)]
+    seg_b = [(0.0, 1.0), (1.0, 1.0), (1.0, 0.0)]
+    seg_c = [(0.0, 0.0), (1.0, 0.0)]
+    rings = assemble_rings([seg_a, seg_b, seg_c])
+
+    assert len(rings) == 1
+    ring = rings[0]
+    assert ring[0] == ring[-1]  # closed
+    assert {(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)}.issubset(set(ring))
+
+
+def test_assemble_rings_passthrough_closed_way():
+    """An already-closed member way is emitted unchanged as one ring."""
+    from plottter.osm.geometry import assemble_rings
+
+    closed = [(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)]
+    rings = assemble_rings([closed])
+    assert len(rings) == 1
+    assert rings[0][0] == rings[0][-1]
+
+
+def test_assemble_rings_two_independent_rings():
+    """Two disjoint closed loops produce two rings."""
+    from plottter.osm.geometry import assemble_rings
+
+    ring1 = [(0.0, 0.0), (0.0, 1.0), (1.0, 0.0), (0.0, 0.0)]
+    ring2 = [(5.0, 5.0), (5.0, 6.0), (6.0, 5.0), (5.0, 5.0)]
+    rings = assemble_rings([ring1, ring2])
+    assert len(rings) == 2
+
+
+def test_point_in_ring():
+    """Ray-casting containment test: inside vs outside a unit square."""
+    from plottter.osm.geometry import point_in_ring
+
+    square = [(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0), (0.0, 0.0)]
+    assert point_in_ring((0.5, 0.5), square) is True
+    assert point_in_ring((2.0, 2.0), square) is False

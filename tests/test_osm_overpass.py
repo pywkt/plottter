@@ -179,6 +179,61 @@ class TestParseFixture:
         assert highway_paths == []
 
 
+class TestMultipolygonStitching:
+    """Relation outer boundaries split across open member ways are stitched into
+    one closed ring (regression for water drawn over land / unfilled rivers)."""
+
+    @staticmethod
+    def _fragmented_river_relation():
+        """A square water relation whose outer ring is split across 3 open ways
+        (one reversed), plus one closed inner ring (an island)."""
+        return [
+            {
+                "type": "relation",
+                "tags": {"natural": "water", "name": "River"},
+                "members": [
+                    {"type": "way", "role": "outer", "geometry": [
+                        {"lat": 0.0, "lon": 0.0}, {"lat": 0.0, "lon": 1.0}]},
+                    {"type": "way", "role": "outer", "geometry": [
+                        {"lat": 0.0, "lon": 1.0}, {"lat": 1.0, "lon": 1.0},
+                        {"lat": 1.0, "lon": 0.0}]},
+                    # Reversed direction; shares endpoints with the others.
+                    {"type": "way", "role": "outer", "geometry": [
+                        {"lat": 0.0, "lon": 0.0}, {"lat": 1.0, "lon": 0.0}]},
+                    {"type": "way", "role": "inner", "geometry": [
+                        {"lat": 0.3, "lon": 0.3}, {"lat": 0.3, "lon": 0.6},
+                        {"lat": 0.6, "lon": 0.6}, {"lat": 0.6, "lon": 0.3},
+                        {"lat": 0.3, "lon": 0.3}]},
+                ],
+            }
+        ]
+
+    def test_fragmented_outer_becomes_single_ring(self):
+        """3 open outer member ways stitch into exactly one closed outer feature
+        (previously: 3 separate force-closed slivers)."""
+        from plottter.osm.overpass import _parse_elements
+
+        feats = _parse_elements(self._fragmented_river_relation())
+        assert len(feats) == 1
+        outer = feats[0]
+        assert outer.is_area is True
+        assert outer.coords[0] == outer.coords[-1]  # closed
+        # The stitched ring covers all four corners of the square.
+        corners = {(0.0, 0.0), (0.0, 1.0), (1.0, 1.0), (1.0, 0.0)}
+        assert corners.issubset(set(outer.coords))
+
+    def test_inner_ring_assigned_as_hole(self):
+        """The closed inner member is carried as a hole on the stitched outer."""
+        from plottter.osm.overpass import _parse_elements
+        from plottter.osm.geometry import point_in_ring
+
+        feats = _parse_elements(self._fragmented_river_relation())
+        outer = feats[0]
+        assert len(outer.inner_coords) == 1
+        # The hole lies inside the outer ring.
+        assert point_in_ring(outer.inner_coords[0][0], outer.coords)
+
+
 class TestRetryBehavior:
     """fetch_overpass retries on 429/504 and raises OverpassError on persistent failure."""
 

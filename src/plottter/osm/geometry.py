@@ -411,6 +411,87 @@ def clip_polygons(
     return result
 
 
+def assemble_rings(
+    ways: list[list[tuple[float, float]]],
+) -> list[list[tuple[float, float]]]:
+    """Stitch multipolygon member ways into closed rings (spec §6.4).
+
+    OSM multipolygon relations split a ring's boundary across several member
+    ways that share endpoints — the same OSM node, so the coordinates compare
+    exactly equal.  This joins consecutive member ways head-to-tail (reversing
+    where needed) into closed rings.  A member way that is already closed is
+    emitted as its own ring.  A chain that cannot be closed (e.g. a member is
+    missing or was clipped) is closed best-effort by joining its open ends, so
+    we never leave a dangling sliver.
+
+    Without this, a large feature like the Detroit River — whose outer
+    boundary is split across many open bank segments — would have each segment
+    force-closed individually, producing bogus land-spanning slivers (water
+    drawn over roads) and never forming a fillable river polygon.
+
+    Args:
+        ways: Member ways, each a list of (lat, lon) tuples.
+
+    Returns:
+        List of closed rings (each ``ring[0] == ring[-1]``, ``len >= 4``).
+    """
+    segments = [list(w) for w in ways if len(w) >= 2]
+    rings: list[list[tuple[float, float]]] = []
+
+    while segments:
+        ring = list(segments.pop(0))
+        # Grow the chain until it closes or no connecting segment remains.
+        while ring[0] != ring[-1]:
+            matched = False
+            for i, seg in enumerate(segments):
+                if seg[0] == ring[-1]:            # seg continues from ring end
+                    ring.extend(seg[1:])
+                elif seg[-1] == ring[-1]:          # seg meets ring end, reversed
+                    ring.extend(reversed(seg[:-1]))
+                elif seg[-1] == ring[0]:           # seg precedes ring start
+                    ring[:0] = seg[:-1]
+                elif seg[0] == ring[0]:            # seg precedes ring start, reversed
+                    ring[:0] = list(reversed(seg))[:-1]
+                else:
+                    continue
+                segments.pop(i)
+                matched = True
+                break
+            if not matched:
+                break  # cannot extend further; close best-effort below
+        if ring[0] != ring[-1]:
+            ring.append(ring[0])
+        if len(ring) >= 4:  # at least a triangle plus the closing vertex
+            rings.append(ring)
+    return rings
+
+
+def point_in_ring(
+    point: tuple[float, float],
+    ring: list[tuple[float, float]],
+) -> bool:
+    """Ray-casting point-in-polygon test (pure Python, no shapely).
+
+    Used to assign inner rings (holes) to their containing outer ring when a
+    multipolygon relation has more than one outer ring.  Coordinates may be in
+    any consistent 2D system (here ``(lat, lon)``); only relative position
+    matters.
+    """
+    x, y = point
+    inside = False
+    n = len(ring)
+    j = n - 1
+    for i in range(n):
+        xi, yi = ring[i]
+        xj, yj = ring[j]
+        if ((yi > y) != (yj > y)) and (
+            x < (xj - xi) * (y - yi) / (yj - yi) + xi
+        ):
+            inside = not inside
+        j = i
+    return inside
+
+
 def assemble(
     feature: "MapFeature",  # type: ignore[name-defined]  # forward ref; imported below
 ) -> tuple[list[list[tuple[float, float]]], list[list[tuple[float, float]]]]:
