@@ -234,6 +234,75 @@ class TestMultipolygonStitching:
         assert point_in_ring(outer.inner_coords[0][0], outer.coords)
 
 
+class TestNodeParsing:
+    """_parse_elements handles node elements correctly."""
+
+    def test_node_with_lat_lon_and_tags(self):
+        """Node with lat/lon and name tag → MapFeature with coords length 1."""
+        from plottter.osm.overpass import _parse_elements
+
+        elements = [
+            {
+                "type": "node",
+                "lat": 35.0,
+                "lon": 135.7,
+                "tags": {"name": "Test Node", "amenity": "cafe"},
+            }
+        ]
+        feats = _parse_elements(elements)
+        assert len(feats) == 1
+        feat = feats[0]
+        assert len(feat.coords) == 1
+        assert feat.coords[0] == (35.0, 135.7)
+        assert feat.is_area is False
+        assert feat.tags["name"] == "Test Node"
+        assert feat.tags["amenity"] == "cafe"
+
+    def test_node_without_lat_lon_skipped(self):
+        """Node without lat/lon is silently skipped."""
+        from plottter.osm.overpass import _parse_elements
+
+        elements = [
+            {"type": "node", "tags": {"name": "Incomplete Node"}},
+        ]
+        feats = _parse_elements(elements)
+        assert feats == []
+
+    def test_node_missing_lat_only_skipped(self):
+        """Node with only lon (no lat) is silently skipped."""
+        from plottter.osm.overpass import _parse_elements
+
+        elements = [
+            {"type": "node", "lon": 135.7, "tags": {"name": "No Lat"}},
+        ]
+        feats = _parse_elements(elements)
+        assert feats == []
+
+    def test_node_missing_lon_only_skipped(self):
+        """Node with only lat (no lon) is silently skipped."""
+        from plottter.osm.overpass import _parse_elements
+
+        elements = [
+            {"type": "node", "lat": 35.0, "tags": {"name": "No Lon"}},
+        ]
+        feats = _parse_elements(elements)
+        assert feats == []
+
+    def test_node_without_tags_produces_feature_with_empty_tags(self):
+        """Node without tags still produces a MapFeature with empty tags dict."""
+        from plottter.osm.overpass import _parse_elements
+
+        elements = [
+            {"type": "node", "lat": 35.0, "lon": 135.7},
+        ]
+        feats = _parse_elements(elements)
+        assert len(feats) == 1
+        feat = feats[0]
+        assert feat.tags == {}
+        assert feat.coords == [(35.0, 135.7)]
+        assert feat.is_area is False
+
+
 class TestRetryBehavior:
     """fetch_overpass retries on 429/504 and raises OverpassError on persistent failure."""
 

@@ -104,8 +104,9 @@ def _parse_elements(elements: list) -> list:
     Returns
     -------
     list[MapFeature]
-        One ``MapFeature`` per way with geometry and per outer relation member.
-        Elements without a ``geometry`` array are silently skipped.
+        One ``MapFeature`` per node with lat/lon, per way with geometry, and
+        per outer relation member.  Elements without geometry/coords are
+        silently skipped.
     """
     from .types import MapFeature
 
@@ -114,7 +115,19 @@ def _parse_elements(elements: list) -> list:
     for elem in elements:
         elem_type = elem.get("type")
 
-        if elem_type == "way":
+        if elem_type == "node":
+            lat = elem.get("lat")
+            lon = elem.get("lon")
+            if lat is None or lon is None:
+                continue
+            tags = elem.get("tags") or {}
+            features.append(MapFeature(
+                tags=tags,
+                coords=[(lat, lon)],
+                is_area=False,
+            ))
+
+        elif elem_type == "way":
             geometry = elem.get("geometry") or []
             if not geometry:
                 continue
