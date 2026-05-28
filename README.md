@@ -6,12 +6,13 @@ A free, open-source desktop application for generating pen-plotter-ready vector 
 
 ## Features
 
-**35 generators** across math art, image-to-lines, 3D, audio, and code-driven art:
+**36 generators** across math art, image-to-lines, 3D, audio, maps, and code-driven art:
 
 - **Math Art** — Parametric curves, polar curves, modular multiplication, Perlin noise flow fields (with quantized and rectilinear modes), superformula fields, L-system fractals, grid patterns, concentric rings, dot grids, geometric grids, Voronoi/Delaunay tessellation, Penrose aperiodic tiling, and text rendering
 - **Image to Lines** — Edge detection (Canny), hatching (with oscillation mode), flow field/squiggle, Voronoi stippling (with TSP single-line mode), contour lines, XDoG, FDoG (coherent lines), hedcut portraits, scanline halftone, circular scribble, LIC, TAM, dot grid halftone, spiral portraits, sketch (iterative darkest-trace-erase with hybrid marks), mosaic hatching (triangles/Voronoi/rectangles/hexagons/quadtree/superpixels), ASCII art, and **Pixel Art** (multi-layer pixel-as-shape rendering with 15+ retro palettes — NES, Game Boy, SNES, PICO-8, C64, EGA/CGA, Endesga32, grayscale — plus square / diamond / circle / hex cell shapes and dithering)
 - **3D Scene** — Wireframe, hatched/shaded, and perspective-hatched rendering with hidden line removal, 10+ primitive shapes, OBJ/STL mesh import and slicing, camera controls, and shadow effects
 - **Audio** — Import WAV, MP3, FLAC, or OGG files and generate plotter-ready visualizations: Joy Division-style ridgeline spectrograms with hidden line removal, circular and spiral waveforms, spectrogram contour maps, frequency band separation, and stereo Lissajous figures
+- **Map** — Type a real-world location and turn its OpenStreetMap data into multi-layer pen-plotter art: roads (major/minor with stroke emphasis), water bodies (multipolygon-aware, with hatch/cross-hatch fill), waterways, rail/transit, parks and green space, buildings, and coastline — each its own pen layer. Interactive **pan/zoom positioning** lets you frame the exact crop before generating; selecting a map layer later restores the full settings so you can tweak and regenerate in place. Disk-cached fetches, no API key required, ODbL attribution baked in. CLI batch mode supported.
 - **Code-driven (plugin)** — **TurtleToy** plugin lets you paste JavaScript from [turtletoy.net](https://turtletoy.net) and run it 1:1, including adjustable-variable comment syntax (`const x = 5; // min=0, max=10`) that surfaces as live sliders/dropdowns. Requires the optional `quickjs` package.
 
 **Multi-layer system** with per-layer pen colors and opacity, drag reorder, visibility/lock controls, and color separation (K-Means, Luminance, RGB, CMYK).
@@ -73,7 +74,7 @@ plottter --list-generators  # Show all available generators
 | [Getting Started](docs/getting-started.md) | Installation, first project, basic workflow |
 | [Math Art Guide](docs/math-art-guide.md) | All math generators with parameters and presets |
 | [Image-to-Lines Guide](docs/image-to-lines-guide.md) | 13 image conversion algorithms |
-| [Map Guide](docs/map-guide.md) | OpenStreetMap-based map art: fetch, categories, fills, attribution |
+| [Map Guide](docs/map-guide.md) | OpenStreetMap-based map art: fetch, interactive pan/zoom positioning, edit-in-place, categories, fills, attribution, CLI |
 | [Layers & Colors](docs/layers-and-colors.md) | Multi-layer workflows and color separation |
 | [Export & Plotting](docs/export-and-plotting.md) | SVG, HPGL, G-code, Mural export and AxiDraw control |
 | [Preview & Simulation](docs/preview-and-simulation.md) | Animation, travel metrics, pen jitter |

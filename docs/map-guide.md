@@ -117,6 +117,51 @@ cache), the saved position is restored and the canvas preview reflects it immedi
 
 ---
 
+## Editing an Existing Map
+
+Once a map run is on the canvas, you can come back to it any time — even after working
+with other generators — and tweak its settings in place.
+
+### Click a map layer to restore its settings
+
+Selecting **any** layer of a map run (Roads, Water, Parks, etc.) in the Layer panel
+automatically:
+
+- Switches the mode panel back to **Map**.
+- Selects the **Map** generator.
+- Restores **every parameter** to what was used to produce the run (radius, road
+  detail, enabled categories, area fill, attribution, etc.).
+- Restores the **location** text field.
+- Re-loads the cached map data from disk so you can re-generate offline.
+- Re-applies your saved pan/zoom position.
+
+You'll see the panel snap from whatever generator you were using (Parametric Curves,
+Text, anything) back to the Map settings exactly as you left them. Tweak any
+parameter and click **Generate** to **replace** the run in place — the new layers
+take over the same color/stack position, no duplicates appear, and you don't need
+to delete the old run first.
+
+### What "replace in place" means
+
+The map generator emits multiple layers under a single *run id*. When you click
+Generate while in Map mode, the panel finds the previous run (no matter which
+specific layer is active) and removes its layers before adding the new ones, all
+inside a single undo step. **Cmd/Ctrl-Z** rolls back the whole regeneration as one
+operation.
+
+### After regenerating
+
+Once Generate finishes, the panel re-activates one of the newly created run layers
+so you stay on the Map settings. The next click on any layer of the new run will
+restore the settings that just produced it (now including any tweaks you made).
+
+### Pixel Art works the same way
+
+The same restore-on-select behavior applies to any multi-layer generator. Click any
+layer of a Pixel Art run to bring the panel back to its exact settings.
+
+---
+
 ## Location and Radius
 
 ### Radius mode (default)
@@ -361,8 +406,12 @@ text label on top, overlay a math-art pattern as a background, or apply post-pro
 - **Labels and street names** are not included; use the Text generator for place-name
   overlays.
 - **True-scale output** (e.g. exactly 1:10 000 with a scale bar) is not yet supported —
-  the map is fit-to-canvas.
-- Re-opening a saved project does not restore the map data automatically; clicking
-  **Fetch Map Data** again (which reads from the disk cache) is required before
-  regenerating. The pan/zoom position **is** saved with the project and is restored
-  automatically once you click Fetch Map Data.
+  the map is fit-to-canvas (or fit-to-positioned-view).
+- Re-opening a saved project does not eagerly re-load the map data. Selecting any
+  layer of the run (or clicking **Fetch Map Data**) reloads the cached data from
+  `~/.plottter/maps/` automatically; only if the cache has been cleared will you
+  need to re-fetch over the network.
+- The disk cache is **schema-versioned**: when the parser is updated in a way that
+  changes how features are stored (e.g. multipolygon ring stitching), older cached
+  payloads are discarded and the next Fetch re-downloads. This is silent and
+  expected — no user action is required beyond clicking Fetch again.
