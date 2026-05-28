@@ -16,6 +16,7 @@ from plottter.generators.base import (
     LayerSpec,
     Parameter,
     Preset,
+    StringParam,
 )
 from plottter.generators import register_generator
 from plottter.models import Canvas
@@ -324,6 +325,74 @@ class MapGenerator(Generator):
                     'Emit "© OpenStreetMap contributors" credit as required '
                     "by the ODbL licence."
                 ),
+            ),
+            BoolParam(
+                name="include_water_labels",
+                label="Water Labels",
+                default=True,
+                description="Render name labels for water area features.",
+                randomizable=False,
+            ),
+            BoolParam(
+                name="include_park_labels",
+                label="Park Labels",
+                default=True,
+                description="Render name labels for park and green-space features.",
+                randomizable=False,
+            ),
+            BoolParam(
+                name="include_waterway_labels",
+                label="Waterway Labels",
+                default=False,
+                description="Render name labels for waterway (river/stream) features.",
+                randomizable=False,
+            ),
+            BoolParam(
+                name="include_place_labels",
+                label="Place Labels",
+                default=True,
+                description="Render place-name labels (cities, towns, villages).",
+                randomizable=False,
+            ),
+            BoolParam(
+                name="include_road_labels",
+                label="Road Labels",
+                default=False,
+                description="Render road-name labels along streets.",
+                randomizable=False,
+            ),
+            FloatParam(
+                name="label_font_size_mm",
+                label="Label Font Size (mm)",
+                min=2.0,
+                max=8.0,
+                step=0.1,
+                default=3.5,
+                description="Cap height of label glyphs in mm.",
+                randomizable=False,
+            ),
+            FloatParam(
+                name="label_min_feature_mm",
+                label="Label Min Feature (mm)",
+                min=0.0,
+                max=50.0,
+                step=0.5,
+                default=8.0,
+                description=(
+                    "Only label features whose bounding-box diagonal is at least "
+                    "this length in mm (suppresses tiny-feature clutter)."
+                ),
+                randomizable=False,
+            ),
+            StringParam(
+                name="label_language",
+                label="Label Language",
+                default="",
+                description=(
+                    "ISO 639-1 language code for OSM name tags "
+                    "(e.g. 'en', 'ja'). Empty = use the default name tag."
+                ),
+                randomizable=False,
             ),
         ]
 

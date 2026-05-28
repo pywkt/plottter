@@ -64,6 +64,14 @@ class TestParameters:
             "simplify_mm",
             "min_feature_mm",
             "include_attribution",
+            "include_water_labels",
+            "include_park_labels",
+            "include_waterway_labels",
+            "include_place_labels",
+            "include_road_labels",
+            "label_font_size_mm",
+            "label_min_feature_mm",
+            "label_language",
         }
         assert required == set(self.param_by_name)
 
@@ -74,6 +82,7 @@ class TestParameters:
             ChoiceParam,
             FloatParam,
             IntParam,
+            StringParam,
         )
 
         assert isinstance(self.param_by_name["radius_km"], FloatParam)
@@ -93,6 +102,14 @@ class TestParameters:
         assert isinstance(self.param_by_name["simplify_mm"], FloatParam)
         assert isinstance(self.param_by_name["min_feature_mm"], FloatParam)
         assert isinstance(self.param_by_name["include_attribution"], BoolParam)
+        assert isinstance(self.param_by_name["include_water_labels"], BoolParam)
+        assert isinstance(self.param_by_name["include_park_labels"], BoolParam)
+        assert isinstance(self.param_by_name["include_waterway_labels"], BoolParam)
+        assert isinstance(self.param_by_name["include_place_labels"], BoolParam)
+        assert isinstance(self.param_by_name["include_road_labels"], BoolParam)
+        assert isinstance(self.param_by_name["label_font_size_mm"], FloatParam)
+        assert isinstance(self.param_by_name["label_min_feature_mm"], FloatParam)
+        assert isinstance(self.param_by_name["label_language"], StringParam)
 
     # --------------------------------------------------------------- defaults
     def test_defaults(self):
@@ -114,6 +131,14 @@ class TestParameters:
         assert p["simplify_mm"].default == pytest.approx(0.15)
         assert p["min_feature_mm"].default == pytest.approx(0.8)
         assert p["include_attribution"].default is True
+        assert p["include_water_labels"].default is True
+        assert p["include_park_labels"].default is True
+        assert p["include_waterway_labels"].default is False
+        assert p["include_place_labels"].default is True
+        assert p["include_road_labels"].default is False
+        assert p["label_font_size_mm"].default == pytest.approx(3.5)
+        assert p["label_min_feature_mm"].default == pytest.approx(8.0)
+        assert p["label_language"].default == ""
 
     # ----------------------------------------------------------------- ranges
     def test_float_ranges(self):
@@ -128,6 +153,10 @@ class TestParameters:
         assert p["simplify_mm"].max == pytest.approx(2.0)
         assert p["min_feature_mm"].min == pytest.approx(0.0)
         assert p["min_feature_mm"].max == pytest.approx(10.0)
+        assert p["label_font_size_mm"].min == pytest.approx(2.0)
+        assert p["label_font_size_mm"].max == pytest.approx(8.0)
+        assert p["label_min_feature_mm"].min == pytest.approx(0.0)
+        assert p["label_min_feature_mm"].max == pytest.approx(50.0)
 
     def test_int_ranges(self):
         p = self.param_by_name
@@ -140,6 +169,23 @@ class TestParameters:
         assert set(p["extent_mode"].choices) == {"radius", "place_bbox"}
         assert set(p["road_detail"].choices) == {"major_only", "standard", "all_streets"}
         assert set(p["area_fill"].choices) == {"none", "hatch", "cross_hatch"}
+
+    # ------------------------------------------------------ randomizable
+    def test_label_params_not_randomizable(self):
+        label_params = [
+            "include_water_labels",
+            "include_park_labels",
+            "include_waterway_labels",
+            "include_place_labels",
+            "include_road_labels",
+            "label_font_size_mm",
+            "label_min_feature_mm",
+            "label_language",
+        ]
+        for name in label_params:
+            assert self.param_by_name[name].randomizable is False, (
+                f"{name} should have randomizable=False"
+            )
 
     # --------------------------------------------------------- visible_when
     def test_fill_params_visible_when_area_fill_not_none(self):
