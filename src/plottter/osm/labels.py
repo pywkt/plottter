@@ -314,3 +314,164 @@ def collect_park_labels(
         )
 
     return labels
+
+
+def collect_place_labels(
+    map_data: "MapData",
+    transform: "FitTransform",
+    *,
+    language: str,
+    min_size_mm: float,
+    clip_box_mm: tuple[float, float, float, float],
+) -> list[Label]:
+    """Collect labels for place features (islands, islets, neighbourhoods, suburbs).
+
+    Handles two geometry kinds produced by the ``places`` Overpass category:
+
+    * **Point features** (``len(coords) == 1``): a single-coord node queried
+      for ``place=island|islet|neighbourhood|suburb``.  The node's location is
+      projected directly; no size filter is applied (``feature_size_mm=0``).
+    * **Area features** (``is_area=True``): ways or relation members with a
+      polygon outline.  The representative point of the clipped polygon is
+      used, same as :func:`collect_water_labels`.
+
+    Priority by place tag value (spec §5.2):
+
+    * ``island`` / ``islet`` → 90
+    * ``neighbourhood`` / ``suburb`` → 80
+
+    Args:
+        map_data:     Fetched OSM payload from
+                      :func:`plottter.osm.fetch_map_data`.
+        transform:    Canvas projection transform from
+                      :func:`plottter.osm.geometry.fit_transform`.
+        language:     Preferred display language (BCP-47 code).
+        min_size_mm:  Minimum feature size (``√area`` in mm) to label.
+                      Applied only to area features; point features are
+                      always included if inside the clip box.
+        clip_box_mm:  Clipping rectangle as ``(left, top, right, bottom)``
+                      in mm.  Features entirely outside this rectangle are
+                      dropped.
+
+    Returns:
+        List of :class:`Label` objects, one per qualifying named place
+        feature, in the order they appear in *map_data*.
+    """
+    from shapely.geometry import GeometryCollection, MultiPolygon, Point, Polygon
+    from shapely.geometry import box as shapely_box
+
+    from plottter.osm.geometry import mercator
+
+    _PRIORITY: dict[str, int] = {
+        "island": 90,
+        "islet": 90,
+        "neighbourhood": 80,
+        "suburb": 80,
+    }
+
+    left, top, right, bottom = clip_box_mm
+    clip_box = shapely_box(left, top, right, bottom)
+
+    place_features = map_data.features.get("places", [])
+    labels: list[Label] = []
+
+    for feature in place_features:
+        name = _resolve_name(feature.tags, language)
+        if not name:
+            continue
+
+        place_type = feature.tags.get("place", "")
+        priority = _PRIORITY.get(place_type, 80)
+
+        # --- point feature (node): single coord -------------------------
+        if len(feature.coords) == 1:
+            lat, lon = feature.coords[0]
+            px, py = mercator(lat, lon)
+            x_mm = transform.x_origin + px * transform.scale
+            y_mm = transform.y_origin - py * transform.scale
+
+            if not clip_box.contains(Point(x_mm, y_mm)):
+                continue
+
+            labels.append(
+                Label(
+                    text=name,
+                    position=(x_mm, y_mm),
+                    priority=priority,
+                    category="place",
+                    feature_size_mm=0.0,
+                )
+            )
+            continue
+
+        # --- area feature (way/relation): polygon centroid --------------
+        if not feature.is_area or len(feature.coords) < 3:
+            continue
+
+        # project outer ring (lat, lon) → canvas mm
+        outer: list[tuple[float, float]] = []
+        for lat, lon in feature.coords:
+            px, py = mercator(lat, lon)
+            outer.append(
+                (
+                    transform.x_origin + px * transform.scale,
+                    transform.y_origin - py * transform.scale,
+                )
+            )
+
+        # project inner rings (holes)
+        holes: list[list[tuple[float, float]]] = []
+        for hole_coords in feature.inner_coords:
+            if len(hole_coords) < 3:
+                continue
+            hole: list[tuple[float, float]] = []
+            for lat, lon in hole_coords:
+                px, py = mercator(lat, lon)
+                hole.append(
+                    (
+                        transform.x_origin + px * transform.scale,
+                        transform.y_origin - py * transform.scale,
+                    )
+                )
+            holes.append(hole)
+
+        # build shapely polygon and clip
+        polygon = Polygon(outer, holes)
+        if not polygon.is_valid:
+            polygon = polygon.buffer(0)
+        clipped = polygon.intersection(clip_box)
+        if clipped.is_empty:
+            continue
+
+        # keep the largest sub-polygon when the intersection is multi-part
+        if isinstance(clipped, (MultiPolygon, GeometryCollection)):
+            candidates = [
+                g
+                for g in clipped.geoms
+                if isinstance(g, Polygon) and not g.is_empty
+            ]
+            if not candidates:
+                continue
+            clipped = max(candidates, key=lambda g: g.area)
+
+        if not isinstance(clipped, Polygon):
+            continue
+
+        # size filter
+        size_mm = math.sqrt(clipped.area)
+        if size_mm < min_size_mm:
+            continue
+
+        # representative point (guaranteed inside)
+        rp = clipped.representative_point()
+        labels.append(
+            Label(
+                text=name,
+                position=(rp.x, rp.y),
+                priority=priority,
+                category="place",
+                feature_size_mm=size_mm,
+            )
+        )
+
+    return labels

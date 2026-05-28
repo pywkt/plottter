@@ -18,7 +18,7 @@ import pytest
 from shapely.geometry import Point, Polygon
 
 from plottter.osm.geometry import FitTransform, mercator
-from plottter.osm.labels import Label, _resolve_name, collect_park_labels, collect_water_labels
+from plottter.osm.labels import Label, _resolve_name, collect_park_labels, collect_place_labels, collect_water_labels
 from plottter.osm.types import MapData, MapFeature
 
 
@@ -455,3 +455,201 @@ class TestCollectParkLabels:
         px, py = labels[0].position
         pt = Point(px, py)
         assert poly.contains(pt) or poly.distance(pt) < 1e-6
+
+
+# ---------------------------------------------------------------------------
+# Helpers for place-label tests
+# ---------------------------------------------------------------------------
+
+
+def _place_node(
+    lat: float,
+    lon: float,
+    place: str,
+    name: str | None = None,
+) -> MapFeature:
+    """A point-style (node) place feature with a single coord."""
+    tags: dict[str, str] = {"place": place}
+    if name is not None:
+        tags["name"] = name
+    return MapFeature(tags=tags, coords=[(lat, lon)], is_area=False)
+
+
+def _place_area(
+    lat: float,
+    lon: float,
+    half_deg: float = 0.001,
+    place: str = "island",
+    name: str | None = None,
+) -> MapFeature:
+    """A polygon-style place feature (way/relation member)."""
+    coords = [
+        (lat - half_deg, lon - half_deg),
+        (lat - half_deg, lon + half_deg),
+        (lat + half_deg, lon + half_deg),
+        (lat + half_deg, lon - half_deg),
+        (lat - half_deg, lon - half_deg),
+    ]
+    tags: dict[str, str] = {"place": place}
+    if name is not None:
+        tags["name"] = name
+    return MapFeature(tags=tags, coords=coords, is_area=True)
+
+
+def _place_map_data(features: list[MapFeature]) -> MapData:
+    return MapData(
+        location="Test",
+        center=(0.0, 0.0),
+        bbox=(-1.0, -1.0, 1.0, 1.0),
+        features={"places": features},
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+class TestCollectPlaceLabels:
+    @pytest.fixture
+    def tf(self) -> FitTransform:
+        return _transform()
+
+    @pytest.fixture
+    def box(self) -> tuple[float, float, float, float]:
+        return _clip_box()
+
+    def test_point_island_priority_90(self, tf, box):
+        """Point-style island node → Label with priority 90."""
+        f = _place_node(0.01, 0.01, place="island", name="Belle Isle")
+        md = _place_map_data([f])
+
+        labels = collect_place_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+
+        assert len(labels) == 1
+        assert labels[0].text == "Belle Isle"
+        assert labels[0].priority == 90
+        assert labels[0].category == "place"
+
+    def test_point_islet_priority_90(self, tf, box):
+        """Point-style islet node → Label with priority 90."""
+        f = _place_node(0.01, 0.01, place="islet", name="Small Rock")
+        md = _place_map_data([f])
+
+        labels = collect_place_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+
+        assert len(labels) == 1
+        assert labels[0].priority == 90
+
+    def test_point_neighbourhood_priority_80(self, tf, box):
+        """Point-style neighbourhood node → Label with priority 80."""
+        f = _place_node(0.01, 0.01, place="neighbourhood", name="Montmartre")
+        md = _place_map_data([f])
+
+        labels = collect_place_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+
+        assert len(labels) == 1
+        assert labels[0].priority == 80
+
+    def test_point_suburb_priority_80(self, tf, box):
+        """Point-style suburb node → Label with priority 80."""
+        f = _place_node(0.01, 0.01, place="suburb", name="Belltown")
+        md = _place_map_data([f])
+
+        labels = collect_place_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+
+        assert len(labels) == 1
+        assert labels[0].priority == 80
+
+    def test_point_label_position_is_projected_node(self, tf, box):
+        """Label position for a node feature equals the projected node coord."""
+        lat, lon = 0.01, 0.02
+        f = _place_node(lat, lon, place="island", name="My Island")
+        md = _place_map_data([f])
+
+        labels = collect_place_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+
+        assert len(labels) == 1
+        from plottter.osm.geometry import mercator
+
+        px, py = mercator(lat, lon)
+        expected_x = tf.x_origin + px * tf.scale
+        expected_y = tf.y_origin - py * tf.scale
+        assert math.isclose(labels[0].position[0], expected_x, abs_tol=1e-9)
+        assert math.isclose(labels[0].position[1], expected_y, abs_tol=1e-9)
+
+    def test_area_island_priority_90(self, tf, box):
+        """Polygon-style island feature → Label with priority 90."""
+        f = _place_area(0.01, 0.01, place="island", name="Big Island")
+        md = _place_map_data([f])
+
+        labels = collect_place_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+
+        assert len(labels) == 1
+        assert labels[0].priority == 90
+
+    def test_unnamed_node_skipped(self, tf, box):
+        """A place node without a name tag produces no Label."""
+        f = _place_node(0.01, 0.01, place="island")
+        md = _place_map_data([f])
+
+        labels = collect_place_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+
+        assert labels == []
+
+    def test_node_outside_clip_box_dropped(self, tf):
+        """A node whose projected position lies outside clip_box_mm is dropped."""
+        # Use a very small clip box that will exclude our node
+        tiny_box = (0.0, 0.0, 0.001, 0.001)
+        f = _place_node(0.01, 0.01, place="island", name="Far Island")
+        md = _place_map_data([f])
+
+        labels = collect_place_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=tiny_box
+        )
+
+        assert labels == []
+
+    def test_empty_places_returns_empty_list(self, tf, box):
+        """MapData with no 'places' key returns an empty list."""
+        md = MapData(
+            location="Empty",
+            center=(0.0, 0.0),
+            bbox=(-1.0, -1.0, 1.0, 1.0),
+            features={},
+        )
+
+        labels = collect_place_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+
+        assert labels == []
+
+    def test_mixed_island_and_neighbourhood(self, tf, box):
+        """Island gets priority 90, neighbourhood gets priority 80."""
+        island = _place_node(0.01, 0.01, place="island", name="Isle A")
+        hood = _place_node(0.05, 0.05, place="neighbourhood", name="Quarter B")
+        md = _place_map_data([island, hood])
+
+        labels = collect_place_labels(
+            md, tf, language="en", min_size_mm=0.0, clip_box_mm=box
+        )
+
+        assert len(labels) == 2
+        by_text = {lb.text: lb for lb in labels}
+        assert by_text["Isle A"].priority == 90
+        assert by_text["Quarter B"].priority == 80
