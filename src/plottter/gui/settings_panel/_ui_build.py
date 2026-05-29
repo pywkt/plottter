@@ -325,10 +325,15 @@ class _UIBuildMixin:
         # Image Size & Position
         # ------------------------------------------------------------------
         self._image_fit_combo = QComboBox()
-        self._image_fit_combo.addItems(["Fill Canvas", "Fit (Keep Aspect)", "Custom Size"])
+        # Fit (Keep Aspect) is first so it's the panel's default — avoids
+        # silently squishing non-canvas-aspect images (e.g. a 2:1 earth photo
+        # on an A4 portrait canvas) that previously happened with "Fill
+        # Canvas" as the default.  Generator *presets* that hardcode
+        # ``image_fit_mode: "fill"`` still get that behaviour explicitly.
+        self._image_fit_combo.addItems(["Fit (Keep Aspect)", "Fill Canvas", "Custom Size"])
         self._image_fit_combo.setToolTip(
-            "Fill Canvas: image fills the entire drawing area (default).\n"
-            "Fit (Keep Aspect): scale image to fit within drawing area, preserving aspect ratio.\n"
+            "Fit (Keep Aspect): scale image to fit within drawing area, preserving aspect ratio (default).\n"
+            "Fill Canvas: image fills the entire drawing area (distorts non-matching aspect ratios).\n"
             "Custom Size: set explicit width and height in mm."
         )
         self._image_fit_combo.currentIndexChanged.connect(self._on_image_fit_mode_changed)
