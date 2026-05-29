@@ -326,17 +326,21 @@ class MapGenerator(Generator):
                     "by the ODbL licence."
                 ),
             ),
+            # All five label categories default to False — labels add visible
+            # ink to the plot and most users prefer to opt in per-style rather
+            # than have them appear automatically.  Enable on the panel or via
+            # a preset to bring labels back.
             BoolParam(
                 name="include_water_labels",
                 label="Water Labels",
-                default=True,
+                default=False,
                 description="Render name labels for water area features.",
                 randomizable=False,
             ),
             BoolParam(
                 name="include_park_labels",
                 label="Park Labels",
-                default=True,
+                default=False,
                 description="Render name labels for park and green-space features.",
                 randomizable=False,
             ),
@@ -350,7 +354,7 @@ class MapGenerator(Generator):
             BoolParam(
                 name="include_place_labels",
                 label="Place Labels",
-                default=True,
+                default=False,
                 description="Render place-name labels (cities, towns, villages).",
                 randomizable=False,
             ),
@@ -870,7 +874,7 @@ class MapGenerator(Generator):
 
         _label_candidates: list = []
 
-        if params.get("include_water_labels", True):
+        if params.get("include_water_labels", False):
             _label_candidates.extend(
                 collect_water_labels(
                     map_data,
@@ -881,7 +885,7 @@ class MapGenerator(Generator):
                 )
             )
 
-        if params.get("include_park_labels", True):
+        if params.get("include_park_labels", False):
             _label_candidates.extend(
                 collect_park_labels(
                     map_data,
@@ -902,7 +906,7 @@ class MapGenerator(Generator):
                 )
             )
 
-        if params.get("include_place_labels", True):
+        if params.get("include_place_labels", False):
             _label_candidates.extend(
                 collect_place_labels(
                     map_data,

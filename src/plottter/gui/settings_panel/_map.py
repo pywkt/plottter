@@ -163,7 +163,7 @@ class _MapMixin:
             cats.append("buildings")
         if params.get("include_coastline", True):
             cats.append("coastline")
-        if params.get("include_place_labels", True):
+        if params.get("include_place_labels", False):
             cats.append("places")
         return cats
 

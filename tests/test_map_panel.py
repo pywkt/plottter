@@ -1153,10 +1153,10 @@ class TestGetEnabledMapCategoriesPlaces:
         cats = settings_panel._get_enabled_map_categories({"include_place_labels": True})
         assert "places" in cats
 
-    def test_places_included_by_default(self, settings_panel):
-        """Default value is True, so omitting the key must still include 'places'."""
+    def test_places_excluded_by_default(self, settings_panel):
+        """Default value is False, so omitting the key must exclude 'places'."""
         cats = settings_panel._get_enabled_map_categories({})
-        assert "places" in cats
+        assert "places" not in cats
 
     def test_places_excluded_when_false(self, settings_panel):
         cats = settings_panel._get_enabled_map_categories({"include_place_labels": False})
@@ -1233,10 +1233,12 @@ class TestLabelParamRestoreOnSelect:
 
         # Tweak every label param away from its default value so we can
         # detect any param that is silently dropped from the snapshot loop.
-        panel._param_widgets["include_water_labels"].setChecked(False)    # default True
-        panel._param_widgets["include_park_labels"].setChecked(False)     # default True
+        # All five include_*_labels default to False; flip each to True (and
+        # the waterway/road ones the test always flipped anyway).
+        panel._param_widgets["include_water_labels"].setChecked(True)     # default False
+        panel._param_widgets["include_park_labels"].setChecked(True)      # default False
         panel._param_widgets["include_waterway_labels"].setChecked(True)  # default False
-        panel._param_widgets["include_place_labels"].setChecked(False)    # default True
+        panel._param_widgets["include_place_labels"].setChecked(True)     # default False
         panel._param_widgets["include_road_labels"].setChecked(True)      # default False
         panel._param_widgets["label_font_size_mm"].setValue(5.0)          # default 3.5
         panel._param_widgets["label_min_feature_mm"].setValue(12.0)       # default 8.0
@@ -1285,10 +1287,10 @@ class TestLabelParamRestoreOnSelect:
         panel._on_active_layer_changed(map_layers[0].id)
 
         assert panel._current_mode == "Map"
-        assert panel._param_widgets["include_water_labels"].isChecked() is False
-        assert panel._param_widgets["include_park_labels"].isChecked() is False
+        assert panel._param_widgets["include_water_labels"].isChecked() is True
+        assert panel._param_widgets["include_park_labels"].isChecked() is True
         assert panel._param_widgets["include_waterway_labels"].isChecked() is True
-        assert panel._param_widgets["include_place_labels"].isChecked() is False
+        assert panel._param_widgets["include_place_labels"].isChecked() is True
         assert panel._param_widgets["include_road_labels"].isChecked() is True
         assert panel._param_widgets["label_font_size_mm"].value() == pytest.approx(5.0)
         assert panel._param_widgets["label_min_feature_mm"].value() == pytest.approx(12.0)
@@ -1303,10 +1305,10 @@ class TestLabelParamRestoreOnSelect:
         for layer in map_layers:
             settings = layer.generator_info.get("_generator_settings", {})
             params = settings.get("params", {})
-            assert params.get("include_water_labels") is False
-            assert params.get("include_park_labels") is False
+            assert params.get("include_water_labels") is True
+            assert params.get("include_park_labels") is True
             assert params.get("include_waterway_labels") is True
-            assert params.get("include_place_labels") is False
+            assert params.get("include_place_labels") is True
             assert params.get("include_road_labels") is True
             assert params.get("label_font_size_mm") == pytest.approx(5.0)
             assert params.get("label_min_feature_mm") == pytest.approx(12.0)

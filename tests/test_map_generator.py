@@ -131,10 +131,12 @@ class TestParameters:
         assert p["simplify_mm"].default == pytest.approx(0.15)
         assert p["min_feature_mm"].default == pytest.approx(0.8)
         assert p["include_attribution"].default is True
-        assert p["include_water_labels"].default is True
-        assert p["include_park_labels"].default is True
+        # All five label categories default to False — labels are opt-in
+        # per-style rather than appearing automatically.
+        assert p["include_water_labels"].default is False
+        assert p["include_park_labels"].default is False
         assert p["include_waterway_labels"].default is False
-        assert p["include_place_labels"].default is True
+        assert p["include_place_labels"].default is False
         assert p["include_road_labels"].default is False
         assert p["label_font_size_mm"].default == pytest.approx(3.5)
         assert p["label_min_feature_mm"].default == pytest.approx(8.0)
