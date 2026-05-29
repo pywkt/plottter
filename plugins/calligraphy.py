@@ -81,6 +81,10 @@ from typing import Any
 
 import numpy as np
 
+from plottter.fonts.hershey import (
+    DEFAULT_FONT_NAME,
+    choices_for_param as _hershey_choices,
+)
 from plottter.generators import register_generator
 from plottter.generators.base import (
     ChoiceParam,
@@ -600,7 +604,10 @@ def _text_to_centerlines(
     text:
         The text to render.  Use ``\\n`` for multi-line input.
     font_name:
-        One of ``"Simplex"``, ``"Duplex"``, ``"Script"``, ``"Gothic"``.
+        Canonical Hershey/EMS font name from
+        :func:`plottter.fonts.hershey.list_names`.  Legacy aliases
+        ``"Simplex"``/``"Duplex"``/``"Script"``/``"Gothic"`` are still
+        accepted and resolve to their modern equivalents.
     font_size_mm:
         Height of capital letters in mm.
     letter_spacing_mm:
@@ -766,13 +773,17 @@ class CalligraphyGenerator(Generator):
             ChoiceParam(
                 "hershey_font",
                 "Font",
-                choices=["Simplex", "Duplex", "Script", "Gothic"],
-                default="Script",
+                # Sourced from the shared catalog so calligraphy gets new fonts
+                # automatically.  EMSAllure / HersheyScript1 are the natural
+                # picks for calligraphy due to their cursive forms.
+                choices=_hershey_choices()[0],
+                default="EMSAllure",
                 description=(
-                    "Hershey single-stroke font variant. "
-                    "'Script' looks best for calligraphy due to its cursive slant. "
-                    "'Simplex' is the most efficient (fewest strokes per glyph)."
+                    "Single-stroke font.  EMS Allure and Hershey Script give "
+                    "the most calligraphic look; EMS Readability is the "
+                    "clearest non-cursive choice."
                 ),
+                choice_descriptions=_hershey_choices()[1],
                 visible_when={"path_source": ["Text"]},
                 randomizable=False,
             ),
@@ -1008,7 +1019,7 @@ class CalligraphyGenerator(Generator):
                 {
                     "path_source": "Text",
                     "text": "Hello",
-                    "hershey_font": "Script",
+                    "hershey_font": "EMSAllure",
                     "font_size_mm": 35.0,
                     "letter_spacing_mm": 1.0,
                     "line_spacing": 1.5,
@@ -1028,7 +1039,7 @@ class CalligraphyGenerator(Generator):
                 {
                     "path_source": "Text",
                     "text": "Hello",
-                    "hershey_font": "Script",
+                    "hershey_font": "EMSAllure",
                     "font_size_mm": 25.0,
                     "letter_spacing_mm": 1.0,
                     "line_spacing": 1.5,
@@ -1045,7 +1056,7 @@ class CalligraphyGenerator(Generator):
                 {
                     "path_source": "Text",
                     "text": "Hello",
-                    "hershey_font": "Gothic",
+                    "hershey_font": "HersheyGothEnglish",
                     "font_size_mm": 40.0,
                     "letter_spacing_mm": 1.0,
                     "line_spacing": 1.5,
@@ -1065,7 +1076,7 @@ class CalligraphyGenerator(Generator):
                 {
                     "path_source": "Text",
                     "text": "Hello",
-                    "hershey_font": "Simplex",
+                    "hershey_font": "EMSReadability",
                     "font_size_mm": 20.0,
                     "letter_spacing_mm": 1.0,
                     "line_spacing": 1.5,
@@ -1119,7 +1130,7 @@ class CalligraphyGenerator(Generator):
                 {
                     "path_source": "Text",
                     "text": "Hello",
-                    "hershey_font": "Script",
+                    "hershey_font": "EMSAllure",
                     "font_size_mm": 35.0,
                     "letter_spacing_mm": 1.0,
                     "line_spacing": 1.5,
@@ -1139,7 +1150,7 @@ class CalligraphyGenerator(Generator):
                 {
                     "path_source": "Text",
                     "text": "Hello",
-                    "hershey_font": "Script",
+                    "hershey_font": "EMSAllure",
                     "font_size_mm": 25.0,
                     "letter_spacing_mm": 1.0,
                     "line_spacing": 1.5,
@@ -1219,7 +1230,7 @@ class CalligraphyGenerator(Generator):
             # Text mode: render each Hershey glyph stroke as a separate
             # centerline, apply calligraphic offsets to each, and collect.
             text: str = params.get("text", "Hello") or ""
-            hershey_font: str = params.get("hershey_font", "Script")
+            hershey_font: str = params.get("hershey_font", "EMSAllure")
             font_size_mm: float = float(params.get("font_size_mm", 30.0))
             letter_spacing_mm: float = float(params.get("letter_spacing_mm", 1.0))
             line_spacing: float = float(params.get("line_spacing", 1.5))

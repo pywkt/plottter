@@ -1,348 +1,58 @@
-"""Hershey vector font data for plotter-friendly text rendering.
+"""Hershey vector-font data — compatibility shim.
 
-Each glyph is stored as ``(left, right, stroke_data)`` where:
+The real implementation lives in :mod:`plottter.fonts.hershey`, which
+parses Inkscape-format SVG single-stroke fonts (Hershey originals + the
+modern OFL-licensed EMS family + symbol fonts) lazily on first use.
 
-* ``left`` and ``right`` are the character bounds in Hershey units,
-  measured from the pen position (``left`` is typically negative).
-  The **advance width** of each character is ``right - left``.
-* ``stroke_data`` is a flat list of ``(x, y)`` tuples interspersed with
-  ``None`` values that signal a pen-up move (the start of a new stroke).
-  Coordinates are in Hershey units: ``y=0`` is the baseline, ``y=21`` is
-  the cap height, and descenders reach ``y=-7``.
+This module exists for backward compatibility with code that imports
+from ``plottter.generators._hershey``.  Everything is re-exported from
+the new location; the four legacy font names —
+``"Simplex"`` / ``"Duplex"`` / ``"Script"`` / ``"Gothic"`` — are aliased
+to their modern equivalents so existing projects keep loading without
+modification.
 
-Scaling
--------
-To convert from Hershey units to millimetres at a given *cap height* in mm::
-
-    scale = font_size_mm / 21.0
-    x_mm  = x_hershey * scale
-    y_mm  = y_hershey * scale   # positive upward
-
-Four font variants are provided:
-
-* **Simplex** — single-stroke sans-serif (most efficient for plotters).
-* **Duplex**  — double-stroke serif-like; slightly thicker strokes.
-* **Script**  — slanted cursive-style single-stroke font.
-* **Gothic**  — angular single-stroke gothic/blackletter-inspired.
-
-Note: duplex, script, and gothic share much of their data with simplex;
-only the rendering style differs.  A production system would use the full
-Hershey .jhf font files; this module provides a complete Python-native
-implementation of the simplex/futural glyph set for all 96 printable ASCII
-characters (codes 32–127).
+See :mod:`plottter.fonts.hershey` for the rich API (font metrics,
+catalog browsing, raw native-unit access).
 """
 
 from __future__ import annotations
 
-# ---------------------------------------------------------------------------
-# Glyph data for the "Simplex" (single-stroke sans-serif) font.
-#
-# Format: char -> (left, right, [(x, y), (x, y), None, (x, y), ...])
-# None marks a pen-up (start of a new stroke).
-# ---------------------------------------------------------------------------
+from plottter.fonts.hershey import (
+    CAP_HEIGHT,
+    DEFAULT_FONT_NAME,
+    DESCENDER,
+    FONTS,
+    Font,
+    FontEntry,
+    FontMetrics,
+    Glyph,
+    X_HEIGHT,
+    entries_by_category,
+    get_entry,
+    glyph_strokes,
+    list_categories,
+    list_entries,
+    list_names,
+    load_font,
+    resolve_name,
+)
 
-# Type alias for clarity
-_GlyphData = tuple[int, int, list]
-
-_SIMPLEX: dict[str, _GlyphData] = {
-    # ---- whitespace / space ------------------------------------------------
-    " ":  (-3,  3, []),
-
-    # ---- punctuation -------------------------------------------------------
-    "!":  (-1,  1, [(0, 21), (0,  7), None, (0,  2), (0,  0)]),
-    '"':  (-3,  3, [(-2, 21), (-2, 17), None, (2, 21), (2, 17)]),
-    "#":  (-5,  5, [(-2, 21), (-2,  0), None, (2, 21), (2,  0),
-                    None, (-5, 14), (5, 14), None, (-5, 7), (5, 7)]),
-    "$":  (-5,  5, [(0, 23), (0, -2), None,
-                    (-5, 18), (-3, 21), (3, 21), (5, 18), (5, 14),
-                    (-5, 10), (-5,  6), (-3,  3), (3,  3), (5,  6)]),
-    "%":  (-6,  6, [(-5, 21), (5,  0), None,
-                    (-3, 21), (-5, 18), (-5, 15), (-3, 12), (0, 12),
-                    (3, 12), (5, 15), (5, 18), (3, 21), (0, 21), (-3, 21),
-                    None,
-                    (3,  9), (0,  9), (-3,  9), (-5, 6), (-5, 3),
-                    (-3,  0), (0,  0), (3,  0), (5,  3)]),
-    "&":  (-6,  6, [(5, 12), (-1, 21), (-3, 21), (-5, 18), (-5, 15),
-                    (-3, 12), (3,  6), (5,  3), (5,  0), (3, -3),
-                    (-3, -3), (-5,  0), (-5,  3), (0,  0), (6,  5)]),
-    "'":  (-2,  2, [(-1, 21), (1, 18)]),
-    "(":  (-3,  3, [(2, 21), (-1, 14), (-1,  7), (2,  0)]),
-    ")":  (-3,  3, [(-2, 21), (1, 14), (1,  7), (-2,  0)]),
-    "*":  (-4,  4, [(0, 18), (0,  6), None,
-                    (-4, 15), (4,  9), None, (4, 15), (-4,  9)]),
-    "+":  (-5,  5, [(0, 18), (0,  6), None, (-5, 12), (5, 12)]),
-    ",":  (-2,  2, [(1,  3), (1,  0), (-1, -3)]),
-    "-":  (-5,  5, [(-5, 12), (5, 12)]),
-    ".":  (-2,  2, [(0,  2), (0,  0)]),
-    "/":  (-5,  5, [(-5,  0), (5, 21)]),
-
-    # ---- digits 0-9 --------------------------------------------------------
-    "0":  (-5,  5, [(-3, 21), (-5, 18), (-5,  3), (-3,  0), (3,  0),
-                    (5,  3), (5, 18), (3, 21), (-3, 21), None,
-                    (-3, 14), (3,  7)]),
-    "1":  (-3,  3, [(-2, 17), (0, 21), (0,  0)]),
-    "2":  (-5,  5, [(-5, 18), (-3, 21), (3, 21), (5, 18), (5, 14),
-                    (-5,  0), (5,  0)]),
-    "3":  (-5,  5, [(-5, 21), (5, 21), (0, 12), (5,  9), (5,  3),
-                    (3,  0), (-3,  0), (-5,  3)]),
-    "4":  (-5,  5, [(3, 21), (-5,  7), (7,  7), None, (3, 21), (3,  0)]),
-    "5":  (-5,  5, [(5, 21), (-5, 21), (-5, 12), (3, 12), (5,  9),
-                    (5,  3), (3,  0), (-3,  0), (-5,  3)]),
-    "6":  (-5,  5, [(4, 21), (1, 21), (-3, 18), (-5, 14), (-5,  3),
-                    (-3,  0), (3,  0), (5,  3), (5,  7), (3, 10),
-                    (-3, 10), (-5,  7), (-5,  3)]),
-    "7":  (-5,  5, [(-5, 21), (5, 21), (0,  0)]),
-    "8":  (-5,  5, [(-3, 12), (3, 12), (5, 14), (5, 18), (3, 21),
-                    (-3, 21), (-5, 18), (-5, 14), (-3, 12), (-5, 10),
-                    (-5,  3), (-3,  0), (3,  0), (5,  3), (5, 10),
-                    (3, 12)]),
-    "9":  (-5,  5, [(-5,  7), (-3, 10), (3, 10), (5,  7), (5,  3),
-                    (3,  0), (-3,  0), (-5,  3), (-5,  7), (-3, 10),
-                    (3, 10), (5, 14), (5, 18), (3, 21), (-3, 21), (-5, 18)]),
-
-    # ---- punctuation / symbols ---------------------------------------------
-    ":":  (-2,  2, [(0, 14), (0, 12), None, (0,  2), (0,  0)]),
-    ";":  (-2,  2, [(0, 14), (0, 12), None, (1,  3), (1,  0), (-1, -3)]),
-    "<":  (-5,  5, [(5, 18), (-5, 12), (5,  6)]),
-    "=":  (-5,  5, [(-5, 14), (5, 14), None, (-5,  8), (5,  8)]),
-    ">":  (-5,  5, [(-5, 18), (5, 12), (-5,  6)]),
-    "?":  (-5,  5, [(-5, 18), (-3, 21), (3, 21), (5, 18), (5, 14),
-                    (0, 10), (0,  7), None, (0,  2), (0,  0)]),
-    "@":  (-7,  7, [(4, 14), (2, 17), (-2, 18), (-4, 16), (-5, 13),
-                    (-5, 10), (-4,  7), (-1,  5), (3,  5), (5,  7),
-                    (5, 14), (5, 17), (4, 19), (2, 20), (-2, 20),
-                    (-4, 18), (-5, 15), (-5, 10), (-4,  6), (-2,  4),
-                    (0,  3)]),
-
-    # ---- uppercase letters A-Z ---------------------------------------------
-    "A":  (-6,  6, [(-6,  0), (0, 21), (6,  0), None, (-4,  7), (4,  7)]),
-    "B":  (-7,  6, [(-7, 21), (-7,  0), None,
-                    (-7, 21), (1, 21), (4, 19), (5, 17), (5, 15),
-                    (4, 13), (1, 12), (-7, 12), None,
-                    (-7, 12), (1, 12), (4, 10), (5,  8), (5,  4),
-                    (4,  2), (1,  0), (-7,  0)]),
-    "C":  (-6,  6, [(6, 18), (4, 21), (-2, 21), (-5, 18), (-6, 14),
-                    (-6,  7), (-5,  3), (-2,  0), (4,  0), (6,  3)]),
-    "D":  (-7,  6, [(-7, 21), (-7,  0), None,
-                    (-7, 21), (0, 21), (3, 19), (5, 16), (6, 12),
-                    (6,  9), (5,  5), (3,  2), (0,  0), (-7,  0)]),
-    "E":  (-6,  6, [(-6, 21), (-6,  0), None,
-                    (-6, 21), (6, 21), None,
-                    (-6, 12), (2, 12), None,
-                    (-6,  0), (6,  0)]),
-    "F":  (-6,  5, [(-6, 21), (-6,  0), None,
-                    (-6, 21), (5, 21), None,
-                    (-6, 12), (2, 12)]),
-    "G":  (-6,  6, [(6, 18), (4, 21), (-2, 21), (-5, 18), (-6, 14),
-                    (-6,  7), (-5,  3), (-2,  0), (4,  0), (6,  3),
-                    (6, 10), (0, 10)]),
-    "H":  (-7,  7, [(-7, 21), (-7,  0), None,
-                    (7, 21), (7,  0), None,
-                    (-7, 12), (7, 12)]),
-    "I":  (-3,  3, [(-3, 21), (3, 21), None,
-                    (0, 21), (0,  0), None,
-                    (-3,  0), (3,  0)]),
-    "J":  (-4,  4, [(2, 21), (2,  3), (1,  0), (-1, -1), (-3, -1),
-                    (-4,  0), (-4,  3)]),
-    "K":  (-7,  6, [(-7, 21), (-7,  0), None,
-                    (6, 21), (-7,  8), None,
-                    (-3, 12), (6,  0)]),
-    "L":  (-6,  5, [(-6, 21), (-6,  0), None, (-6,  0), (5,  0)]),
-    "M":  (-8,  8, [(-8,  0), (-8, 21), (0,  7), (8, 21), (8,  0)]),
-    "N":  (-7,  7, [(-7,  0), (-7, 21), (7,  0), (7, 21)]),
-    "O":  (-7,  7, [(-3, 21), (-5, 18), (-7, 14), (-7,  7), (-5,  3),
-                    (-3,  0), (3,  0), (5,  3), (7,  7), (7, 14),
-                    (5, 18), (3, 21), (-3, 21)]),
-    "P":  (-7,  6, [(-7, 21), (-7,  0), None,
-                    (-7, 21), (0, 21), (3, 19), (5, 17), (5, 14),
-                    (3, 12), (0, 12), (-7, 12)]),
-    "Q":  (-7,  7, [(-3, 21), (-5, 18), (-7, 14), (-7,  7), (-5,  3),
-                    (-3,  0), (3,  0), (5,  3), (7,  7), (7, 14),
-                    (5, 18), (3, 21), (-3, 21), None,
-                    (2,  3), (7, -3)]),
-    "R":  (-7,  6, [(-7, 21), (-7,  0), None,
-                    (-7, 21), (0, 21), (3, 19), (5, 17), (5, 14),
-                    (3, 12), (0, 12), (-7, 12), None,
-                    (0, 12), (6,  0)]),
-    "S":  (-5,  5, [(5, 18), (3, 21), (-3, 21), (-5, 18), (-5, 14),
-                    (5,  7), (5,  3), (3,  0), (-3,  0), (-5,  3)]),
-    "T":  (-6,  6, [(-6, 21), (6, 21), None, (0, 21), (0,  0)]),
-    "U":  (-7,  7, [(-7, 21), (-7,  4), (-5,  1), (-2,  0), (2,  0),
-                    (5,  1), (7,  4), (7, 21)]),
-    "V":  (-7,  7, [(-7, 21), (0,  0), (7, 21)]),
-    "W":  (-9,  9, [(-9, 21), (-5,  0), (0,  8), (5,  0), (9, 21)]),
-    "X":  (-6,  6, [(-6, 21), (6,  0), None, (6, 21), (-6,  0)]),
-    "Y":  (-7,  7, [(-7, 21), (0, 11), (0,  0), None, (7, 21), (0, 11)]),
-    "Z":  (-6,  6, [(-6, 21), (6, 21), (-6,  0), (6,  0)]),
-
-    # ---- brackets / misc ---------------------------------------------------
-    "[":  (-4,  2, [(-1, 25), (-4, 25), (-4, -7), (-1, -7)]),
-    "\\":  (-5,  5, [(-5, 21), (5,  0)]),
-    "]":  (-2,  4, [(1, 25), (4, 25), (4, -7), (1, -7)]),
-    "^":  (-5,  5, [(-5, 12), (0, 21), (5, 12)]),
-    "_":  (-6,  6, [(-6, -4), (6, -4)]),
-    "`":  (-2,  2, [(-1, 21), (1, 18)]),
-
-    # ---- lowercase letters a-z ---------------------------------------------
-    "a":  (-5,  5, [(-4, 14), (-5, 12), (-5,  9), (-4,  6), (-2,  5),
-                    (2,  5), (5,  6), (5,  0), None,
-                    (-5, 14), (5, 14), (5,  0)]),
-    "b":  (-5,  5, [(-5, 21), (-5,  0), None,
-                    (-5, 14), (-3, 16), (0, 17), (3, 17), (5, 14),
-                    (5,  6), (3,  3), (0,  2), (-3,  2), (-5,  5)]),
-    "c":  (-5,  5, [(5, 12), (3, 14), (0, 14), (-3, 12), (-5,  9),
-                    (-5,  6), (-3,  3), (0,  2), (3,  2), (5,  4)]),
-    "d":  (-5,  5, [(5, 21), (5,  0), None,
-                    (5, 14), (3, 16), (0, 17), (-3, 17), (-5, 14),
-                    (-5,  6), (-3,  3), (0,  2), (3,  2), (5,  5)]),
-    "e":  (-5,  5, [(-5,  9), (5,  9), (5, 12), (3, 14), (0, 14),
-                    (-3, 12), (-5,  9), (-5,  6), (-3,  3), (0,  2),
-                    (3,  2), (5,  4)]),
-    "f":  (-3,  3, [(3, 21), (1, 21), (-1, 19), (-1,  0), None,
-                    (-3, 14), (3, 14)]),
-    "g":  (-5,  5, [(5, 14), (3, 16), (0, 17), (-3, 17), (-5, 14),
-                    (-5,  6), (-3,  3), (0,  2), (3,  2), (5,  5),
-                    (5, 14), None,
-                    (5,  0), (3, -3), (0, -4), (-3, -4), (-5, -2)]),
-    "h":  (-5,  5, [(-5, 21), (-5,  0), None,
-                    (-5, 12), (-3, 15), (0, 17), (3, 17), (5, 14),
-                    (5,  0)]),
-    "i":  (-2,  2, [(0, 17), (0, 15), None, (0, 12), (0,  0)]),
-    "j":  (-3,  3, [(1, 17), (1, 15), None,
-                    (1, 12), (1, -3), (0, -5), (-2, -5)]),
-    "k":  (-5,  5, [(-5, 21), (-5,  0), None,
-                    (4, 14), (-5,  5), None,
-                    (-2,  8), (5,  0)]),
-    "l":  (-2,  2, [(-2, 21), (-2,  0)]),
-    "m":  (-8,  8, [(-8, 14), (-8,  0), None,
-                    (-8, 12), (-6, 14), (-3, 14), (0, 12), (0,  0), None,
-                    (0, 12), (2, 14), (5, 14), (8, 12), (8,  0)]),
-    "n":  (-5,  5, [(-5, 14), (-5,  0), None,
-                    (-5, 12), (-3, 14), (0, 14), (3, 14), (5, 12),
-                    (5,  0)]),
-    "o":  (-5,  5, [(-3, 14), (-5, 12), (-5,  6), (-3,  3), (0,  2),
-                    (3,  2), (5,  6), (5, 12), (3, 14), (0, 14),
-                    (-3, 14)]),
-    "p":  (-5,  5, [(-5, 14), (-5, -7), None,
-                    (-5, 14), (-3, 16), (0, 17), (3, 17), (5, 14),
-                    (5,  6), (3,  3), (0,  2), (-3,  2), (-5,  5)]),
-    "q":  (-5,  5, [(5, 14), (5, -7), None,
-                    (5, 14), (3, 16), (0, 17), (-3, 17), (-5, 14),
-                    (-5,  6), (-3,  3), (0,  2), (3,  2), (5,  5)]),
-    "r":  (-4,  4, [(-4, 14), (-4,  0), None,
-                    (-4,  9), (-2, 13), (0, 14), (2, 14)]),
-    "s":  (-4,  4, [(4, 12), (3, 14), (0, 14), (-3, 12), (-3,  9),
-                    (3,  6), (4,  3), (4,  2), (3,  0), (-3,  0)]),
-    "t":  (-3,  3, [(0, 21), (0,  3), (1,  1), (3,  0), None,
-                    (-3, 14), (3, 14)]),
-    "u":  (-5,  5, [(-5, 14), (-5,  3), (-3,  0), (0,  0), (3,  0),
-                    (5,  3), (5, 14), None, (5,  0)]),
-    "v":  (-5,  5, [(-5, 14), (0,  0), (5, 14)]),
-    "w":  (-7,  7, [(-7, 14), (-4,  0), (0,  7), (4,  0), (7, 14)]),
-    "x":  (-5,  5, [(-5, 14), (5,  0), None, (5, 14), (-5,  0)]),
-    "y":  (-5,  5, [(-5, 14), (0,  0), None,
-                    (5, 14), (0,  0), (-2, -5), (-5, -7)]),
-    "z":  (-4,  4, [(-4, 14), (4, 14), (-4,  0), (4,  0)]),
-
-    # ---- braces / misc -----------------------------------------------------
-    "{":  (-4,  3, [(2, 25), (0, 23), (-1, 20), (-1, 15), (0, 12),
-                    (2, 10), (0,  8), (-1,  5), (-1,  0), (0, -3),
-                    (2, -5)]),
-    "|":  (-2,  2, [(0, 25), (0, -7)]),
-    "}":  (-3,  4, [(-2, 25), (0, 23), (1, 20), (1, 15), (0, 12),
-                    (-2, 10), (0,  8), (1,  5), (1,  0), (0, -3),
-                    (-2, -5)]),
-    "~":  (-6,  6, [(-6,  8), (-5, 11), (-3, 14), (-1, 14),
-                    (1, 11), (3,  8), (5,  8), (7, 11)]),
-    "\x7f": (-3, 3, []),  # DEL / non-printing — render as space
-}
-
-# ---------------------------------------------------------------------------
-# Duplex font: slightly wider double-stroke style.
-# For this implementation, duplex uses the same glyph paths as simplex but
-# with slightly wider character bounds (more spacing between letters).
-# ---------------------------------------------------------------------------
-_DUPLEX: dict[str, _GlyphData] = {}
-for _ch, (_l, _r, _s) in _SIMPLEX.items():
-    # Widen each character by 1 unit on each side to simulate duplex spacing
-    _DUPLEX[_ch] = (_l - 1, _r + 1, _s)
-
-# ---------------------------------------------------------------------------
-# Script font: slanted cursive-style single-stroke.
-# Implemented by applying a small horizontal shear to simplex coordinates.
-# ---------------------------------------------------------------------------
-_SHEAR = 0.3  # horizontal shear per unit of y
-
-
-def _shear_strokes(strokes: list, shear: float) -> list:
-    """Return a new stroke list with x coordinates shifted by shear * y."""
-    result = []
-    for pt in strokes:
-        if pt is None:
-            result.append(None)
-        else:
-            result.append((pt[0] + int(shear * pt[1]), pt[1]))
-    return result
-
-
-_SCRIPT: dict[str, _GlyphData] = {
-    ch: (l, r + int(_SHEAR * 21), _shear_strokes(s, _SHEAR))
-    for ch, (l, r, s) in _SIMPLEX.items()
-}
-
-# ---------------------------------------------------------------------------
-# Gothic font: angular style.
-# Implemented by adding small corner notches to simplex strokes.  In this
-# simplified implementation we reuse simplex data with slightly narrower
-# bounds to give a tighter, more angular feel.
-# ---------------------------------------------------------------------------
-_GOTHIC: dict[str, _GlyphData] = {}
-for _ch, (_l, _r, _s) in _SIMPLEX.items():
-    _GOTHIC[_ch] = (_l, _r - 1, _s)
-
-# ---------------------------------------------------------------------------
-# Public font registry
-# ---------------------------------------------------------------------------
-
-#: Map of font name to glyph dict.
-FONTS: dict[str, dict[str, _GlyphData]] = {
-    "Simplex": _SIMPLEX,
-    "Duplex":  _DUPLEX,
-    "Script":  _SCRIPT,
-    "Gothic":  _GOTHIC,
-}
-
-#: Hershey cap height in font units (baseline to top of capital letter).
-CAP_HEIGHT: int = 21
-#: Hershey x-height in font units (baseline to top of lowercase letter).
-X_HEIGHT: int = 14
-#: Hershey descender depth in font units (below baseline).
-DESCENDER: int = 7
-
-
-def glyph_strokes(char: str, font: str = "Simplex") -> tuple[int, int, list[list[tuple[float, float]]]]:
-    """Return ``(left, right, strokes)`` for *char* in the given font.
-
-    ``strokes`` is a list of polylines; each polyline is a list of
-    ``(x, y)`` tuples in Hershey units.
-
-    Missing characters fall back to a ``?`` mark, then to an empty glyph.
-    """
-    font_data = FONTS.get(font, _SIMPLEX)
-    entry = font_data.get(char) or font_data.get("?") or (-3, 3, [])
-    left, right, flat = entry
-
-    # Split flat coordinate list on None pen-up markers
-    strokes: list[list[tuple[float, float]]] = []
-    current: list[tuple[float, float]] = []
-    for pt in flat:
-        if pt is None:
-            if len(current) >= 2:
-                strokes.append(current)
-            current = []
-        else:
-            current.append((float(pt[0]), float(pt[1])))
-    if len(current) >= 2:
-        strokes.append(current)
-
-    return left, right, strokes
+__all__ = [
+    "CAP_HEIGHT",
+    "DEFAULT_FONT_NAME",
+    "DESCENDER",
+    "FONTS",
+    "Font",
+    "FontEntry",
+    "FontMetrics",
+    "Glyph",
+    "X_HEIGHT",
+    "entries_by_category",
+    "get_entry",
+    "glyph_strokes",
+    "list_categories",
+    "list_entries",
+    "list_names",
+    "load_font",
+    "resolve_name",
+]

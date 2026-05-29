@@ -9,7 +9,7 @@ import numpy as np
 
 from plottter.generators import register_generator
 from plottter.generators._helpers import compute_image_rect
-from plottter.generators._hershey import CAP_HEIGHT, glyph_strokes
+from plottter.fonts.hershey import CAP_HEIGHT, DEFAULT_FONT_NAME, glyph_strokes
 from plottter.generators.base import (
     BoolParam,
     ChoiceParam,
@@ -114,7 +114,7 @@ def _render_glyph(
     y_mm: float,
     size_mm: float,
     angle_deg: float,
-    font: str = "Simplex",
+    font: str = DEFAULT_FONT_NAME,
 ) -> list[Polyline]:
     """Render a Hershey glyph as polylines centered at (x_mm, y_mm).
 

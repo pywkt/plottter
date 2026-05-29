@@ -708,20 +708,29 @@ def collect_road_labels(
     return labels
 
 
-def _hershey_text_width(text: str, font_size_mm: float) -> float:
+#: Default Hershey font for OSM map labels.  Chosen for legibility at the
+#: small cap heights used on plotted maps (typically 2.5–4 mm).
+DEFAULT_LABEL_FONT: str = "EMSReadability"
+
+
+def _hershey_text_width(
+    text: str,
+    font_size_mm: float,
+    font: str = DEFAULT_LABEL_FONT,
+) -> float:
     """Return the rendered width of *text* in mm at *font_size_mm* cap height.
 
-    Uses the Simplex Hershey font advance widths, scaled so that the cap
-    height equals *font_size_mm*.  No letter-spacing is added.
+    Uses the named Hershey font's advance widths, scaled so the cap height
+    equals *font_size_mm*.  No letter-spacing is added.
     """
-    from plottter.generators._hershey import CAP_HEIGHT, glyph_strokes
+    from plottter.fonts.hershey import CAP_HEIGHT, glyph_strokes
 
     if not text:
         return 0.0
     scale = font_size_mm / CAP_HEIGHT
     width = 0.0
     for ch in text:
-        left, right, _ = glyph_strokes(ch)
+        left, right, _ = glyph_strokes(ch, font)
         width += (right - left) * scale
     return width
 
@@ -730,6 +739,7 @@ def place_with_collision(
     labels: list[Label],
     font_size_mm: float,
     clip_box_mm: tuple[float, float, float, float],
+    font: str = DEFAULT_LABEL_FONT,
 ) -> list[Label]:
     """Place labels with axis-aligned bbox collision detection.
 
@@ -762,7 +772,7 @@ def place_with_collision(
 
     def _bbox(label: Label) -> tuple[float, float, float, float]:
         x, y = label.position
-        w = _hershey_text_width(label.text, font_size_mm)
+        w = _hershey_text_width(label.text, font_size_mm, font)
         h = font_size_mm
         return (
             x - w / 2 - pad,
@@ -808,16 +818,21 @@ def place_with_collision(
     return accepted
 
 
-def render_labels(labels: list[Label], font_size_mm: float) -> list:
-    """Generate Hershey Simplex strokes for each label centred at label.position.
+def render_labels(
+    labels: list[Label],
+    font_size_mm: float,
+    font: str = DEFAULT_LABEL_FONT,
+) -> list:
+    """Generate Hershey strokes for each label centred at ``label.position``.
 
     For each :class:`Label` in *labels*:
 
     * Measures the total rendered width using :func:`_hershey_text_width`.
     * Places the left edge of the baseline at
       ``(label.position[0] - width/2, label.position[1] + font_size_mm/2)``.
-    * Emits Hershey Simplex strokes scaled so that the cap height equals
-      *font_size_mm*, with Hershey's y-up coordinate flipped to canvas y-down.
+    * Emits strokes from the named single-stroke font, scaled so cap height
+      equals *font_size_mm*, with the font's y-up coordinate flipped to
+      canvas y-down.
 
     Missing glyphs fall back to ``"?"`` (handled by :func:`glyph_strokes`).
 
@@ -825,23 +840,27 @@ def render_labels(labels: list[Label], font_size_mm: float) -> list:
         labels:       Placed labels (typically the output of
                       :func:`place_with_collision`).
         font_size_mm: Cap height of the rendered text in mm.
+        font:         Canonical Hershey-font name from
+                      :mod:`plottter.fonts.hershey`.  Defaults to
+                      :data:`DEFAULT_LABEL_FONT` (``"EMSReadability"``),
+                      chosen for legibility at small label sizes.
 
     Returns:
         A flat ``list[Polyline]`` in canvas mm coordinates.
     """
-    from plottter.generators._hershey import CAP_HEIGHT, glyph_strokes
+    from plottter.fonts.hershey import CAP_HEIGHT, glyph_strokes
 
     scale = font_size_mm / CAP_HEIGHT
     paths: list = []
 
     for label in labels:
         text = label.text
-        width = _hershey_text_width(text, font_size_mm)
+        width = _hershey_text_width(text, font_size_mm, font)
         pen_x = label.position[0] - width / 2.0
         baseline_y = label.position[1] + font_size_mm / 2.0
 
         for ch in text:
-            lft, rgt, strokes = glyph_strokes(ch, "Simplex")
+            lft, rgt, strokes = glyph_strokes(ch, font)
             for stroke in strokes:
                 if len(stroke) < 2:
                     continue

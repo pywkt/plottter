@@ -3,9 +3,11 @@
 Two font backends are supported:
 
 * **Hershey fonts** (built-in, zero dependencies) — single-stroke glyphs
-  derived from the public-domain Hershey vector font set. Each character is
-  traced in a single pen stroke (or a small number of strokes), making them
-  ideal for plotters.  Four variants: Simplex, Duplex, Script, Gothic.
+  from the Hershey originals plus the modern OFL-licensed EMS family
+  (Readability, Osmotron, Allure, …) and a full set of symbol fonts
+  (math, music, Greek, Cyrillic, Japanese, …).  See
+  :mod:`plottter.fonts.hershey` for the full catalog.  Each glyph is
+  traced in single pen strokes, making them ideal for plotters.
 
 * **TTF/OTF outline fonts** (optional, requires ``fonttools``) — load any
   system or user-supplied TrueType/OpenType font, extract glyph outlines as
@@ -18,8 +20,11 @@ text : str
     The text to render.  Use ``\\n`` for multi-line text.
 font_type : {"Hershey", "System Font"}
     Which font backend to use.
-hershey_font : {"Simplex", "Duplex", "Script", "Gothic"}
-    Hershey font variant (only when *font_type* is "Hershey").
+hershey_font : str
+    Canonical font name from :func:`plottter.fonts.hershey.list_names`
+    (e.g. ``"EMSReadability"``, ``"HersheySans1"``).  Legacy aliases
+    ``"Simplex"``/``"Duplex"``/``"Script"``/``"Gothic"`` are still
+    accepted and resolve to their modern equivalents.
 system_font_path : str
     Path to a .ttf or .otf font file (only when *font_type* is
     "System Font").
@@ -58,6 +63,10 @@ import math
 import os
 from typing import Any
 
+from plottter.fonts.hershey import (
+    DEFAULT_FONT_NAME,
+    choices_for_param as _hershey_choices,
+)
 from plottter.generators import register_generator
 from plottter.generators.base import (
     BoolParam,
@@ -687,15 +696,14 @@ class TextGenerator(Generator):
             ChoiceParam(
                 name="hershey_font",
                 label="Hershey font",
-                choices=["Simplex", "Duplex", "Script", "Gothic"],
-                default="Simplex",
+                # Choices + descriptions are sourced from the font catalog so
+                # this list stays in sync if a new font is added under
+                # plottter/fonts/hershey/data/.  Legacy names (Simplex/Duplex/
+                # Script/Gothic) are appended for backward-compatible loading.
+                choices=_hershey_choices()[0],
+                default=DEFAULT_FONT_NAME,
                 visible_when={"font_type": ["Hershey"]},
-                choice_descriptions={
-                    "Simplex": "Single-stroke sans-serif (most pen-efficient)",
-                    "Duplex": "Slightly wider double-stroke style",
-                    "Script": "Slanted cursive single-stroke",
-                    "Gothic": "Angular gothic/blackletter single-stroke",
-                },
+                choice_descriptions=_hershey_choices()[1],
             ),
             IntParam(
                 name="stroke_repeat",
@@ -837,7 +845,7 @@ class TextGenerator(Generator):
     def get_presets(self) -> list[Preset]:
         _shared = {
             "font_type": "Hershey",
-            "hershey_font": "Simplex",
+            "hershey_font": DEFAULT_FONT_NAME,
             "stroke_repeat": 1,
             "system_font_path": "",
             "curve_tolerance_mm": 0.5,
@@ -854,21 +862,21 @@ class TextGenerator(Generator):
         }
         return [
             Preset(
-                name="Title / Hershey Sans",
+                name="Title / EMS Readability",
                 params={
                     **_shared,
                     "text": "Plottter",
-                    "hershey_font": "Simplex",
+                    "hershey_font": "EMSReadability",
                     "font_size_mm": 20.0,
                     "text_align": "Center",
                 },
             ),
             Preset(
-                name="Body / Hershey Serif",
+                name="Body / Hershey Sans Medium",
                 params={
                     **_shared,
                     "text": "Hello\nPlotter",
-                    "hershey_font": "Duplex",
+                    "hershey_font": "HersheySansMed",
                     "font_size_mm": 8.0,
                     "text_align": "Left",
                 },
@@ -878,7 +886,7 @@ class TextGenerator(Generator):
                 params={
                     **_shared,
                     "text": "Plotter Art",
-                    "hershey_font": "Script",
+                    "hershey_font": "EMSAllure",
                     "font_size_mm": 14.0,
                     "letter_spacing_mm": 0.5,
                     "text_align": "Center",
@@ -889,7 +897,7 @@ class TextGenerator(Generator):
                 params={
                     **_shared,
                     "text": "ART",
-                    "hershey_font": "Gothic",
+                    "hershey_font": "HersheyGothEnglish",
                     "font_size_mm": 30.0,
                     "stroke_repeat": 2,
                     "letter_spacing_mm": 1.0,
@@ -1001,7 +1009,7 @@ class TextGenerator(Generator):
 
         text: str = params.get("text", "Hello\nPlotter") or ""
         font_type: str = params.get("font_type", "Hershey")
-        hershey_font: str = params.get("hershey_font", "Simplex")
+        hershey_font: str = params.get("hershey_font", DEFAULT_FONT_NAME)
         stroke_repeat: int = max(1, int(params.get("stroke_repeat", 1)))
         system_font_path: str = params.get("system_font_path", "")
         curve_tolerance_mm: float = float(params.get("curve_tolerance_mm", 0.5))

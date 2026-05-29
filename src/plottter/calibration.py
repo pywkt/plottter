@@ -8,16 +8,21 @@ from plottter.models.canvas import PAPER_PRESETS
 from plottter.models.path import Polyline
 from plottter.generators.text import _render_hershey_text
 
+#: Font used for every calibration label/title.  EMS Readability is the
+#: clearest single-stroke face at the small cap heights (2–3 mm) used here,
+#: and includes the ``°`` glyph so degree labels can be rendered properly.
+_CALIB_FONT: str = "EMSReadability"
+
 
 def _title(text: str, center_x: float, top_y: float, size_mm: float = 3.0) -> list[Polyline]:
-    """Render a centred Hershey Simplex title at the given position.
+    """Render a centred Hershey title at the given position (font: :data:`_CALIB_FONT`).
 
     The title is horizontally centred on *center_x* with its visual top edge
     at *top_y*.  Uses the actual glyph bounding box for accurate placement.
     """
     polylines, _width, _height = _render_hershey_text(
         text,
-        "Simplex",
+        _CALIB_FONT,
         size_mm,
         letter_spacing_mm=size_mm * 0.15,
         line_spacing=1.2,
@@ -37,9 +42,9 @@ def _title(text: str, center_x: float, top_y: float, size_mm: float = 3.0) -> li
 
 
 def _title_height(text: str, size_mm: float = 3.0) -> float:
-    """Return the visual height of a rendered Hershey Simplex string."""
+    """Return the visual height of a rendered Hershey string (font: :data:`_CALIB_FONT`)."""
     polylines, _w, _h = _render_hershey_text(
-        text, "Simplex", size_mm,
+        text, _CALIB_FONT, size_mm,
         letter_spacing_mm=size_mm * 0.15, line_spacing=1.2,
         text_align="Center", stroke_repeat=1,
     )
@@ -50,9 +55,9 @@ def _title_height(text: str, size_mm: float = 3.0) -> float:
 
 
 def _label_centered(text: str, cx: float, cy: float, size_mm: float = 3.0) -> list[Polyline]:
-    """Render a Hershey Simplex label centred on the point (cx, cy)."""
+    """Render a Hershey label centred on the point (cx, cy) (font: :data:`_CALIB_FONT`)."""
     polylines, _w, _h = _render_hershey_text(
-        text, "Simplex", size_mm,
+        text, _CALIB_FONT, size_mm,
         letter_spacing_mm=size_mm * 0.15, line_spacing=1.2,
         text_align="Center", stroke_repeat=1,
     )
@@ -67,14 +72,14 @@ def _label_centered(text: str, cx: float, cy: float, size_mm: float = 3.0) -> li
 
 
 def _label(text: str, x: float, y: float, size_mm: float = 3.0) -> list[Polyline]:
-    """Render a Hershey Simplex text label with its top-left corner at (x, y).
+    """Render a Hershey text label with its top-left corner at (x, y) (font: :data:`_CALIB_FONT`).
 
     Wraps ``_render_hershey_text`` and translates so that the actual visual
     top-left of the rendered glyphs lands at the given coordinates.
     """
     polylines, _width, _height = _render_hershey_text(
         text,
-        "Simplex",
+        _CALIB_FONT,
         size_mm,
         letter_spacing_mm=size_mm * 0.15,
         line_spacing=1.2,
@@ -442,7 +447,7 @@ def generate_angle_test(
         lx = ex - dx * label_inset
         ly = ey - dy * label_inset
 
-        label_text = f"{deg}d"  # "d" for degrees (Hershey lacks the degree glyph)
+        label_text = f"{deg}°"  # ° — present in EMSReadability glyph set
         result.extend(_label_centered(label_text, lx, ly, size_mm=2.5))
 
     return result
@@ -596,8 +601,8 @@ def generate_fill_density_test(
     for ri, angle_deg in enumerate(angles):
         sw_y0 = grid_y0 + ri * (swatch_h + gap)
 
-        # Row header (angle label, "d" for degrees — Hershey lacks the ° glyph)
-        row_label = f"{angle_deg}d"
+        # Row header — ° glyph is available in EMSReadability
+        row_label = f"{angle_deg}°"
         result.extend(_label(row_label, x0, sw_y0, size_mm=3.0))
 
         for ci, spacing in enumerate(spacings):

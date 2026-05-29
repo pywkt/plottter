@@ -1170,20 +1170,36 @@ class TestRenderLabels:
         assert len(result) > 0
 
     def test_all_points_within_bbox(self):
-        """Every rendered point lies within the predicted text bbox (±0.5 mm)."""
-        from plottter.osm.labels import _hershey_text_width, render_labels
+        """Every rendered point lies within the predicted text bbox (±0.5 mm).
+
+        The bbox uses the font's *ascent* and *descent* metrics rather than
+        just cap-height because real typefaces (EMS Readability, the
+        post-overhaul default) intentionally overshoot the cap line for
+        visual balance.  ``ABC`` has no descenders so the bottom is the
+        baseline, but the top can sit a few percent above cap-height.
+        """
+        from plottter.fonts.hershey import load_font
+        from plottter.osm.labels import (
+            DEFAULT_LABEL_FONT, _hershey_text_width, render_labels,
+        )
 
         tol = 0.5
         font_size = self._FONT
         label = self._label("ABC", 50.0, 50.0)
         width = _hershey_text_width("ABC", font_size)
 
+        # Convert ascent/descent to canvas-y-down distances from the baseline.
+        m = load_font(DEFAULT_LABEL_FONT).metrics
+        ascent_mm = font_size * (m.ascent / m.cap_height)
+        descent_mm = font_size * (-m.descent / m.cap_height)  # baseline → bottom
+
         cx, cy = label.position
         x_min = cx - width / 2.0 - tol
         x_max = cx + width / 2.0 + tol
-        # baseline is at cy + font_size/2; cap tops are font_size above baseline
-        y_min = cy - font_size / 2.0 - tol   # top of capitals in canvas y-down
-        y_max = cy + font_size / 2.0 + tol   # baseline level
+        # render_labels places the baseline at cy + font_size/2 (canvas y-down).
+        baseline_y = cy + font_size / 2.0
+        y_min = baseline_y - ascent_mm - tol
+        y_max = baseline_y + descent_mm + tol
 
         result = render_labels([label], font_size)
         assert len(result) > 0

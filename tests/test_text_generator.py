@@ -56,7 +56,20 @@ def within_drawing_area(polylines, canvas, tolerance: float = 5.0) -> bool:
 
 class TestHersheyFontData:
     def test_all_fonts_registered(self):
-        assert set(FONTS.keys()) == {"Simplex", "Duplex", "Script", "Gothic"}
+        """The catalog must ship every modern font and still accept the four
+        legacy names that pre-Hershey-overhaul projects reference."""
+        names = set(FONTS.keys())
+        # Modern catalog — sample a few canonical names from each category.
+        for required in (
+            "EMSReadability", "EMSAllure",      # EMS Modern
+            "HersheySans1", "HersheySansMed",   # Hershey Sans
+            "HersheyScript1", "HersheyGothEnglish",
+            "HersheySymbolic",                  # Symbols (degree sign etc.)
+        ):
+            assert required in names, f"missing canonical font: {required}"
+        # Legacy aliases — old projects must keep loading.
+        for alias in ("Simplex", "Duplex", "Script", "Gothic"):
+            assert alias in FONTS  # via __contains__ proxy
 
     def test_glyph_strokes_ascii_printable(self):
         """Every printable ASCII character should return valid glyph data."""
@@ -83,11 +96,19 @@ class TestHersheyFontData:
         left, right, strokes = glyph_strokes("\x01", "Simplex")
         assert isinstance(strokes, list)
 
-    def test_duplex_wider_than_simplex(self):
-        """Duplex characters should be wider than Simplex equivalents."""
-        l_s, r_s, _ = glyph_strokes("H", "Simplex")
-        l_d, r_d, _ = glyph_strokes("H", "Duplex")
-        assert (r_d - l_d) > (r_s - l_s)
+    def test_medium_uses_more_strokes_than_one_stroke(self):
+        """Hershey Sans Medium (was 'Duplex') achieves its heavier weight by
+        tracing each shape with multiple parallel strokes rather than by
+        widening the letterforms — the old fake 'Duplex' simulated this by
+        widening bounds, which the new real font correctly replaces.
+
+        Verified via the legacy aliases so the contract holds for projects
+        saved before the catalog change.
+        """
+        _, _, s_strokes = glyph_strokes("H", "Simplex")
+        _, _, d_strokes = glyph_strokes("H", "Duplex")
+        # Real Hershey Sans Medium has roughly 2× the strokes of Sans 1-stroke.
+        assert len(d_strokes) > len(s_strokes)
 
 
 # ---------------------------------------------------------------------------
@@ -632,8 +653,12 @@ class TestTextGeneratorGoogleFontPresets:
         assert "Engraved / Concentric" not in names
 
     def test_hershey_presets_still_present(self):
+        """A few representative Hershey-backed presets must always be shipped."""
         names = [p.name for p in self.gen.get_presets()]
-        assert "Title / Hershey Sans" in names
+        # "Script Signature" survived the rename; the headline preset is the
+        # new default EMS Readability one.  Both prove the Hershey backend
+        # remains exposed alongside the system-font presets.
+        assert "Title / EMS Readability" in names
         assert "Script Signature" in names
 
     def test_preset_generate_falls_back_to_hershey_on_download_failure(self):
