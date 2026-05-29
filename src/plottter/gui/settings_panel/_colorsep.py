@@ -13,6 +13,35 @@ from PyQt6.QtWidgets import (
 from .workers import _AiBgWorker, _AiSegmentWorker
 
 
+def _separation_mask_to_luminance(mask: np.ndarray, src_img: np.ndarray) -> np.ndarray:
+    """Convert a color-separation mask to a luminance grayscale image.
+
+    All line generators interpret their input as **luminance**: high pixel
+    value → light → fewer / shorter strokes.  Each color-separation method
+    needs different massaging to get there:
+
+    * **K-Means / Luminance** produce a boolean cluster mask.  The original
+      grayscale already has luminance semantics, so we just whiten out the
+      pixels that don't belong to the cluster.
+    * **RGB / CMYK** produce a uint8 channel-intensity image where 255
+      means "lots of this channel wanted".  That's the *opposite* of
+      luminance, so we invert here.  Without this step every line
+      generator drew ink where the channel was absent rather than where
+      it was strong — visually a colour-negated plot.
+    """
+    if mask.dtype == np.bool_:
+        if src_img.ndim == 3:
+            from plottter.io.image_import import to_grayscale
+            gray = to_grayscale(src_img)
+        else:
+            gray = src_img.copy()
+        masked_gray = gray.copy()
+        masked_gray[~mask] = 255  # outside-cluster pixels → white
+        return masked_gray
+    # RGB / CMYK: flip ink-coverage → luminance.
+    return (255 - mask).astype(np.uint8)
+
+
 class _ColorSepMixin:
     """Mixin for color separation methods."""
 
@@ -508,19 +537,7 @@ class _ColorSepMixin:
         layer_id, mask, src_img = self._lines_queue.pop(0)
         import numpy as np
 
-        # Determine grayscale image to feed the generator
-        if mask.dtype == np.bool_:
-            # K-Means / Luminance: boolean mask — apply it to the source image
-            if src_img.ndim == 3:
-                from plottter.io.image_import import to_grayscale
-                gray = to_grayscale(src_img)
-            else:
-                gray = src_img.copy()
-            masked_gray = gray.copy()
-            masked_gray[~mask] = 255  # pixels outside the cluster → white
-        else:
-            # RGB / CMYK: mask IS the grayscale channel image (uint8)
-            masked_gray = mask.copy()
+        masked_gray = _separation_mask_to_luminance(mask, src_img)
 
         gen = self._lines_gen_cls()
 

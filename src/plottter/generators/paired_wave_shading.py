@@ -291,6 +291,11 @@ class PairedWaveShadingGenerator(Generator):
     # --------------------------------------------------------------- presets
     def get_presets(self) -> list[Preset]:
         return [
+            # Presets leave ``invert`` at its False default — the colour-
+            # separation flow pre-inverts CMYK/RGB channel images at the
+            # boundary so every line generator sees luminance semantics
+            # uniformly.  Set invert=True only when feeding the generator
+            # an ink-coverage image directly (not via Color Separation).
             Preset(
                 name="Color Split — Channel Pair",
                 description=(
@@ -298,11 +303,10 @@ class PairedWaveShadingGenerator(Generator):
                     "workflow: 1.5 mm spacing, 0.8 mm max deviation, gentle "
                     "smoothing.  Pick this under Color Separation → "
                     "Generate Lines and apply it to every channel — works "
-                    "for both CMYK and RGB splits (both produce channel-"
-                    "intensity grayscales, so ``invert=True`` is correct "
-                    "either way).  CMYK pens give faithful colour "
-                    "reproduction on white paper; RGB pens give a stylised "
-                    "channel-art look since RGB inks mix subtractively."
+                    "for both CMYK and RGB splits.  CMYK pens give faithful "
+                    "colour reproduction on white paper; RGB pens give a "
+                    "stylised channel-art look since RGB inks mix "
+                    "subtractively on paper."
                 ),
                 params={
                     "line_spacing_mm": 1.5,
@@ -312,7 +316,6 @@ class PairedWaveShadingGenerator(Generator):
                     "tone_gamma": 1.0,
                     "smoothing_mm": 0.5,
                     "skip_white_above": 240,
-                    "invert": True,  # CMYK channels are ink-coverage, not luma
                 },
             ),
             Preset(
@@ -329,7 +332,6 @@ class PairedWaveShadingGenerator(Generator):
                     "tone_gamma": 0.9,
                     "smoothing_mm": 0.3,
                     "skip_white_above": 240,
-                    "invert": True,
                 },
             ),
             Preset(
@@ -346,7 +348,6 @@ class PairedWaveShadingGenerator(Generator):
                     "tone_gamma": 1.2,
                     "smoothing_mm": 1.0,
                     "skip_white_above": 235,
-                    "invert": True,
                 },
             ),
             Preset(
@@ -369,7 +370,6 @@ class PairedWaveShadingGenerator(Generator):
                     "tone_gamma": 1.1,
                     "smoothing_mm": 1.5,
                     "skip_white_above": 220,
-                    "invert": True,
                 },
             ),
         ]
