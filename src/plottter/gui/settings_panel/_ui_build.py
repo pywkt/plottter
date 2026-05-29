@@ -428,6 +428,31 @@ class _UIBuildMixin:
         color_sep_layout.addWidget(self._channel_check_widget)
         self._channel_check_widget.setVisible(False)
 
+        # K-amount slider (CMYK mode only) — scales how much black ink the
+        # separation generates.  Lower values prevent the K layer from
+        # overwhelming colours under multiply-blended Ink Preview.  See
+        # docstring on ``plottter.color.cmyk_separate`` for the math.
+        self._cmyk_k_amount_widget = QWidget()
+        k_form = QFormLayout(self._cmyk_k_amount_widget)
+        k_form.setContentsMargins(0, 0, 0, 0)
+        self._cmyk_k_amount_spin = QDoubleSpinBox()
+        self._cmyk_k_amount_spin.setRange(0.0, 1.0)
+        self._cmyk_k_amount_spin.setSingleStep(0.05)
+        self._cmyk_k_amount_spin.setDecimals(2)
+        # Default to 0.3 — leaves K useful for deep shadows / pure black
+        # but stops it dominating non-saturated mid-tones.
+        self._cmyk_k_amount_spin.setValue(0.3)
+        self._cmyk_k_amount_spin.setToolTip(
+            "How much black (K) ink the separation generates.  "
+            "0.0 = no K (CMY only — best for line plots where multiply "
+            "blending makes K dominate colour areas).  "
+            "1.0 = full traditional K (best for dense printing).  "
+            "Default 0.3 keeps K for deep shadows without killing colour."
+        )
+        k_form.addRow(QLabel("K Amount"), self._cmyk_k_amount_spin)
+        color_sep_layout.addWidget(self._cmyk_k_amount_widget)
+        self._cmyk_k_amount_widget.setVisible(False)
+
         # Line-art algorithm for separated layers
         gen_form = QFormLayout()
         self._color_sep_gen_combo = QComboBox()

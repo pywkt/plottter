@@ -365,3 +365,43 @@ class TestCmykSeparate:
         gray = np.zeros((10, 10), dtype=np.uint8)
         with pytest.raises(ValueError):
             cmyk_separate(gray)
+
+    # ---- k_amount: scales K channel without touching CMY -----------------
+
+    def test_k_amount_zero_zeroes_out_key_channel(self):
+        """k_amount=0 must produce K=0 everywhere — CMY only."""
+        img = np.full((4, 4, 3), 64, dtype=np.uint8)  # dark gray with K
+        results = cmyk_separate(img, k_amount=0.0)
+        k_channel = results[3][0]
+        assert (k_channel == 0).all()
+
+    def test_k_amount_half_scales_key_by_half(self):
+        """k_amount=0.5 must scale K by ~50% while leaving CMY untouched."""
+        img = np.full((4, 4, 3), 128, dtype=np.uint8)  # mid gray
+        full = cmyk_separate(img, k_amount=1.0)
+        half = cmyk_separate(img, k_amount=0.5)
+        # CMY unchanged (all zeros for neutral gray anyway)
+        for i in range(3):
+            assert np.array_equal(full[i][0], half[i][0])
+        # K halved (within int-rounding tolerance)
+        full_k = int(full[3][0][0, 0])
+        half_k = int(half[3][0][0, 0])
+        assert abs(half_k - full_k // 2) <= 1, f"expected ~{full_k // 2}, got {half_k}"
+
+    def test_k_amount_default_is_full(self):
+        """No-arg call keeps the original full-K behaviour for back-compat."""
+        img = np.full((2, 2, 3), 100, dtype=np.uint8)
+        no_arg = cmyk_separate(img)
+        explicit = cmyk_separate(img, k_amount=1.0)
+        for ch_a, ch_b in zip(no_arg, explicit):
+            assert np.array_equal(ch_a[0], ch_b[0])
+
+    def test_k_amount_clamps_to_valid_range(self):
+        """Out-of-range values clamp to [0, 1] without raising."""
+        img = np.full((2, 2, 3), 100, dtype=np.uint8)
+        clamped_low  = cmyk_separate(img, k_amount=-5.0)
+        clamped_high = cmyk_separate(img, k_amount=10.0)
+        equiv_zero = cmyk_separate(img, k_amount=0.0)
+        equiv_one  = cmyk_separate(img, k_amount=1.0)
+        assert np.array_equal(clamped_low[3][0], equiv_zero[3][0])
+        assert np.array_equal(clamped_high[3][0], equiv_one[3][0])

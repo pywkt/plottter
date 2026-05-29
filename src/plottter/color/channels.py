@@ -34,7 +34,10 @@ def rgb_separate(image: np.ndarray) -> list[tuple[np.ndarray, str]]:
     ]
 
 
-def cmyk_separate(image: np.ndarray) -> list[tuple[np.ndarray, str]]:
+def cmyk_separate(
+    image: np.ndarray,
+    k_amount: float = 1.0,
+) -> list[tuple[np.ndarray, str]]:
     """Separate an RGB image into Cyan, Magenta, Yellow, and Key (Black) channels.
 
     The conversion follows the standard formula:
@@ -47,6 +50,21 @@ def cmyk_separate(image: np.ndarray) -> list[tuple[np.ndarray, str]]:
     ----------
     image:
         RGB image array of shape (H, W, 3), dtype uint8.
+    k_amount:
+        Scaling factor applied to the K (black) channel before quantisation.
+        Range ``[0.0, 1.0]``:
+
+        * ``1.0`` (default) — full standard K, suitable for traditional CMYK
+          printing where K compensates for the inks' inability to reach
+          true black.
+        * ``0.0`` — emit K as all zeros, letting CMY alone carry the
+          colour information.
+        * Intermediate values scale K proportionally.
+
+        Lower values are recommended for plotter line art with multiply-
+        blended preview: at full K, the dense black-line layer overwhelms
+        the underlying CMY in multiply mode (black × anything = black),
+        so non-saturated colours look black instead of their true hue.
 
     Returns
     -------
@@ -57,6 +75,7 @@ def cmyk_separate(image: np.ndarray) -> list[tuple[np.ndarray, str]]:
     """
     if image.ndim != 3 or image.shape[2] != 3:
         raise ValueError(f"Expected RGB image (H×W×3), got shape {image.shape}")
+    k_amount = float(max(0.0, min(1.0, k_amount)))
 
     img_f = image.astype(np.float32) / 255.0
     r = img_f[:, :, 0]
@@ -82,7 +101,7 @@ def cmyk_separate(image: np.ndarray) -> list[tuple[np.ndarray, str]]:
     c_u8 = np.clip(c * 255.0, 0, 255).astype(np.uint8)
     m_u8 = np.clip(m * 255.0, 0, 255).astype(np.uint8)
     y_u8 = np.clip(y * 255.0, 0, 255).astype(np.uint8)
-    k_u8 = np.clip(k * 255.0, 0, 255).astype(np.uint8)
+    k_u8 = np.clip(k * 255.0 * k_amount, 0, 255).astype(np.uint8)
 
     return [
         (c_u8, "#00FFFF"),

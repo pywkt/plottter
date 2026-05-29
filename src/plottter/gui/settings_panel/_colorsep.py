@@ -66,6 +66,8 @@ class _ColorSepMixin:
 
         # Build channel checkboxes
         self._channel_check_widget.setVisible(is_rgb or is_cmyk)
+        # K Amount slider is only meaningful for CMYK separation.
+        self._cmyk_k_amount_widget.setVisible(is_cmyk)
         layout = self._channel_check_widget.layout()
         # Clear existing checkboxes
         while layout.count():
@@ -363,7 +365,10 @@ class _ColorSepMixin:
                     raw_rgb = np.stack([raw_rgb] * 3, axis=-1)
                 elif raw_rgb.ndim == 3 and raw_rgb.shape[2] == 4:
                     raw_rgb = raw_rgb[:, :, :3]
-                results = cmyk_separate(raw_rgb)
+                results = cmyk_separate(
+                    raw_rgb,
+                    k_amount=float(self._cmyk_k_amount_spin.value()),
+                )
                 layer_names = ["Cyan Channel", "Magenta Channel", "Yellow Channel", "Key (Black) Channel"]
                 channel_names_list = ["Cyan", "Magenta", "Yellow", "Key (Black)"]
                 filtered = []
