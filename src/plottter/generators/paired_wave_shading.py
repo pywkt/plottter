@@ -292,12 +292,17 @@ class PairedWaveShadingGenerator(Generator):
     def get_presets(self) -> list[Preset]:
         return [
             Preset(
-                name="CMYK Hidden Image",
+                name="Color Split — Channel Pair",
                 description=(
                     "Starting point for the per-channel colour-separation "
                     "workflow: 1.5 mm spacing, 0.8 mm max deviation, gentle "
-                    "smoothing.  Use this as the preset under Color "
-                    "Separation → Generate Lines."
+                    "smoothing.  Pick this under Color Separation → "
+                    "Generate Lines and apply it to every channel — works "
+                    "for both CMYK and RGB splits (both produce channel-"
+                    "intensity grayscales, so ``invert=True`` is correct "
+                    "either way).  CMYK pens give faithful colour "
+                    "reproduction on white paper; RGB pens give a stylised "
+                    "channel-art look since RGB inks mix subtractively."
                 ),
                 params={
                     "line_spacing_mm": 1.5,

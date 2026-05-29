@@ -50,11 +50,12 @@ def test_generator_exposes_core_params():
         assert required in names, f"missing parameter: {required}"
 
 
-def test_presets_contain_cmyk_starting_point():
-    """The first shipped preset is the colour-separation starting point."""
+def test_presets_contain_color_split_starting_point():
+    """The first shipped preset is the colour-separation starting point —
+    intentionally named neutrally so it covers both CMYK and RGB splits."""
     presets = PairedWaveShadingGenerator().get_presets()
     names = [p.name for p in presets]
-    assert any("CMYK" in n for n in names), names
+    assert any("Color Split" in n for n in names), names
 
 
 # ---------------------------------------------------------------------------
