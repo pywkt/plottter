@@ -176,6 +176,19 @@ class _MenusMixin:
         self._act_paper_texture.toggled.connect(self._canvas.set_paper_texture)
         view_menu.addAction(self._act_paper_texture)
 
+        # Ink Preview — multiply-blended layer rendering so stacked colour-
+        # separated layers combine subtractively (cyan + yellow = green).
+        # Useful for evaluating CMYK / paired-wave colour plots before printing.
+        self._act_ink_preview = QAction("Toggle &Ink Preview", self)
+        self._act_ink_preview.setShortcut(QKeySequence("Ctrl+Shift+I"))
+        self._act_ink_preview.setCheckable(True)
+        self._act_ink_preview.setToolTip(
+            "Render visible layers with multiply blending so stacked colours "
+            "combine like real ink on paper.  Affects display only."
+        )
+        self._act_ink_preview.toggled.connect(self._canvas.set_ink_preview)
+        view_menu.addAction(self._act_ink_preview)
+
         self._act_jitter = QAction("Toggle Pen &Jitter", self)
         self._act_jitter.setCheckable(True)
         self._act_jitter.setToolTip("Simulate organic pen wobble in the preview (does not affect export)")

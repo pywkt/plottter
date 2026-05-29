@@ -37,11 +37,15 @@ class _PaintingMixin:
         w_mm = canvas.width_mm
         h_mm = canvas.height_mm
 
-        # Paper boundary
+        # Paper boundary — force pure white in Ink Preview so the multiply
+        # blend math (paper × ink₁ × ink₂ × …) gives true subtractive colour.
         paper_tl = self.mm_to_pixel((0.0, 0.0))
         paper_br = self.mm_to_pixel((w_mm, h_mm))
         paper_rect = QRectF(paper_tl, paper_br)
-        paper_color = QColor("#FAFAFA") if self._show_paper_texture else QColor("white")
+        if self._ink_preview:
+            paper_color = QColor("white")
+        else:
+            paper_color = QColor("#FAFAFA") if self._show_paper_texture else QColor("white")
         painter.fillRect(paper_rect, paper_color)
         pen = QPen(QColor("black"), 1.0)
         painter.setPen(pen)
@@ -90,26 +94,36 @@ class _PaintingMixin:
         if self._3d_preview_active:
             self._draw_3d_preview(painter, canvas)
         else:
-            # Paths
-            if self._anim_mode:
-                self._draw_animated_paths(painter)
-            else:
-                active_id = self._controller.active_layer_id
-                for layer in project.layers:
-                    if not layer.visible:
-                        continue
-                    if (
-                        self._drag_move_active
-                        and self._drag_move_start_mm is not None
-                        and layer.id == active_id
-                    ):
-                        self._draw_layer(painter, layer, offset=self._drag_move_offset_mm)
-                    else:
-                        self._draw_layer(painter, layer)
+            # Paths.  In Ink Preview mode, switch to multiply blending so
+            # stacked layers combine like real ink on paper (cyan + yellow =
+            # green); restore the default mode afterwards so overlays
+            # (travel lines, registration marks, brush cursor, etc.) draw
+            # normally on top.
+            if self._ink_preview:
+                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Multiply)
+            try:
+                if self._anim_mode:
+                    self._draw_animated_paths(painter)
+                else:
+                    active_id = self._controller.active_layer_id
+                    for layer in project.layers:
+                        if not layer.visible:
+                            continue
+                        if (
+                            self._drag_move_active
+                            and self._drag_move_start_mm is not None
+                            and layer.id == active_id
+                        ):
+                            self._draw_layer(painter, layer, offset=self._drag_move_offset_mm)
+                        else:
+                            self._draw_layer(painter, layer)
+            finally:
+                if self._ink_preview:
+                    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
-                # Pen-up travel visualization (normal mode only)
-                if self._show_travel:
-                    self._draw_travel_lines(painter, project)
+            # Pen-up travel visualization (normal mode only)
+            if self._show_travel:
+                self._draw_travel_lines(painter, project)
 
         # Map positioning preview overlay (faded lines + data-bounds outline)
         if self._map_position_active:
@@ -400,7 +414,10 @@ class _PaintingMixin:
         offset: tuple[float, float] = (0.0, 0.0),
     ) -> None:
         color = QColor(layer.color)
-        color.setAlphaF(layer.opacity)
+        # In Ink Preview the multiply blend depends on full-alpha sources to
+        # produce true subtractive colour — a 50% opacity cyan × magenta would
+        # otherwise come back faded.  Editing view keeps the opacity slider.
+        color.setAlphaF(1.0 if self._ink_preview else layer.opacity)
         pen = QPen(color, max(0.5, self._zoom * 0.3))
         painter.setPen(pen)
 

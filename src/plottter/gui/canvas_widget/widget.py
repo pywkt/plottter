@@ -153,6 +153,11 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         self._show_travel = False
         self._show_paper_texture = False
         self._show_image_overlay = True
+        # Ink Preview mode — flip the canvas to multiply-blended layer
+        # rendering so stacked CMYK / colour-separated layers combine
+        # subtractively (cyan + yellow = green, etc.).  Preview-only: no
+        # effect on project data or exports.
+        self._ink_preview = False
 
         # Pen jitter (preview-only): slight random displacement per rendered point
         self._jitter_enabled = False
@@ -289,6 +294,11 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
 
     def set_paper_texture(self, enabled: bool) -> None:
         self._show_paper_texture = enabled
+        self.update()
+
+    def set_ink_preview(self, enabled: bool) -> None:
+        """Toggle multiply-blended layer rendering for colour-mixing preview."""
+        self._ink_preview = enabled
         self.update()
 
     def set_show_image_overlay(self, visible: bool) -> None:
