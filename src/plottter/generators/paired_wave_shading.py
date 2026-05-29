@@ -349,6 +349,29 @@ class PairedWaveShadingGenerator(Generator):
                     "invert": True,
                 },
             ),
+            Preset(
+                name="Marker (~1.2 mm tip)",
+                description=(
+                    "Tuned for wide-tip markers (~1 mm class).  "
+                    "``min_deviation_mm`` is set above the tip width so the "
+                    "two lines stay distinguishable even in light areas, "
+                    "``max_deviation_mm`` is generous so dark areas clearly "
+                    "spread, and ``skip_white_above`` is aggressive so "
+                    "near-white areas drop out entirely instead of getting "
+                    "a fat redundant double-line.  Open View → Preview Pen "
+                    "Width and set it to 1.2 mm to eyeball the result."
+                ),
+                params={
+                    "line_spacing_mm": 3.5,
+                    "max_deviation_mm": 4.0,
+                    "min_deviation_mm": 1.4,
+                    "sample_interval_mm": 0.5,
+                    "tone_gamma": 1.1,
+                    "smoothing_mm": 1.5,
+                    "skip_white_above": 220,
+                    "invert": True,
+                },
+            ),
         ]
 
     # ------------------------------------------------------------- generate

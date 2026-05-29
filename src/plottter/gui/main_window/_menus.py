@@ -200,6 +200,14 @@ class _MenusMixin:
         self._act_jitter_intensity.triggered.connect(self._on_jitter_intensity)
         view_menu.addAction(self._act_jitter_intensity)
 
+        self._act_pen_width = QAction("Preview Pen Width…", self)
+        self._act_pen_width.setToolTip(
+            "Set the on-canvas stroke width in mm — use ~0.3 for fine pens, "
+            "~1.2 for markers.  Display only; exports are unaffected."
+        )
+        self._act_pen_width.triggered.connect(self._on_preview_pen_width)
+        view_menu.addAction(self._act_pen_width)
+
         # --- Generate ---
         generate_menu = menu_bar.addMenu("&Generate")
         self._act_generate_now = QAction("Generate Now", self)

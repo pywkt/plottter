@@ -418,7 +418,9 @@ class _PaintingMixin:
         # produce true subtractive colour — a 50% opacity cyan × magenta would
         # otherwise come back faded.  Editing view keeps the opacity slider.
         color.setAlphaF(1.0 if self._ink_preview else layer.opacity)
-        pen = QPen(color, max(0.5, self._zoom * 0.3))
+        # Pen width tracks the configured preview pen width (mm) scaled by
+        # zoom (px/mm); never below 0.5 px so hairlines stay visible.
+        pen = QPen(color, max(0.5, self._zoom * self._preview_pen_width_mm))
         painter.setPen(pen)
 
         # Compute viewport bounds in mm for culling — paths whose bounding box
@@ -460,7 +462,9 @@ class _PaintingMixin:
 
             color = QColor(color_str)
             color.setAlphaF(opacity)
-            pen = QPen(color, max(0.5, self._zoom * 0.3))
+            # Match _draw_layer so animation playback uses the same preview
+            # width as static rendering.
+            pen = QPen(color, max(0.5, self._zoom * self._preview_pen_width_mm))
             painter.setPen(pen)
 
             if i < current_idx:

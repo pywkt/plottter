@@ -58,6 +58,25 @@ def test_presets_contain_color_split_starting_point():
     assert any("Color Split" in n for n in names), names
 
 
+def test_marker_preset_keeps_lines_distinct_above_tip_width():
+    """The ~1.2 mm marker preset must set ``min_deviation_mm`` above 1.2 so
+    the two lines never collapse into a single fat blob at the marker
+    tip's coverage width.  ``max_deviation_mm`` must be far enough above
+    that for the dark areas to clearly spread."""
+    preset = next(
+        (p for p in PairedWaveShadingGenerator().get_presets() if "Marker" in p.name),
+        None,
+    )
+    assert preset is not None, "expected a 'Marker (~1.2 mm tip)' preset"
+    min_dev = preset.params["min_deviation_mm"]
+    max_dev = preset.params["max_deviation_mm"]
+    assert min_dev > 1.2, f"min_deviation_mm={min_dev} should exceed marker tip width"
+    assert max_dev > min_dev + 1.0, (
+        f"max_deviation_mm={max_dev} needs meaningful headroom above "
+        f"min_deviation_mm={min_dev}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Helper-level unit tests
 # ---------------------------------------------------------------------------

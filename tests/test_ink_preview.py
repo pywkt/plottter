@@ -11,7 +11,7 @@ compositing would just show the top-most colour.
 from __future__ import annotations
 
 import pytest
-from PyQt6.QtGui import QImage
+from PyQt6.QtGui import QColor, QImage
 
 from plottter.gui.canvas_widget.widget import CanvasWidget
 from plottter.gui.project_controller import ProjectController
@@ -89,3 +89,47 @@ def test_ink_preview_off_after_on_restores_top_layer_colour(canvas_widget, qapp)
     # The yellow layer (#FFFF00) is added last → its red+green channels
     # dominate, blue stays low.
     assert r > 200 and g > 150 and b < 200
+
+
+# ---------------------------------------------------------------------------
+# Preview pen width — display-only setting affecting stroke thickness
+# ---------------------------------------------------------------------------
+
+
+def test_preview_pen_width_defaults_to_fine_pen(canvas_widget):
+    """0.3 mm matches the legacy hardcoded value and represents a fine pen."""
+    assert canvas_widget.get_preview_pen_width_mm() == pytest.approx(0.3)
+
+
+def test_set_preview_pen_width_clamps_to_safe_range(canvas_widget):
+    """Sub-pixel values fall back to a pixel anyway; very wide values
+    drown the path geometry.  Clamp to [0.05, 5.0] mm."""
+    canvas_widget.set_preview_pen_width_mm(0.0)
+    assert canvas_widget.get_preview_pen_width_mm() == pytest.approx(0.05)
+    canvas_widget.set_preview_pen_width_mm(10.0)
+    assert canvas_widget.get_preview_pen_width_mm() == pytest.approx(5.0)
+
+
+def test_wider_pen_covers_more_pixels_around_a_path(canvas_widget, qapp):
+    """A 1.2 mm marker preview must cover noticeably more pixels along a
+    rendered path than the 0.3 mm default — quick proof the setting is
+    actually being honoured by the painter."""
+    def count_ink_pixels() -> int:
+        qapp.processEvents()
+        img = QImage(canvas_widget.size(), QImage.Format.Format_ARGB32)
+        canvas_widget.render(img)
+        n = 0
+        for x in range(img.width()):
+            # Sample a vertical column near the centre — should hit our
+            # horizontal stroke at y = 50 mm and pick up extra pixels above
+            # and below as the pen widens.
+            for y in range(img.height()):
+                if img.pixelColor(x, y) != QColor("white").rgba():
+                    n += 1
+        return n
+
+    canvas_widget.set_preview_pen_width_mm(0.3)
+    thin = count_ink_pixels()
+    canvas_widget.set_preview_pen_width_mm(1.5)
+    fat = count_ink_pixels()
+    assert fat > thin, f"wide pen should ink more pixels than thin ({fat} vs {thin})"

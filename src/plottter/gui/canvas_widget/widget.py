@@ -163,6 +163,13 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         self._jitter_enabled = False
         self._jitter_intensity = 1.0  # relative intensity, 0.1–5.0
 
+        # Preview pen width in mm — purely a display setting used by
+        # _draw_layer to size the QPen so you can eyeball how thick a real
+        # marker / ballpoint stroke will be relative to the path layout.
+        # Does not affect export.  0.3 mm ≈ a fine-tip pen; bump to ~1.2 mm
+        # for marker-style preview.
+        self._preview_pen_width_mm: float = 0.3
+
         # Mask paint state
         self._mask_paint_active = False
         self._mask_array: np.ndarray | None = None   # float32 H×W, values 0–1
@@ -300,6 +307,19 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         """Toggle multiply-blended layer rendering for colour-mixing preview."""
         self._ink_preview = enabled
         self.update()
+
+    def set_preview_pen_width_mm(self, width_mm: float) -> None:
+        """Set the on-canvas stroke width in millimetres (display only).
+
+        Clamped to ``[0.05, 5.0]`` to keep the preview useful — sub-pixel
+        widths fall back to one pixel anyway, and very wide widths drown
+        the path geometry.
+        """
+        self._preview_pen_width_mm = max(0.05, min(5.0, float(width_mm)))
+        self.update()
+
+    def get_preview_pen_width_mm(self) -> float:
+        return self._preview_pen_width_mm
 
     def set_show_image_overlay(self, visible: bool) -> None:
         self._show_image_overlay = visible

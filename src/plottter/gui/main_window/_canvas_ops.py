@@ -254,3 +254,24 @@ class _CanvasOpsMixin:
         )
         if ok:
             self._canvas.set_jitter_intensity(value)
+
+    def _on_preview_pen_width(self) -> None:
+        """Set the on-canvas display stroke width in mm.
+
+        Lets you preview how thick your real pen / marker strokes will be
+        relative to the path layout — invaluable for color-separation work
+        where the gap between two paired lines needs to exceed the pen
+        width to render as two visible lines instead of one fat blob.
+        """
+        from PyQt6.QtWidgets import QInputDialog
+        value, ok = QInputDialog.getDouble(
+            self,
+            "Preview Pen Width",
+            "Stroke width in mm (0.3 ≈ fine pen, 1.2 ≈ marker):",
+            self._canvas.get_preview_pen_width_mm(),
+            0.05,
+            5.0,
+            2,
+        )
+        if ok:
+            self._canvas.set_preview_pen_width_mm(value)
