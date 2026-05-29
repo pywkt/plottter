@@ -50,6 +50,7 @@ class _LayerItem(QWidget):
         self.layer_id = layer_id
         self._controller = controller
         self._edit_original_name = ""
+        self._editing = False  # explicit flag — more reliable than Qt isVisible()
         self._setup_ui(layer_name, layer_color, visible, locked, path_count, opacity)
 
     def _setup_ui(
@@ -68,18 +69,31 @@ class _LayerItem(QWidget):
         self._color_btn.clicked.connect(self._on_color_click)
         layout.addWidget(self._color_btn)
 
-        # Inline editable name — read-only by default; double-click to rename.
-        # Explicitly use WindowText so Qt's selection cascade (which can force
-        # white) does not bleed into the label.
+        # Layer name — displayed as a plain QLabel; double-click swaps in a
+        # QLineEdit for inline rename.  Splitting display vs. edit guarantees
+        # that single-click on the name is treated by Qt exactly like a click
+        # on any other inert row element (no focus, no I-beam cursor, no
+        # accidental edit-mode appearance) — selection works via the
+        # multi-select forwarding in ``mousePressEvent``.
+        self._name_label = QLabel(name)
+        self._name_label.setMinimumWidth(60)
+        self._name_label.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        self._name_label.setStyleSheet("QLabel { color: palette(windowText); }")
+        # QLabel does NOT need an event filter — it ignores mouse events by
+        # default and bubbles them up to the parent _LayerItem, which forwards
+        # to the QListWidget for selection / multi-select.
+        layout.addWidget(self._name_label, stretch=1)
+
+        # Hidden until double-click triggers _enter_edit_mode.  Created up
+        # front so the signal/event wiring happens once.
         self._name_edit = QLineEdit(name)
-        self._name_edit.setReadOnly(True)
         self._name_edit.setMinimumWidth(60)
         self._name_edit.setStyleSheet(
-            "QLineEdit { border: none; background: transparent; color: palette(windowText); }"
-            "QLineEdit:focus { border: 1px solid palette(highlight); background: palette(base); color: palette(text); }"
+            "QLineEdit { border: 1px solid palette(highlight); background: palette(base); color: palette(text); }"
         )
         self._name_edit.editingFinished.connect(self._on_name_edited)
         self._name_edit.installEventFilter(self)
+        self._name_edit.hide()
         layout.addWidget(self._name_edit, stretch=1)
 
         # Path count badge
@@ -172,28 +186,10 @@ class _LayerItem(QWidget):
         super().mouseDoubleClickEvent(event)
 
     def eventFilter(self, obj, event) -> bool:  # type: ignore[override]
+        # Only the editable QLineEdit needs filtering — the display QLabel is
+        # inert.  We watch for focus-out / Escape to dismiss inline rename.
         if obj is self._name_edit:
-            if event.type() == QEvent.Type.MouseButtonDblClick:
-                self._enter_edit_mode()
-                return True
-            elif event.type() == QEvent.Type.MouseButtonPress:
-                # Forward single clicks on the name field to the list for selection.
-                # Remap the position from the QLineEdit's local coords to ours
-                # so mousePressEvent's mapTo(viewport) is correct.
-                from PyQt6.QtCore import QPointF
-                from PyQt6.QtGui import QMouseEvent
-                local_pos = obj.mapTo(self, event.pos())
-                remapped = QMouseEvent(
-                    event.type(),
-                    QPointF(local_pos),
-                    event.globalPosition(),
-                    event.button(),
-                    event.buttons(),
-                    event.modifiers(),
-                )
-                self.mousePressEvent(remapped)
-                return True
-            elif event.type() == QEvent.Type.FocusOut:
+            if event.type() == QEvent.Type.FocusOut:
                 self._exit_edit_mode(save=True)
             elif event.type() == QEvent.Type.KeyPress:
                 if event.key() == Qt.Key.Key_Escape:
@@ -202,34 +198,47 @@ class _LayerItem(QWidget):
         return super().eventFilter(obj, event)
 
     def _enter_edit_mode(self) -> None:
-        """Enter inline rename mode: make the name field editable and select all."""
-        self._edit_original_name = self._name_edit.text()
-        self._name_edit.setReadOnly(False)
+        """Swap the display QLabel for the editable QLineEdit and focus it."""
+        if self._editing:
+            return
+        self._editing = True
+        current = self._name_label.text()
+        self._edit_original_name = current
+        self._name_edit.setText(current)
+        self._name_label.hide()
+        self._name_edit.show()
         self._name_edit.setFocus()
         self._name_edit.selectAll()
 
     def _exit_edit_mode(self, save: bool = True) -> None:
-        """Exit inline rename mode. If save=False, restore the original name."""
-        if self._name_edit.isReadOnly():
+        """Hide the QLineEdit, restore the QLabel, optionally commit the name."""
+        if not self._editing:
             return
-        self._name_edit.setReadOnly(True)
+        self._editing = False
         if save:
             new_name = self._name_edit.text().strip()
-            if new_name:
+            if new_name and new_name != self._edit_original_name:
                 self._controller.set_layer_name(self.layer_id, new_name)
+                self._name_label.setText(new_name)
             else:
-                # Restore previous name from model if blank
-                layer = self._controller.get_layer(self.layer_id)
-                if layer:
-                    self._name_edit.setText(layer.name)
+                # Blank or unchanged → restore the original from the model
+                # (controller will push an update back through if anything
+                # changed asynchronously).
+                self._name_label.setText(self._edit_original_name)
         else:
-            self._name_edit.setText(self._edit_original_name)
+            self._name_label.setText(self._edit_original_name)
+        self._name_edit.hide()
+        self._name_label.show()
 
     def _on_name_edited(self) -> None:
         self._exit_edit_mode(save=True)
 
     def update_from_layer(self, name: str, color: str, visible: bool, locked: bool, path_count: int, opacity: float = 1.0) -> None:
-        self._name_edit.setText(name)
+        self._name_label.setText(name)
+        # Keep the (hidden) edit field in sync so a subsequent double-click
+        # starts from the latest name even if the model was updated externally.
+        if not self._editing:
+            self._name_edit.setText(name)
         self._color = color
         self._color_btn.setIcon(_color_swatch_icon(color))
         self._visible = visible
@@ -274,10 +283,10 @@ class _LayerItem(QWidget):
             count_color = pal.color(QPalette.ColorRole.PlaceholderText).name()
             bg = ""
 
-        self._name_edit.setStyleSheet(
-            f"QLineEdit {{ border: none; background: transparent; color: {text_color}; }}"
-            "QLineEdit:focus { border: 1px solid palette(highlight); background: palette(base); color: palette(text); }"
-        )
+        # Restyle the display label (the visible widget when not editing).
+        # _name_edit retains its own contrasting style — it's only shown during
+        # rename and always reads against palette(base).
+        self._name_label.setStyleSheet(f"QLabel {{ color: {text_color}; }}")
         self._count_label.setStyleSheet(f"color: {count_color}; font-size: 10px;")
         self._opacity_label.setStyleSheet(f"color: {count_color}; font-size: 10px;")
 

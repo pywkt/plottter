@@ -586,23 +586,35 @@ class TestLayerPanelIntegration:
         assert controller.get_layer(layer_id).locked is True
 
     def test_layer_item_name_edit(self, main_window, controller, qtbot):
-        """Double-clicking the name field enters edit mode and renames the layer."""
+        """Double-clicking the name field enters edit mode and renames the layer.
+
+        The display widget is a QLabel; entering edit mode swaps in a
+        QLineEdit for inline rename.  We test the behavioural contract —
+        edit mode swaps which widget commits the new name to the model —
+        rather than Qt show/hide flags, which behave oddly for widgets
+        whose parent window has never been shown.
+        """
         panel = main_window._layer_panel
         item = panel._list.item(0)
         from plottter.gui.layer_panel import _LayerItem
         widget = panel._list.itemWidget(item)
         assert isinstance(widget, _LayerItem)
         layer_id = widget.layer_id
-        # Enter edit mode first (simulates double-click), then type a new name
+        original_name = widget._name_label.text()
+
         widget._enter_edit_mode()
-        assert not widget._name_edit.isReadOnly()
+        # In edit mode the QLineEdit holds the same text as the label did.
+        assert widget._name_edit.text() == original_name
+
         widget._name_edit.setText("Edited Name")
         with qtbot.waitSignal(controller.layer_changed, timeout=1000):
             widget._name_edit.editingFinished.emit()
         assert controller.get_layer(layer_id).name == "Edited Name"
+        # After commit, the display label reflects the new name.
+        assert widget._name_label.text() == "Edited Name"
 
     def test_layer_item_name_edit_blank_reverts(self, main_window, controller):
-        """Editing the name to blank reverts to the current model name."""
+        """Editing the name to blank reverts to the original name."""
         panel = main_window._layer_panel
         item = panel._list.item(0)
         from plottter.gui.layer_panel import _LayerItem
@@ -610,12 +622,13 @@ class TestLayerPanelIntegration:
         assert isinstance(widget, _LayerItem)
         layer_id = widget.layer_id
         original_name = controller.get_layer(layer_id).name
-        # Enter edit mode first, then clear the text
         widget._enter_edit_mode()
         widget._name_edit.setText("")
         widget._name_edit.editingFinished.emit()
-        # Name should revert in the widget
-        assert widget._name_edit.text() == original_name
+        # Label is restored from the captured original name.
+        assert widget._name_label.text() == original_name
+        # Model name was not changed (blank input is dropped).
+        assert controller.get_layer(layer_id).name == original_name
 
 
 # ---------------------------------------------------------------------------
