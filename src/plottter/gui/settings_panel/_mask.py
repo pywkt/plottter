@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 import numpy as np
@@ -13,6 +14,66 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 from PIL import Image as _PilImage
+
+
+# Mask resolution — must match canvas_widget._MASK_PX_PER_MM.  One mask
+# pixel is 1 / 5 = 0.2 mm, which sets the achievable clip-boundary precision.
+_MASK_PX_PER_MM = 5
+
+
+def _clip_paths_to_mask(paths: list, mask) -> list:  # type: ignore[no-untyped-def]
+    """Clip *paths* to the in-mask region (mask value > 0.5).
+
+    Each segment is super-sampled at one-mask-pixel intervals so that the
+    boundary cut happens along the segment itself rather than at the next
+    vertex — see :meth:`_MaskMixin._clip_paths_to_mask` for context.
+
+    Module-level so it can be unit-tested without spinning up the panel.
+    """
+    h, w = mask.shape
+    step_mm = 1.0 / _MASK_PX_PER_MM
+
+    def _in_mask(x_mm: float, y_mm: float) -> bool:
+        px = int(x_mm * _MASK_PX_PER_MM)
+        py = int(y_mm * _MASK_PX_PER_MM)
+        return 0 <= px < w and 0 <= py < h and bool(mask[py, px] > 0.5)
+
+    def _supersample(polyline):
+        """Yield ``(x, y)`` along *polyline* spaced no more than ``step_mm`` apart.
+
+        The first vertex is always emitted; each subsequent segment is
+        subdivided into ``ceil(length / step_mm)`` equal sub-segments so
+        that the endpoint of every sub-segment lands on either the next
+        vertex or a fraction along the way — never overshooting.
+        """
+        if not polyline:
+            return
+        prev = polyline[0]
+        yield prev
+        for nxt in polyline[1:]:
+            dx, dy = nxt[0] - prev[0], nxt[1] - prev[1]
+            seg_len = math.hypot(dx, dy)
+            n = max(1, int(math.ceil(seg_len / step_mm)))
+            for i in range(1, n + 1):
+                t = i / n
+                yield (prev[0] + dx * t, prev[1] + dy * t)
+            prev = nxt
+
+    result: list = []
+    for polyline in paths:
+        if len(polyline) < 2:
+            continue
+        current_seg: list = []
+        for x_mm, y_mm in _supersample(polyline):
+            if _in_mask(x_mm, y_mm):
+                current_seg.append((x_mm, y_mm))
+            else:
+                if len(current_seg) >= 2:
+                    result.append(current_seg)
+                current_seg = []
+        if len(current_seg) >= 2:
+            result.append(current_seg)
+    return result
 
 
 class _MaskMixin:
@@ -254,28 +315,14 @@ class _MaskMixin:
     def _clip_paths_to_mask(self, paths: list, mask) -> list:  # type: ignore[no-untyped-def]
         """Return paths clipped to the painted mask region (mask value > 0.5).
 
-        Polylines are split wherever they pass through unpainted regions;
-        segments shorter than 2 points are discarded.
+        Each segment between two consecutive vertices is sampled at roughly
+        one mask-pixel intervals (~0.2 mm) so that the clip splits at the
+        actual mask boundary rather than at the next vertex.  Without this
+        a sparse polyline — e.g. a 2-point hatch fill line — would be
+        evaluated only at its endpoints; if both endpoints fell outside the
+        mask (or both inside an inverted mask), the entire line would be
+        dropped (or kept) even when it crossed the boundary in between.
+
+        Segments shorter than 2 points after clipping are discarded.
         """
-        # Import constant at runtime to avoid any circular-import risk
-        _MASK_PX_PER_MM = 5  # must match canvas_widget._MASK_PX_PER_MM
-        h, w = mask.shape
-        result: list = []
-
-        for polyline in paths:
-            current_seg: list = []
-            for pt in polyline:
-                x_mm, y_mm = pt
-                px = int(x_mm * _MASK_PX_PER_MM)
-                py = int(y_mm * _MASK_PX_PER_MM)
-                in_mask = 0 <= px < w and 0 <= py < h and mask[py, px] > 0.5
-                if in_mask:
-                    current_seg.append(pt)
-                else:
-                    if len(current_seg) >= 2:
-                        result.append(current_seg)
-                    current_seg = []
-            if len(current_seg) >= 2:
-                result.append(current_seg)
-
-        return result
+        return _clip_paths_to_mask(paths, mask)
