@@ -39,6 +39,7 @@ def _import_builtin_generators() -> None:
     from plottter.generators import scene3d_generator as _scene3d  # noqa: F401
     from plottter.generators import circular_scribble as _circular_scribble  # noqa: F401
     from plottter.generators import scanline_halftone as _scanline_halftone  # noqa: F401
+    from plottter.generators import paired_wave_shading as _paired_wave_shading  # noqa: F401
     from plottter.generators import dot_grid as _dot_grid  # noqa: F401
     from plottter.generators import concentric_rings as _concentric_rings  # noqa: F401
     from plottter.generators import geometric_grid as _geometric_grid  # noqa: F401
