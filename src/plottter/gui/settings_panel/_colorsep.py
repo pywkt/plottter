@@ -89,6 +89,49 @@ class _ColorSepMixin:
                 layout.addWidget(cb)
                 self._channel_checks[ch] = cb
 
+    def _on_cmyk_k_amount_changed(self, _value: float | None = None) -> None:
+        """Refresh cached CMYK channel masks when the K Amount spinbox moves.
+
+        ``cmyk_separate`` runs at separation time and the resulting channel
+        images are cached in ``_layer_masks`` keyed by layer ID — the layers
+        themselves are visible to the user.  Generate Lines reads from this
+        cache, never re-running ``cmyk_separate``.  Without this handler,
+        moving the K Amount spinbox after Separate had no effect: the K
+        layer's cached mask was frozen at the value used during the most
+        recent Separate click.
+
+        Approach: keep the visible layers and any user-generated paths
+        intact; swap the underlying mask array in-place so the *next*
+        Generate Lines uses the new K Amount.  Skips silently when no CMYK
+        separation has been done — the spinbox is only meaningful in that
+        context anyway.
+        """
+        if self._last_sep_method != "CMYK":
+            return
+        if self._cmyk_raw_rgb is None or not self._separated_layer_ids:
+            return
+        from plottter.color import cmyk_separate
+
+        new_results = cmyk_separate(
+            self._cmyk_raw_rgb,
+            k_amount=float(self._cmyk_k_amount_spin.value()),
+        )
+        # Apply the same channel checkbox filter the Separate step used so
+        # the post-filter ordering matches ``_separated_layer_ids``.
+        channel_names = ["Cyan", "Magenta", "Yellow", "Key (Black)"]
+        filtered = [
+            (mask, color)
+            for (mask, color), ch in zip(new_results, channel_names)
+            if ch not in self._channel_checks
+            or self._channel_checks[ch].isChecked()
+        ]
+        for layer_id, (new_mask, _color) in zip(self._separated_layer_ids, filtered):
+            cached = self._layer_masks.get(layer_id)
+            if cached is None:
+                continue
+            # Replace the mask, keep the preprocessed image reference.
+            self._layer_masks[layer_id] = (new_mask, cached[1])
+
     def _rebuild_color_sep_preset_combo(self) -> None:
         """Rebuild the color separation preset combo based on the selected generator."""
         self._color_sep_preset_combo.blockSignals(True)
@@ -365,6 +408,10 @@ class _ColorSepMixin:
                     raw_rgb = np.stack([raw_rgb] * 3, axis=-1)
                 elif raw_rgb.ndim == 3 and raw_rgb.shape[2] == 4:
                     raw_rgb = raw_rgb[:, :, :3]
+                # Stash the RGB input so changing K Amount can refresh the
+                # cached masks in-place without forcing a full re-separate.
+                self._cmyk_raw_rgb = raw_rgb
+                self._last_sep_method = "CMYK"
                 results = cmyk_separate(
                     raw_rgb,
                     k_amount=float(self._cmyk_k_amount_spin.value()),

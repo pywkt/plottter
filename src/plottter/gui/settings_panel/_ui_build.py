@@ -504,6 +504,10 @@ class _UIBuildMixin:
 
         # Connect method changed signal now that all dependent widgets exist
         self._color_sep_method_combo.currentTextChanged.connect(self._on_color_sep_method_changed)
+        # K Amount spin: refresh cached CMYK channel masks in-place so the
+        # next Generate Lines reflects the new value, without forcing the
+        # user to re-click Separate Into Layers.
+        self._cmyk_k_amount_spin.valueChanged.connect(self._on_cmyk_k_amount_changed)
         # Initialise label/range for the current (default) method
         self._on_color_sep_method_changed(self._color_sep_method_combo.currentText())
 
@@ -515,6 +519,11 @@ class _UIBuildMixin:
         # In-memory store for numpy arrays (mask, source_image) keyed by layer ID
         # Kept separate from generator_info so the project remains JSON-serializable.
         self._layer_masks: dict[str, tuple] = {}
+        # Cached RGB input + method name of the last separation run, used to
+        # cheaply refresh CMYK channel masks when K Amount changes without
+        # forcing a full Separate Into Layers re-run.
+        self._cmyk_raw_rgb = None  # type: ignore[var-annotated]
+        self._last_sep_method: str | None = None
 
         # ----------------------------------------------------------------
         # Mask Paint group (Mask Paint mode only)
