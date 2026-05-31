@@ -377,8 +377,10 @@ class _ProcessingOpsMixin:
         )
 
         s = self._opt_settings or {}
+
         worker = _OptimizeWorker(
             paths=list(layer.paths),
+            generator_info=layer.generator_info,
             run_weld=s.get("run_weld", False),
             weld_tolerance=s.get("weld_tolerance", 0.1),
             run_simplify=s.get("run_simplify", True),
