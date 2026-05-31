@@ -52,9 +52,10 @@ class TestPresetCounts:
 # ---------------------------------------------------------------------------
 
 class TestListPresets:
-    def test_returns_exactly_four_presets(self):
+    def test_returns_all_builtin_presets(self):
         presets = list_presets()
-        assert len(presets) == 4
+        assert len(presets) == len(PALETTE_PRESETS)
+        assert len(presets) >= 7  # baseline: don't accidentally lose presets
 
     def test_all_items_are_pen_palettes(self):
         for p in list_presets():
@@ -66,6 +67,9 @@ class TestListPresets:
         assert "Copic 12" in names
         assert "Sakura Metallic 5" in names
         assert "Grayscale 5" in names
+        assert "RYBK 4" in names
+        assert "CMYKOG 6" in names
+        assert "Risograph 6" in names
 
     def test_order_matches_palette_presets_dict(self):
         assert list_presets() == list(PALETTE_PRESETS.values())
@@ -119,7 +123,7 @@ class TestColorPackageReexport:
     def test_palette_presets_importable_from_color(self):
         from plottter.color import PALETTE_PRESETS as pp  # noqa: F401
         assert isinstance(pp, dict)
-        assert len(pp) == 4
+        assert len(pp) == len(PALETTE_PRESETS)
 
 
 # ---------------------------------------------------------------------------

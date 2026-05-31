@@ -21,6 +21,9 @@ from plottter.color.palettes.basic_6 import PALETTE as _BASIC_6
 from plottter.color.palettes.copic_12 import PALETTE as _COPIC_12
 from plottter.color.palettes.sakura_metallic_5 import PALETTE as _SAKURA_METALLIC_5
 from plottter.color.palettes.grayscale_5 import PALETTE as _GRAYSCALE_5
+from plottter.color.palettes.rybk_4 import PALETTE as _RYBK_4
+from plottter.color.palettes.cmykog_6 import PALETTE as _CMYKOG_6
+from plottter.color.palettes.risograph_6 import PALETTE as _RISOGRAPH_6
 
 #: Ordered dict of built-in presets, keyed by their canonical ``PenPalette.name``.
 PALETTE_PRESETS: dict[str, PenPalette] = {
@@ -28,6 +31,9 @@ PALETTE_PRESETS: dict[str, PenPalette] = {
     _COPIC_12.name: _COPIC_12,
     _SAKURA_METALLIC_5.name: _SAKURA_METALLIC_5,
     _GRAYSCALE_5.name: _GRAYSCALE_5,
+    _RYBK_4.name: _RYBK_4,
+    _CMYKOG_6.name: _CMYKOG_6,
+    _RISOGRAPH_6.name: _RISOGRAPH_6,
 }
 
 
