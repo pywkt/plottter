@@ -81,12 +81,15 @@ class CrtTvGenerator(Generator):
             ChoiceParam(
                 name="mask_type",
                 label="Mask Type",
-                choices=["shadow_mask"],
+                choices=["shadow_mask", "aperture_grille", "slot_mask"],
                 default="shadow_mask",
                 randomizable=False,
                 description=(
                     "Sub-pixel layout geometry.  shadow_mask places pens in a "
-                    "triangular triad (classic CRT dot pattern)."
+                    "triangular triad (classic CRT dot pattern).  "
+                    "aperture_grille uses vertical stripes (Sony Trinitron "
+                    "style).  slot_mask offsets stripes vertically per row "
+                    "(brick pattern)."
                 ),
             ),
             ChoiceParam(
@@ -223,6 +226,40 @@ class CrtTvGenerator(Generator):
                     "scanline_period": 2,
                     "vignette_strength": 0.2,
                     "barrel_strength": 0.0,
+                    "gamma": 1.0,
+                    "seed": 0,
+                },
+            ),
+            Preset(
+                name="Trinitron",
+                params={
+                    "palette": "Basic 6",
+                    "crt_resolution_w": 320,
+                    "mask_type": "aperture_grille",
+                    "subpixel_shape": "circle",
+                    "subpixel_size_mm": 0.20,
+                    "dither": "floyd-steinberg",
+                    "scanline_intensity": 0.4,
+                    "scanline_period": 2,
+                    "vignette_strength": 0.1,
+                    "barrel_strength": 0.0,
+                    "gamma": 1.0,
+                    "seed": 0,
+                },
+            ),
+            Preset(
+                name="VGA Monitor",
+                params={
+                    "palette": "Basic 6",
+                    "crt_resolution_w": 320,
+                    "mask_type": "slot_mask",
+                    "subpixel_shape": "circle",
+                    "subpixel_size_mm": 0.25,
+                    "dither": "floyd-steinberg",
+                    "scanline_intensity": 0.5,
+                    "scanline_period": 2,
+                    "vignette_strength": 0.2,
+                    "barrel_strength": 0.05,
                     "gamma": 1.0,
                     "seed": 0,
                 },

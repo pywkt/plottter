@@ -135,12 +135,12 @@ class TestParameters:
         assert p.max == 800
         assert p.randomizable is False
 
-    def test_mask_type_limited_to_shadow_mask(self):
+    def test_mask_type_choices(self):
         from plottter.generators.base import ChoiceParam
 
         p = self.by_name["mask_type"]
         assert isinstance(p, ChoiceParam)
-        assert p.choices == ["shadow_mask"]
+        assert p.choices == ["shadow_mask", "aperture_grille", "slot_mask"]
         assert p.default == "shadow_mask"
         assert p.randomizable is False
 
@@ -379,6 +379,121 @@ class TestGenerateLayers:
 # ---------------------------------------------------------------------------
 # Scanline and vignette effects
 # ---------------------------------------------------------------------------
+
+
+
+class TestMaskTypeLayouts:
+    """Verify subpixel x/y positions for aperture_grille and slot_mask."""
+
+    def setup_method(self):
+        from plottter.generators.crt_tv import CrtTvGenerator
+
+        self.gen = CrtTvGenerator()
+        self.canvas = _make_canvas()
+
+    def test_aperture_grille_pen0_x_positions(self):
+        """pen 0 x-positions match cell_origin_x + (0.5 / n_pens) * cell_size_x."""
+        from plottter.generators._helpers import compute_image_rect
+        from plottter.color import get_preset
+
+        # All-black image → pen 0 (#000000) gets all pixels with dither="none"
+        crt_w = 8
+        img = np.zeros((4, crt_w, 3), dtype=np.uint8)  # 4 rows, 8 cols
+
+        params = _base_params(
+            img,
+            mask_type="aperture_grille",
+            crt_resolution_w=crt_w,
+            dither="none",
+            scanline_intensity=0.0,
+            vignette_strength=0.0,
+            barrel_strength=0.0,
+            subpixel_shape="point",
+            subpixel_size_mm=0.01,
+        )
+        specs = self.gen.generate_layers(params, self.canvas)
+
+        pen0_specs = [s for s in specs if s.color.upper() == "#000000"]
+        assert pen0_specs, "Expected pen 0 (black) layer for aperture_grille"
+        pen0 = pen0_specs[0]
+
+        # Compute expected x positions
+        img_h, img_w = img.shape[:2]
+        draw_x1, draw_y1, draw_x2, draw_y2 = self.canvas.drawing_area()
+        rect_x1, _ry1, rect_x2, _ry2 = compute_image_rect(
+            "fit", img_w, img_h, draw_x1, draw_y1, draw_x2, draw_y2
+        )
+        cell_size_x = (rect_x2 - rect_x1) / crt_w
+        palette = get_preset("Basic 6")
+        n_pens = len(palette.colors)  # 6
+
+        x_frac = 0.5 / n_pens  # pen 0 aperture_grille offset
+        expected_xs = {
+            rect_x1 + col * cell_size_x + x_frac * cell_size_x
+            for col in range(crt_w)
+        }
+
+        tol = 1e-6
+        xs = [path[0][0] for path in pen0.paths]
+        for x in xs:
+            assert any(abs(x - ex) < tol for ex in expected_xs), (
+                f"aperture_grille pen 0: x={x:.6f} not in expected column x-positions"
+            )
+
+    def test_slot_mask_row_parity_y_positions(self):
+        """slot_mask even rows → y=0.35*cell, odd rows → y=0.65*cell (shifted by row)."""
+        from plottter.generators._helpers import compute_image_rect
+
+        # All-black image, exactly 2 rows to exercise both parities
+        crt_w = 4
+        img = np.zeros((2, crt_w, 3), dtype=np.uint8)
+
+        params = _base_params(
+            img,
+            mask_type="slot_mask",
+            crt_resolution_w=crt_w,
+            dither="none",
+            scanline_intensity=0.0,
+            vignette_strength=0.0,
+            barrel_strength=0.0,
+            subpixel_shape="point",
+            subpixel_size_mm=0.01,
+        )
+        specs = self.gen.generate_layers(params, self.canvas)
+
+        pen0_specs = [s for s in specs if s.color.upper() == "#000000"]
+        assert pen0_specs, "Expected pen 0 (black) layer for slot_mask"
+        pen0 = pen0_specs[0]
+
+        # Compute expected y positions
+        img_h, img_w = img.shape[:2]
+        draw_x1, draw_y1, draw_x2, draw_y2 = self.canvas.drawing_area()
+        _rx1, rect_y1, _rx2, rect_y2 = compute_image_rect(
+            "fit", img_w, img_h, draw_x1, draw_y1, draw_x2, draw_y2
+        )
+        crt_h = max(1, round(img_h * crt_w / img_w))  # 2
+        cell_size_y = (rect_y2 - rect_y1) / crt_h
+
+        # row 0 (even): cell_origin_y + 0.35 * cell_size_y
+        y_row0 = rect_y1 + 0 * cell_size_y + 0.35 * cell_size_y
+        # row 1 (odd): cell_origin_y + 0.65 * cell_size_y
+        y_row1 = rect_y1 + 1 * cell_size_y + 0.65 * cell_size_y
+
+        tol = 1e-6
+        ys = [path[0][1] for path in pen0.paths]
+        for y in ys:
+            assert abs(y - y_row0) < tol or abs(y - y_row1) < tol, (
+                f"slot_mask pen 0: y={y:.6f} doesn't match "
+                f"row 0 ({y_row0:.6f}) or row 1 ({y_row1:.6f})"
+            )
+
+        # Both rows must be represented
+        assert any(abs(y - y_row0) < tol for y in ys), (
+            "slot_mask: no row-0 y-position found"
+        )
+        assert any(abs(y - y_row1) < tol for y in ys), (
+            "slot_mask: no row-1 y-position found"
+        )
 
 class TestEffects:
     def setup_method(self):
@@ -639,3 +754,57 @@ class TestPresets:
     def test_preset_names_are_unique(self):
         names = [p.name for p in self.gen.get_presets()]
         assert len(names) == len(set(names))
+
+    def test_trinitron_preset_present(self):
+        names = [p.name for p in self.gen.get_presets()]
+        assert "Trinitron" in names
+
+    def test_trinitron_preset_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        tri = presets["Trinitron"]
+        assert tri.params["palette"] == "Basic 6"
+        assert tri.params["crt_resolution_w"] == 320
+        assert tri.params["mask_type"] == "aperture_grille"
+        assert tri.params["subpixel_shape"] == "circle"
+        assert tri.params["subpixel_size_mm"] == pytest.approx(0.20)
+        assert tri.params["dither"] == "floyd-steinberg"
+        assert tri.params["scanline_intensity"] == pytest.approx(0.4)
+        assert tri.params["scanline_period"] == 2
+        assert tri.params["vignette_strength"] == pytest.approx(0.1)
+        assert tri.params["barrel_strength"] == pytest.approx(0.0)
+        assert tri.params["gamma"] == pytest.approx(1.0)
+
+    def test_trinitron_preset_runs_and_emits_layers(self):
+        """Trinitron preset on a synthetic image should produce at least 1 layer."""
+        img = np.zeros((32, 128, 3), dtype=np.uint8)
+        img[:16, :] = [0, 0, 0]
+        img[16:, :] = [230, 57, 70]
+        specs = self._run_preset("Trinitron", image=img)
+        assert len(specs) >= 1
+
+    def test_vga_monitor_preset_present(self):
+        names = [p.name for p in self.gen.get_presets()]
+        assert "VGA Monitor" in names
+
+    def test_vga_monitor_preset_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        vga = presets["VGA Monitor"]
+        assert vga.params["palette"] == "Basic 6"
+        assert vga.params["crt_resolution_w"] == 320
+        assert vga.params["mask_type"] == "slot_mask"
+        assert vga.params["subpixel_shape"] == "circle"
+        assert vga.params["subpixel_size_mm"] == pytest.approx(0.25)
+        assert vga.params["dither"] == "floyd-steinberg"
+        assert vga.params["scanline_intensity"] == pytest.approx(0.5)
+        assert vga.params["scanline_period"] == 2
+        assert vga.params["vignette_strength"] == pytest.approx(0.2)
+        assert vga.params["barrel_strength"] == pytest.approx(0.05)
+        assert vga.params["gamma"] == pytest.approx(1.0)
+
+    def test_vga_monitor_preset_runs_and_emits_layers(self):
+        """VGA Monitor preset on a synthetic image should produce at least 1 layer."""
+        img = np.zeros((32, 128, 3), dtype=np.uint8)
+        img[:16, :] = [0, 0, 0]
+        img[16:, :] = [230, 57, 70]
+        specs = self._run_preset("VGA Monitor", image=img)
+        assert len(specs) >= 1
