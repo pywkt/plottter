@@ -55,7 +55,8 @@ def _import_builtin_generators() -> None:
     from plottter.generators import ascii_art as _ascii_art  # noqa: F401
     from plottter.generators import audio_waveform as _audio_waveform
     from plottter.generators import pixel_art as _pixel_art
-    from plottter.generators import map_generator as _map_generator  # noqa: F401  # noqa: F401  # noqa: F401
+    from plottter.generators import map_generator as _map_generator
+    from plottter.generators import pointillist as _pointillist  # noqa: F401  # noqa: F401  # noqa: F401  # noqa: F401
 
 
 def load_plugins(extra_dirs=None) -> list[str]:
