@@ -137,9 +137,20 @@ class TestMultilayerGenerationFinished:
 
         mock_controller.add_layer.side_effect = fake_add_layer
 
-        # Create a bare instance without calling __init__ (which needs Qt widgets)
+        # Create a bare instance without calling __init__ (which needs Qt widgets).
+        # The handler reads several panel-state attributes that the real __init__
+        # would have set up; stub them here so the test stays focused on the
+        # add_layer behaviour it actually asserts on:
+        #   _worker — checked + waited on before the macro runs (b8a80ab added
+        #     this to fix a regen race; None means the wait() branch is skipped).
+        #   _generator — looked up via getattr(self._generator, "name", "") when
+        #     tagging layers with their source generator's name.
+        # `_pending_multilayer_*` attributes are accessed via getattr-with-default
+        # in the handler, so they don't need stubbing here.
         obj = object.__new__(_GenerateMixin)
         obj._controller = mock_controller
+        obj._worker = None
+        obj._generator = None
         return obj, mock_controller, added_layers
 
     def test_calls_add_layer_for_each_spec(self):
