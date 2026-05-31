@@ -159,6 +159,19 @@ class _StubCombo:
             self._text, self._data = self._items[idx]
 
 
+class _StubBusyWidget:
+    """Stub for the separate button + progress bar — accepts the busy-state calls."""
+
+    def setEnabled(self, _enabled: bool) -> None:
+        pass
+
+    def setMaximum(self, _value: int) -> None:
+        pass
+
+    def setVisible(self, _visible: bool) -> None:
+        pass
+
+
 class _DispatchPanel(_ColorSepMixin):
     """Minimal stub panel for testing _on_separate dispatch without full Qt."""
 
@@ -174,6 +187,8 @@ class _DispatchPanel(_ColorSepMixin):
         self._separated_layer_ids: list = []
         self._layer_masks: dict = {}
         self._apply_results_calls: list = []
+        self._separate_btn = _StubBusyWidget()
+        self._color_sep_progress = _StubBusyWidget()
 
     def _get_preprocessing_params(self) -> dict:
         return {}

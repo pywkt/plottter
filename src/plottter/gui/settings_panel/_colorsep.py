@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import numpy as np
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QMessageBox,
@@ -443,6 +445,17 @@ class _ColorSepMixin:
             self._ai_segment_worker.start()
             return  # layer creation happens asynchronously in _on_ai_segment_finished
 
+        # The synchronous separators (K-Means, Luminance, RGB, CMYK, Custom
+        # Palette) can take several seconds on large images and block the GUI
+        # thread.  Show a busy cursor + indeterminate progress bar + disable
+        # the Separate button so the user sees the app is working.  AI gets
+        # its own progress already (see the return above).
+        self._separate_btn.setEnabled(False)
+        self._color_sep_progress.setMaximum(0)  # indeterminate
+        self._color_sep_progress.setVisible(True)
+        QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+        QApplication.processEvents()  # flush so the user sees the busy state
+
         try:
             if method == "K-Means":
                 from plottter.color import kmeans_separate
@@ -535,6 +548,11 @@ class _ColorSepMixin:
         except Exception as exc:
             QMessageBox.critical(self, "Separation Error", str(exc))
             return
+        finally:
+            QApplication.restoreOverrideCursor()
+            self._color_sep_progress.setMaximum(100)
+            self._color_sep_progress.setVisible(False)
+            self._separate_btn.setEnabled(True)
 
         self._apply_separation_results(results, layer_names, method, preprocessed)
 
