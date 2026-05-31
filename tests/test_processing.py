@@ -240,9 +240,41 @@ class TestMerge:
         path_b = [(10.0, 0.0), (5.1, 0.0)]
         result = merge_nearby_paths([path_a, path_b], threshold_mm=0.5)
         assert len(result) == 1
-        # Should form a connected polyline
+        # Should form a connected polyline (start + snapped junction + end).
         merged = result[0]
-        assert len(merged) >= 4
+        assert len(merged) >= 3
+        assert merged[0] == (0.0, 0.0)
+        assert merged[-1] == (10.0, 0.0)
+
+    def test_merge_snaps_to_midpoint_no_phantom_bridge(self) -> None:
+        """Joining paths with a non-zero gap must snap the junction to the
+        midpoint of the gap rather than encoding a straight-line bridge.
+
+        Regression: the old code appended path B verbatim, so the resulting
+        polyline contained both endpoints of the gap as consecutive vertices
+        — telling the plotter to draw a visible line across the gap. On dense
+        map plots this produced phantom 'roads' wherever two real roads ended
+        close to each other.
+        """
+        path_a = [(0.0, 0.0), (5.0, 0.0)]
+        path_b = [(5.4, 0.0), (10.0, 0.0)]  # 0.4mm gap
+        result = merge_nearby_paths([path_a, path_b], threshold_mm=0.5)
+        assert len(result) == 1
+        merged = result[0]
+        # Exactly one snapped point at the midpoint of the gap.
+        assert merged == [(0.0, 0.0), (5.2, 0.0), (10.0, 0.0)]
+        # Neither the original end-of-A nor the original start-of-B should
+        # appear as separate vertices — that's what created the phantom line.
+        assert (5.0, 0.0) not in merged
+        assert (5.4, 0.0) not in merged
+
+    def test_merge_keeps_coincident_join_lossless(self) -> None:
+        """When endpoints are already exactly coincident, the merge should drop
+        the duplicate point but keep every other vertex intact."""
+        path_a = [(0.0, 0.0), (5.0, 0.0)]
+        path_b = [(5.0, 0.0), (10.0, 0.0)]
+        result = merge_nearby_paths([path_a, path_b], threshold_mm=0.5)
+        assert result == [[(0.0, 0.0), (5.0, 0.0), (10.0, 0.0)]]
 
 
 # ---------------------------------------------------------------------------

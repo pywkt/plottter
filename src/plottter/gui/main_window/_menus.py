@@ -265,8 +265,13 @@ class _MenusMixin:
         self._act_clip.triggered.connect(self._on_clip_layer)
         tools_menu.addAction(self._act_clip)
 
-        self._act_weld = QAction("Weld Overlapping Paths", self)
-        self._act_weld.setToolTip("Remove duplicate overlapping segments across paths in the active layer")
+        self._act_weld = QAction("Remove Duplicate Segments", self)
+        self._act_weld.setToolTip(
+            "De-duplicate overlapping segments across paths in the active "
+            "layer — when two paths cover the same line, the second one's "
+            "copy is dropped so the pen doesn't draw it twice. Does not "
+            "join paths; use Merge Nearby Paths for that."
+        )
         self._act_weld.triggered.connect(self._on_weld_layer)
         tools_menu.addAction(self._act_weld)
 

@@ -14,14 +14,20 @@ from PyQt6.QtCore import QSettings
 
 
 class WeldDialog(QDialog):
-    """Modal dialog for configuring the Weld Overlapping Paths tolerance."""
+    """Modal dialog for configuring the Remove Duplicate Segments tolerance.
+
+    (Internal name kept as ``WeldDialog`` for compatibility with existing
+    imports — the user-facing label is now "Remove Duplicate Segments" since
+    the old "Weld" wording was widely misread as "join touching paths into
+    one path", which is actually what Merge Nearby Paths does.)
+    """
 
     _SETTINGS_KEY = "tools/weld_tolerance"
     _DEFAULT_TOLERANCE = 0.1
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Weld Overlapping Paths")
+        self.setWindowTitle("Remove Duplicate Segments")
         self.setMinimumWidth(340)
 
         layout = QVBoxLayout(self)
@@ -37,8 +43,9 @@ class WeldDialog(QDialog):
         self._tolerance_spin.setDecimals(2)
         self._tolerance_spin.setSuffix(" mm")
         self._tolerance_spin.setToolTip(
-            "Segments within this distance are considered overlapping and will be "
-            "removed. Higher = more aggressive welding."
+            "Two segments within this distance of each other are treated as "
+            "duplicates — the later one is dropped so the pen doesn't draw "
+            "the same line twice. Higher = more aggressive de-duplication."
         )
 
         settings = QSettings("Plottter", "Plottter")

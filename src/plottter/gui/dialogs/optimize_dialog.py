@@ -56,9 +56,15 @@ class OptimizeSettingsDialog(QDialog):
         pre_layout = QVBoxLayout(pre_group)
         pre_layout.setSpacing(6)
 
-        self._weld_check = QCheckBox("Weld overlapping paths")
+        self._weld_check = QCheckBox("Remove duplicate segments")
+        self._weld_check.setToolTip(
+            "Drop overlapping segments so the pen doesn't redraw the same "
+            "line twice (e.g. shared borders between regions). Does not "
+            "join paths — see 'Merge nearby endpoints' for that."
+        )
         self._weld_tol_spin = self._make_spin(0.01, 2.0, 0.05, 2, " mm",
-            "Segments within this distance are treated as overlapping and removed.")
+            "Two segments within this distance are treated as duplicates; "
+            "the later one is dropped.")
         pre_layout.addWidget(self._weld_check)
         pre_layout.addLayout(self._indent(self._labeled_spin("Tolerance:", self._weld_tol_spin)))
 
@@ -86,8 +92,17 @@ class OptimizeSettingsDialog(QDialog):
         merge_layout.setSpacing(6)
 
         self._merge_check = QCheckBox("Merge nearby endpoints")
+        self._merge_check.setToolTip(
+            "Join paths whose endpoints are within the threshold into one "
+            "continuous polyline. Non-coincident endpoints are snapped to "
+            "the midpoint of the gap so no phantom line is drawn across it "
+            "— important for maps where roads often end a fraction of a mm "
+            "from each other."
+        )
         self._merge_thresh_spin = self._make_spin(0.01, 10.0, 0.1, 2, " mm",
-            "Endpoints closer than this distance are joined into a single path.")
+            "Endpoints closer than this distance are snapped together and "
+            "joined into a single path. Set this tighter (e.g. 0.05 mm) for "
+            "maps to avoid joining roads that aren't actually connected.")
         merge_layout.addWidget(self._merge_check)
         merge_layout.addLayout(self._indent(self._labeled_spin("Threshold:", self._merge_thresh_spin)))
 

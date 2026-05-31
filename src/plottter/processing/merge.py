@@ -15,6 +15,13 @@ def merge_nearby_paths(paths: list[Polyline], threshold_mm: float = 0.5) -> list
     is within the threshold of an endpoint from a different path, the two
     paths are merged into a single continuous polyline.
 
+    When the two endpoints are not exactly coincident, the join point is
+    *snapped to the midpoint* of the gap (and the duplicate point dropped) so
+    a polyline does not silently encode a phantom straight line across the
+    gap. This is critical for map / road plots where road endpoints often sit
+    a fraction of a mm apart at intersections — the old behaviour drew a
+    visible "road" through every such gap.
+
     The algorithm is greedy and single-pass: once a path is merged into
     another it is marked as consumed and will not be merged again. This
     avoids creating long chains in one pass but reliably reduces the number
@@ -90,14 +97,23 @@ def merge_nearby_paths(paths: list[Polyline], threshold_mm: float = 0.5) -> list
                 j = best_j
                 if best_reverse_j:
                     working[j] = working[j][::-1]
-                # Merge: drop duplicate junction point if exactly equal
+                # Snap the join point to the midpoint of the gap so the polyline
+                # doesn't encode a straight line across it. We drop j's first
+                # point and replace i's last point with the midpoint — losing
+                # one redundant vertex on each side instead of drawing through
+                # the gap as the old behaviour did.
                 junction_i = working[i][-1]
                 junction_j = working[j][0]
                 if (abs(junction_i[0] - junction_j[0]) < 1e-9 and
                         abs(junction_i[1] - junction_j[1]) < 1e-9):
+                    # Already coincident — no snap needed, just drop duplicate.
                     working[i] = working[i] + working[j][1:]
                 else:
-                    working[i] = working[i] + working[j]
+                    mid: tuple[float, float] = (
+                        (junction_i[0] + junction_j[0]) * 0.5,
+                        (junction_i[1] + junction_j[1]) * 0.5,
+                    )
+                    working[i] = working[i][:-1] + [mid] + working[j][1:]
                 consumed[j] = True
                 changed = True
 
@@ -199,12 +215,15 @@ def merge_fragments(
                 j = best_j
                 if best_rev_j:
                     working[j] = working[j][::-1]
+                # Snap to the midpoint of the gap instead of leaving a hidden
+                # straight-line bridge inside the resulting polyline.
                 ix, iy = working[i][-1]
                 jx, jy = working[j][0]
                 if abs(ix - jx) < 1e-9 and abs(iy - jy) < 1e-9:
                     working[i] = working[i] + working[j][1:]
                 else:
-                    working[i] = working[i] + working[j]
+                    mid_a: tuple[float, float] = ((ix + jx) * 0.5, (iy + jy) * 0.5)
+                    working[i] = working[i][:-1] + [mid_a] + working[j][1:]
                 consumed[j] = True
                 changed = True
                 # Skip phase B this pass; the next outer iteration will
@@ -238,13 +257,15 @@ def merge_fragments(
                 j = best_j
                 if best_rev_j:
                     working[j] = working[j][::-1]
-                # j's end is now near i's start — prepend j to i
+                # j's end is now near i's start — prepend j to i, snapping the
+                # join to the midpoint so no phantom bridge appears.
                 jx, jy = working[j][-1]
                 ix, iy = working[i][0]
                 if abs(jx - ix) < 1e-9 and abs(jy - iy) < 1e-9:
                     working[i] = working[j][:-1] + working[i]
                 else:
-                    working[i] = working[j] + working[i]
+                    mid_b: tuple[float, float] = ((jx + ix) * 0.5, (jy + iy) * 0.5)
+                    working[i] = working[j][:-1] + [mid_b] + working[i][1:]
                 consumed[j] = True
                 changed = True
 

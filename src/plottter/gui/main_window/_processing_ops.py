@@ -66,7 +66,7 @@ class _ProcessingOpsMixin:
 
         total = len(layer.paths)
         progress = QProgressDialog(
-            f"Welding overlapping paths in '{layer.name}'…", "Cancel", 0, total, self
+            f"Removing duplicate segments in '{layer.name}'…", "Cancel", 0, total, self
         )
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.show()
@@ -80,18 +80,18 @@ class _ProcessingOpsMixin:
 
         def on_finished(new_paths: list, before_count: int, after_count: int) -> None:
             progress.close()
-            self._controller.set_layer_paths(layer_id, new_paths, "Weld Overlapping Paths")
+            self._controller.set_layer_paths(layer_id, new_paths, "Remove Duplicate Segments")
             removed = before_count - after_count
             self.statusBar().showMessage(
-                f"Weld complete: {before_count} → {after_count} paths "
-                f"({removed} removed).",
+                f"Duplicate-segment removal complete: {before_count} → "
+                f"{after_count} paths ({removed} removed).",
                 5000,
             )
             worker.deleteLater()
 
         def on_error(msg: str) -> None:
             progress.close()
-            QMessageBox.critical(self, "Weld Error", msg)
+            QMessageBox.critical(self, "Remove Duplicate Segments — Error", msg)
             worker.deleteLater()
 
         def on_cancelled() -> None:
@@ -99,7 +99,7 @@ class _ProcessingOpsMixin:
 
         def on_weld_cancelled() -> None:
             progress.close()
-            self.statusBar().showMessage("Weld cancelled.", 3000)
+            self.statusBar().showMessage("Duplicate-segment removal cancelled.", 3000)
             worker.deleteLater()
 
         worker.progress.connect(on_progress)
