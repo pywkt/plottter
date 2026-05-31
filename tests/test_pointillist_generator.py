@@ -127,14 +127,18 @@ class TestParameters:
         assert set(p.choices) == {"none", "floyd-steinberg", "ordered", "atkinson"}
         assert p.randomizable is False
 
-    def test_dot_style_restricted_to_point(self):
+    def test_dot_style_choices(self):
         from plottter.generators.base import ChoiceParam
 
         p = self.by_name["dot_style"]
         assert isinstance(p, ChoiceParam)
-        assert p.choices == ["point"]
+        assert p.choices == ["point", "cross", "circle"]
         assert p.default == "point"
         assert p.randomizable is False
+
+    def test_dot_size_mm_visible_when(self):
+        p = self.by_name["dot_size_mm"]
+        assert p.visible_when == {"dot_style": ["cross", "circle"]}
 
     def test_dot_size_mm_float_param(self):
         from plottter.generators.base import FloatParam
@@ -215,6 +219,85 @@ class TestGenerateLayers:
         del params["_source_image"]
         specs = self.gen.generate_layers(params, self.canvas)
         assert specs == []
+
+
+# ---------------------------------------------------------------------------
+# dot styles
+# ---------------------------------------------------------------------------
+
+class TestDotStyles:
+    """cross doubles polyline count; circle gives 13-point polylines; size scales."""
+
+    def setup_method(self):
+        from plottter.generators.pointillist import PointillistGenerator
+
+        self.gen = PointillistGenerator()
+        self.canvas = _make_canvas()
+        self.image = _make_basic6_image()
+
+    def _total_paths(self, **overrides) -> list:
+        params = _base_params(self.image, **overrides)
+        specs = self.gen.generate_layers(params, self.canvas)
+        paths = []
+        for spec in specs:
+            paths.extend(spec.paths)
+        return paths
+
+    def test_cross_doubles_polyline_count_vs_point(self):
+        point_paths = self._total_paths(dot_style="point")
+        cross_paths = self._total_paths(dot_style="cross")
+        assert len(point_paths) > 0, "Expected at least one layer with point style"
+        assert len(cross_paths) == len(point_paths) * 2, (
+            f"cross should produce 2x polylines: point={len(point_paths)}, "
+            f"cross={len(cross_paths)}"
+        )
+
+    def test_circle_polylines_have_12_points(self):
+        circle_paths = self._total_paths(dot_style="circle")
+        assert len(circle_paths) > 0, "Expected at least one layer with circle style"
+        for path in circle_paths:
+            assert len(path) == 12, (
+                f"circle polyline should have 12 vertices, got {len(path)}"
+            )
+
+    def test_dot_size_scales_cross_spatial_extent(self):
+        small_paths = self._total_paths(dot_style="cross", dot_size_mm=0.2)
+        large_paths = self._total_paths(dot_style="cross", dot_size_mm=2.0)
+        assert len(small_paths) > 0
+
+        def arm_length(path):
+            x0, y0 = path[0]
+            x1, y1 = path[1]
+            return ((x1 - x0) ** 2 + (y1 - y0) ** 2) ** 0.5
+
+        small_len = arm_length(small_paths[0])
+        large_len = arm_length(large_paths[0])
+        assert large_len > small_len * 5, (
+            f"larger dot_size_mm should produce proportionally longer cross arms: "
+            f"small={small_len:.4f}, large={large_len:.4f}"
+        )
+
+    def test_dot_size_scales_circle_radius(self):
+        import math
+
+        small_paths = self._total_paths(dot_style="circle", dot_size_mm=0.4)
+        large_paths = self._total_paths(dot_style="circle", dot_size_mm=2.0)
+        assert len(small_paths) > 0
+
+        def circle_radius(path):
+            # Estimate radius from first vertex relative to centroid
+            xs = [p[0] for p in path]
+            ys = [p[1] for p in path]
+            cx = sum(xs) / len(xs)
+            cy = sum(ys) / len(ys)
+            return math.hypot(path[0][0] - cx, path[0][1] - cy)
+
+        small_r = circle_radius(small_paths[0])
+        large_r = circle_radius(large_paths[0])
+        assert large_r > small_r * 3, (
+            f"larger dot_size_mm should produce proportionally larger circle radius: "
+            f"small_r={small_r:.4f}, large_r={large_r:.4f}"
+        )
 
 
 # ---------------------------------------------------------------------------

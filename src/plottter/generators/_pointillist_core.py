@@ -180,7 +180,7 @@ def render_dots(
 
         - ``point``  → 1 polyline per dot, length 2.
         - ``cross``  → 2 polylines per dot, length 2 each.
-        - ``circle`` → 1 polyline per dot, 13 points (12 vertices + close).
+        - ``circle`` → 1 polyline per dot, 12 points (12 vertices).
     """
     if style == "point":
         return _render_points(coords_mm)
@@ -215,14 +215,14 @@ def _render_crosses(coords_mm: np.ndarray, size_mm: float) -> list[Polyline]:
 
 
 def _render_circles(coords_mm: np.ndarray, size_mm: float) -> list[Polyline]:
-    """1 closed polyline (12 vertices + closing point) per dot."""
+    """1 closed polyline of 12 vertices per dot."""
     r = size_mm * 0.5
     result: list[Polyline] = []
-    angles = [2.0 * math.pi * k / _CIRCLE_SIDES for k in range(_CIRCLE_SIDES + 1)]
+    angles = [2.0 * math.pi * k / _CIRCLE_SIDES for k in range(_CIRCLE_SIDES)]
     cos_a = [math.cos(a) for a in angles]
     sin_a = [math.sin(a) for a in angles]
     for row in coords_mm:
         x, y = float(row[0]), float(row[1])
-        pts: Polyline = [(x + r * cos_a[k], y + r * sin_a[k]) for k in range(_CIRCLE_SIDES + 1)]
+        pts: Polyline = [(x + r * cos_a[k], y + r * sin_a[k]) for k in range(_CIRCLE_SIDES)]
         result.append(pts)
     return result

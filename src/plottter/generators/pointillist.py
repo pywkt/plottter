@@ -82,12 +82,14 @@ class PointillistGenerator(Generator):
             ChoiceParam(
                 name="dot_style",
                 label="Dot Style",
-                choices=["point"],
+                choices=["point", "cross", "circle"],
                 default="point",
                 randomizable=False,
                 description=(
                     "Shape rendered at each dot position. "
-                    "'point' draws a minimal pen-down mark."
+                    "'point' draws a minimal pen-down mark; "
+                    "'cross' draws two perpendicular strokes; "
+                    "'circle' draws a closed circular outline."
                 ),
             ),
             FloatParam(
@@ -98,6 +100,7 @@ class PointillistGenerator(Generator):
                 step=0.1,
                 default=0.5,
                 randomizable=False,
+                visible_when={"dot_style": ["cross", "circle"]},
                 description=(
                     "Dot size in mm. Used by 'cross' and 'circle' styles; "
                     "ignored by 'point'."
