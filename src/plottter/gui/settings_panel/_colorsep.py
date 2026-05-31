@@ -71,6 +71,7 @@ class _ColorSepMixin:
         self._cmyk_k_amount_widget.setVisible(is_cmyk)
         # Palette picker is only shown for Custom Palette mode.
         self._palette_picker_widget.setVisible(is_palette)
+        self._palette_dither_combo.setVisible(is_palette)
 
         if is_palette:
             self._populate_palette_picker()
@@ -211,6 +212,11 @@ class _ColorSepMixin:
                 else result.name
             )
             self._populate_palette_picker(select_name=display_name)
+
+    def _on_palette_dither_changed(self, text: str) -> None:
+        """Persist the selected dither method to QSettings."""
+        from PyQt6.QtCore import QSettings
+        QSettings("Plottter", "Plottter").setValue("colorsep/palette_dither", text)
 
     def _rebuild_color_sep_preset_combo(self) -> None:
         """Rebuild the color separation preset combo based on the selected generator."""
@@ -518,7 +524,11 @@ class _ColorSepMixin:
                 if palette is None:
                     QMessageBox.warning(self, "No Palette", "Please select a palette.")
                     return
-                results = palette_separate(raw_rgb, palette, dither="none")
+                results = palette_separate(
+                    raw_rgb,
+                    palette,
+                    dither=self._palette_dither_combo.currentText().lower(),
+                )
                 layer_names = [f"Pen: {color}" for _, color in results]
             else:
                 return

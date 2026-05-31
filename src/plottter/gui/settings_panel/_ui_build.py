@@ -462,6 +462,20 @@ class _UIBuildMixin:
         palette_picker_form.setContentsMargins(0, 0, 0, 0)
         self._palette_picker_combo = QComboBox()
         palette_picker_form.addRow(QLabel("Palette"), self._palette_picker_combo)
+        self._palette_dither_combo = QComboBox()
+        for _dither_opt in ("None", "Floyd-Steinberg", "Ordered", "Atkinson"):
+            self._palette_dither_combo.addItem(_dither_opt)
+        from PyQt6.QtCore import QSettings as _QS
+        _saved_dither = _QS("Plottter", "Plottter").value(
+            "colorsep/palette_dither", "Floyd-Steinberg"
+        )
+        _dither_idx = self._palette_dither_combo.findText(_saved_dither)
+        if _dither_idx >= 0:
+            self._palette_dither_combo.setCurrentIndex(_dither_idx)
+        palette_picker_form.addRow(QLabel("Dither"), self._palette_dither_combo)
+        self._palette_dither_combo.currentTextChanged.connect(
+            self._on_palette_dither_changed
+        )
         palette_picker_vbox.addLayout(palette_picker_form)
         self._palette_edit_btn = QPushButton("Edit / New Palette\u2026")
         palette_picker_vbox.addWidget(self._palette_edit_btn)
