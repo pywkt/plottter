@@ -183,6 +183,54 @@ def vignette_mask(
 
 
 # ---------------------------------------------------------------------------
+# Subpixel rectangle rendering (for aperture_grille / slot_mask masks)
+# ---------------------------------------------------------------------------
+
+def render_subpixel_rects(
+    coords_mm: np.ndarray,
+    width_mm: float,
+    height_mm: float,
+) -> list:
+    """Render each centre point as a filled vertical rectangle.
+
+    Produces two polylines per centre: a 5-point closed outline rect plus a
+    centred vertical fill stroke.  The two together visibly fill the bar at
+    typical pen widths (the outline alone leaves a hollow centre at larger
+    widths; the fill alone leaves a thin line).
+
+    Parameters
+    ----------
+    coords_mm:
+        (N, 2) float array of (x, y) bar-centre coordinates in mm.
+    width_mm:
+        Bar width in mm (horizontal extent).  Controls bar thickness.
+    height_mm:
+        Bar height in mm (vertical extent).  Typically ~85% of the
+        per-cell vertical pitch so adjacent bars leave a visible gap.
+
+    Returns
+    -------
+    list of polylines: ``[outline, fill, outline, fill, …]`` — two per centre.
+    """
+    half_w = width_mm / 2.0
+    half_h = height_mm / 2.0
+    out: list = []
+    for row in coords_mm:
+        cx, cy = float(row[0]), float(row[1])
+        outline = [
+            (cx - half_w, cy - half_h),
+            (cx + half_w, cy - half_h),
+            (cx + half_w, cy + half_h),
+            (cx - half_w, cy + half_h),
+            (cx - half_w, cy - half_h),
+        ]
+        fill = [(cx, cy - half_h), (cx, cy + half_h)]
+        out.append(outline)
+        out.append(fill)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Barrel warp
 # ---------------------------------------------------------------------------
 

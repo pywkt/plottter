@@ -9,6 +9,7 @@ import pytest
 
 from plottter.generators._crt_core import (
     barrel_warp,
+    render_subpixel_rects,
     scanline_mask,
     subpixel_layout,
     vignette_mask,
@@ -434,3 +435,52 @@ class TestBarrelWarp:
         r_before = abs(point[0, 0] - centre[0])
         r_after = abs(out[0, 0] - centre[0])
         assert r_after > r_before
+
+
+# ---------------------------------------------------------------------------
+# render_subpixel_rects
+# ---------------------------------------------------------------------------
+
+class TestRenderSubpixelRects:
+    def test_two_polylines_per_centre(self):
+        coords = np.array([[10.0, 20.0], [30.0, 40.0], [50.0, 60.0]])
+        out = render_subpixel_rects(coords, width_mm=0.5, height_mm=2.0)
+        assert len(out) == 6  # 2 polylines per centre × 3 centres
+
+    def test_outline_is_5_point_closed_rect(self):
+        coords = np.array([[10.0, 20.0]])
+        out = render_subpixel_rects(coords, width_mm=0.4, height_mm=2.0)
+        outline = out[0]
+        assert len(outline) == 5
+        assert outline[0] == outline[-1]  # closed
+        # Width: max_x - min_x = 0.4
+        xs = [p[0] for p in outline]
+        assert max(xs) - min(xs) == pytest.approx(0.4)
+        # Height: max_y - min_y = 2.0
+        ys = [p[1] for p in outline]
+        assert max(ys) - min(ys) == pytest.approx(2.0)
+
+    def test_outline_centred_on_input_coord(self):
+        coords = np.array([[10.0, 20.0]])
+        out = render_subpixel_rects(coords, width_mm=0.4, height_mm=2.0)
+        outline = out[0]
+        xs = [p[0] for p in outline]
+        ys = [p[1] for p in outline]
+        # Centre = mean of min/max in both axes
+        assert (min(xs) + max(xs)) / 2.0 == pytest.approx(10.0)
+        assert (min(ys) + max(ys)) / 2.0 == pytest.approx(20.0)
+
+    def test_fill_is_2_point_vertical_stroke(self):
+        coords = np.array([[10.0, 20.0]])
+        out = render_subpixel_rects(coords, width_mm=0.4, height_mm=2.0)
+        fill = out[1]
+        assert len(fill) == 2
+        # Same x (vertical line)
+        assert fill[0][0] == pytest.approx(fill[1][0])
+        # Spans the full bar height
+        assert abs(fill[1][1] - fill[0][1]) == pytest.approx(2.0)
+
+    def test_empty_input_returns_empty_list(self):
+        coords = np.empty((0, 2), dtype=np.float64)
+        out = render_subpixel_rects(coords, width_mm=0.5, height_mm=2.0)
+        assert out == []

@@ -95,12 +95,14 @@ class CrtTvGenerator(Generator):
             ChoiceParam(
                 name="subpixel_shape",
                 label="Subpixel Shape",
-                choices=["circle", "cross", "point"],
+                choices=["circle", "cross", "point", "rect"],
                 default="circle",
                 randomizable=False,
                 description=(
-                    "Shape drawn at each subpixel position.  Same vocabulary as "
-                    "PointillistGenerator."
+                    "Shape drawn at each subpixel position.  'circle'/'cross'/'point' "
+                    "match PointillistGenerator's vocabulary; 'rect' draws a vertical "
+                    "filled bar sized to the cell — physically accurate for "
+                    "aperture_grille and slot_mask masks."
                 ),
             ),
             FloatParam(
@@ -236,7 +238,7 @@ class CrtTvGenerator(Generator):
                     "palette": "Basic 6",
                     "crt_resolution_w": 320,
                     "mask_type": "aperture_grille",
-                    "subpixel_shape": "circle",
+                    "subpixel_shape": "rect",
                     "subpixel_size_mm": 0.20,
                     "dither": "floyd-steinberg",
                     "scanline_intensity": 0.4,
@@ -253,7 +255,7 @@ class CrtTvGenerator(Generator):
                     "palette": "Basic 6",
                     "crt_resolution_w": 320,
                     "mask_type": "slot_mask",
-                    "subpixel_shape": "circle",
+                    "subpixel_shape": "rect",
                     "subpixel_size_mm": 0.25,
                     "dither": "floyd-steinberg",
                     "scanline_intensity": 0.5,
@@ -315,6 +317,7 @@ class CrtTvGenerator(Generator):
         from plottter.color import get_preset, palette_separate
         from plottter.generators._crt_core import (
             barrel_warp,
+            render_subpixel_rects,
             scanline_mask,
             subpixel_layout,
             vignette_mask,
@@ -446,9 +449,19 @@ class CrtTvGenerator(Generator):
                     coords_mm, centre_mm, barrel_strength, max_radius_mm
                 )
 
-            paths = render_dots(
-                coords_mm, style=subpixel_shape, size_mm=subpixel_size_mm
-            )
+            if subpixel_shape == "rect":
+                # Vertical bar sized to fill most of the cell vertically — the
+                # 0.85 fraction leaves a small top/bottom gap so the scanline
+                # rows stay visible between adjacent bars.
+                paths = render_subpixel_rects(
+                    coords_mm,
+                    width_mm=subpixel_size_mm,
+                    height_mm=cell_size_y * 0.85,
+                )
+            else:
+                paths = render_dots(
+                    coords_mm, style=subpixel_shape, size_mm=subpixel_size_mm
+                )
 
             if paths:
                 layer_specs.append(

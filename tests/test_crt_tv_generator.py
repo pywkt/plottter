@@ -149,7 +149,7 @@ class TestParameters:
 
         p = self.by_name["subpixel_shape"]
         assert isinstance(p, ChoiceParam)
-        assert set(p.choices) == {"circle", "cross", "point"}
+        assert set(p.choices) == {"circle", "cross", "point", "rect"}
         assert p.default == "circle"
         assert p.randomizable is False
 
@@ -667,6 +667,119 @@ class TestEffects:
 
 
 # ---------------------------------------------------------------------------
+# subpixel_shape="rect" — vertical bar rendering
+# ---------------------------------------------------------------------------
+
+class TestRectSubpixelShape:
+    """Verify subpixel_shape='rect' emits filled vertical bars (outline + fill)."""
+
+    def setup_method(self):
+        from plottter.generators.crt_tv import CrtTvGenerator
+
+        self.gen = CrtTvGenerator()
+        self.canvas = _make_canvas()
+
+    def test_rect_emits_outline_plus_fill_per_subpixel(self):
+        """Each subpixel should produce 2 polylines: a 5-point closed outline
+        rect plus a 2-point central vertical fill stroke.
+        """
+        img = np.zeros((4, 8, 3), dtype=np.uint8)  # all-black → pen 0 only
+        params = _base_params(
+            img,
+            mask_type="aperture_grille",
+            crt_resolution_w=8,
+            dither="none",
+            scanline_intensity=0.0,
+            vignette_strength=0.0,
+            barrel_strength=0.0,
+            subpixel_shape="rect",
+            subpixel_size_mm=0.3,
+        )
+        specs = self.gen.generate_layers(params, self.canvas)
+        pen0 = next(s for s in specs if s.color.upper() == "#000000")
+
+        n_pixels = 4 * 8
+        assert len(pen0.paths) == 2 * n_pixels, (
+            f"rect shape should emit 2 polylines per subpixel; got {len(pen0.paths)} for {n_pixels} pixels"
+        )
+
+        # Pair up: outlines (5-point closed) and fills (2-point vertical line)
+        outlines = [p for p in pen0.paths if len(p) == 5]
+        fills = [p for p in pen0.paths if len(p) == 2]
+        assert len(outlines) == n_pixels
+        assert len(fills) == n_pixels
+
+        # First outline closes back to start
+        assert outlines[0][0] == outlines[0][-1]
+        # First fill is a vertical line (constant x, different y)
+        f = fills[0]
+        assert f[0][0] == pytest.approx(f[1][0]), "rect fill should be vertical"
+        assert f[0][1] != f[1][1]
+
+    def test_rect_height_scales_with_cell_size(self):
+        """The bar height should be ~85% of cell_size_y."""
+        from plottter.generators._helpers import compute_image_rect
+
+        img = np.zeros((4, 8, 3), dtype=np.uint8)
+        crt_w = 8
+        params = _base_params(
+            img,
+            mask_type="aperture_grille",
+            crt_resolution_w=crt_w,
+            dither="none",
+            scanline_intensity=0.0,
+            vignette_strength=0.0,
+            barrel_strength=0.0,
+            subpixel_shape="rect",
+            subpixel_size_mm=0.3,
+        )
+        specs = self.gen.generate_layers(params, self.canvas)
+        pen0 = next(s for s in specs if s.color.upper() == "#000000")
+
+        # Compute expected cell height
+        img_h, img_w = img.shape[:2]
+        draw_x1, draw_y1, draw_x2, draw_y2 = self.canvas.drawing_area()
+        _, ry1, _, ry2 = compute_image_rect(
+            "fit", img_w, img_h, draw_x1, draw_y1, draw_x2, draw_y2
+        )
+        crt_h = max(1, round(img_h * crt_w / img_w))  # 4
+        cell_size_y = (ry2 - ry1) / crt_h
+        expected_bar_h = cell_size_y * 0.85
+
+        # Pick a fill stroke (2-point vertical line) and check its length
+        fills = [p for p in pen0.paths if len(p) == 2]
+        f = fills[0]
+        actual_h = abs(f[1][1] - f[0][1])
+        assert actual_h == pytest.approx(expected_bar_h, rel=1e-6), (
+            f"bar height {actual_h:.4f} != expected {expected_bar_h:.4f} (cell_size_y={cell_size_y:.4f})"
+        )
+
+    def test_rect_width_matches_subpixel_size_mm(self):
+        """Outline rect width should equal subpixel_size_mm."""
+        img = np.zeros((2, 4, 3), dtype=np.uint8)
+        params = _base_params(
+            img,
+            mask_type="aperture_grille",
+            crt_resolution_w=4,
+            dither="none",
+            scanline_intensity=0.0,
+            vignette_strength=0.0,
+            barrel_strength=0.0,
+            subpixel_shape="rect",
+            subpixel_size_mm=0.4,
+        )
+        specs = self.gen.generate_layers(params, self.canvas)
+        pen0 = next(s for s in specs if s.color.upper() == "#000000")
+
+        outline = next(p for p in pen0.paths if len(p) == 5)
+        xs = [pt[0] for pt in outline]
+        width = max(xs) - min(xs)
+        assert width == pytest.approx(0.4, abs=1e-6), (
+            f"outline width {width:.4f} != subpixel_size_mm=0.4"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Determinism
 # ---------------------------------------------------------------------------
 
@@ -809,7 +922,7 @@ class TestPresets:
         assert tri.params["palette"] == "Basic 6"
         assert tri.params["crt_resolution_w"] == 320
         assert tri.params["mask_type"] == "aperture_grille"
-        assert tri.params["subpixel_shape"] == "circle"
+        assert tri.params["subpixel_shape"] == "rect"
         assert tri.params["subpixel_size_mm"] == pytest.approx(0.20)
         assert tri.params["dither"] == "floyd-steinberg"
         assert tri.params["scanline_intensity"] == pytest.approx(0.4)
@@ -836,7 +949,7 @@ class TestPresets:
         assert vga.params["palette"] == "Basic 6"
         assert vga.params["crt_resolution_w"] == 320
         assert vga.params["mask_type"] == "slot_mask"
-        assert vga.params["subpixel_shape"] == "circle"
+        assert vga.params["subpixel_shape"] == "rect"
         assert vga.params["subpixel_size_mm"] == pytest.approx(0.25)
         assert vga.params["dither"] == "floyd-steinberg"
         assert vga.params["scanline_intensity"] == pytest.approx(0.5)
