@@ -145,6 +145,42 @@ class PointillistGenerator(Generator):
                     "skip_paper_white": True,
                 },
             ),
+            Preset(
+                name="Halftone Dots",
+                params={
+                    "palette": "Copic 12",
+                    "density_per_cm2": 600.0,
+                    "dither": "ordered",
+                    "dot_style": "point",
+                    "dot_size_mm": 0.3,
+                    "seed": 0,
+                    "skip_paper_white": True,
+                },
+            ),
+            Preset(
+                name="Big Cross Stipple",
+                params={
+                    "palette": "Basic 6",
+                    "density_per_cm2": 80.0,
+                    "dither": "floyd-steinberg",
+                    "dot_style": "cross",
+                    "dot_size_mm": 1.2,
+                    "seed": 0,
+                    "skip_paper_white": True,
+                },
+            ),
+            Preset(
+                name="Sketchy Mono",
+                params={
+                    "palette": "Grayscale 5",
+                    "density_per_cm2": 300.0,
+                    "dither": "none",
+                    "dot_style": "point",
+                    "dot_size_mm": 0.5,
+                    "seed": 0,
+                    "skip_paper_white": True,
+                },
+            ),
         ]
 
     def generate_layers(

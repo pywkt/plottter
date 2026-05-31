@@ -406,10 +406,34 @@ class TestPresets:
         from plottter.generators.pointillist import PointillistGenerator
 
         self.gen = PointillistGenerator()
+        self.canvas = _make_canvas()
+        self.image = _make_basic6_image()
+
+    def _run_preset(self, name: str):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        preset = presets[name]
+        params = {**preset.params, "_source_image": self.image}
+        return self.gen.generate_layers(params, self.canvas)
+
+    # --- presence ---
 
     def test_pointillist_classic_present(self):
         names = [p.name for p in self.gen.get_presets()]
         assert "Pointillist Classic" in names
+
+    def test_halftone_dots_present(self):
+        names = [p.name for p in self.gen.get_presets()]
+        assert "Halftone Dots" in names
+
+    def test_big_cross_stipple_present(self):
+        names = [p.name for p in self.gen.get_presets()]
+        assert "Big Cross Stipple" in names
+
+    def test_sketchy_mono_present(self):
+        names = [p.name for p in self.gen.get_presets()]
+        assert "Sketchy Mono" in names
+
+    # --- param values ---
 
     def test_pointillist_classic_params(self):
         presets = {p.name: p for p in self.gen.get_presets()}
@@ -419,3 +443,50 @@ class TestPresets:
         assert classic.params["dither"] == "floyd-steinberg"
         assert classic.params["dot_style"] == "point"
         assert classic.params["skip_paper_white"] is True
+
+    def test_halftone_dots_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Halftone Dots"]
+        assert p.params["palette"] == "Copic 12"
+        assert p.params["density_per_cm2"] == 600.0
+        assert p.params["dither"] == "ordered"
+        assert p.params["dot_style"] == "point"
+        assert p.params["dot_size_mm"] == 0.3
+
+    def test_big_cross_stipple_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Big Cross Stipple"]
+        assert p.params["palette"] == "Basic 6"
+        assert p.params["density_per_cm2"] == 80.0
+        assert p.params["dither"] == "floyd-steinberg"
+        assert p.params["dot_style"] == "cross"
+        assert p.params["dot_size_mm"] == 1.2
+
+    def test_sketchy_mono_params(self):
+        presets = {p.name: p for p in self.gen.get_presets()}
+        p = presets["Sketchy Mono"]
+        assert p.params["palette"] == "Grayscale 5"
+        assert p.params["density_per_cm2"] == 300.0
+        assert p.params["dither"] == "none"
+        assert p.params["dot_style"] == "point"
+        assert p.params["dot_size_mm"] == 0.5
+
+    # --- uniqueness ---
+
+    def test_preset_names_are_unique(self):
+        names = [p.name for p in self.gen.get_presets()]
+        assert len(names) == len(set(names))
+
+    # --- runs without error and emits >= 1 layer ---
+
+    def test_halftone_dots_runs(self):
+        specs = self._run_preset("Halftone Dots")
+        assert len(specs) >= 1
+
+    def test_big_cross_stipple_runs(self):
+        specs = self._run_preset("Big Cross Stipple")
+        assert len(specs) >= 1
+
+    def test_sketchy_mono_runs(self):
+        specs = self._run_preset("Sketchy Mono")
+        assert len(specs) >= 1
