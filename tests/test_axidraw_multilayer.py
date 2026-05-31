@@ -209,14 +209,18 @@ class TestAxiDrawDialogLayerScope:
         summary = dlg._layer_summary_label.text()
         assert "3 layers" in summary
 
-    def test_active_only_with_three_layers_disables_pause(self, qtbot):
+    def test_single_layer_combo_defaults_to_active_layer(self, qtbot):
+        """Opening the dialog with an active layer pre-selects it in the combo
+        so the common 'plot the currently active layer' workflow stays one click."""
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
 
         proj = _make_project(n_layers=3)
         dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[1].id)
         qtbot.addWidget(dlg)
 
-        dlg._scope_active_radio.setChecked(True)
+        assert dlg._layer_combo.currentData() == proj.layers[1].id
+
+        dlg._scope_single_radio.setChecked(True)
         # _update_layer_summary should fire from the radio toggle signal.
         summary = dlg._layer_summary_label.text()
         assert "1 layer" in summary
@@ -224,25 +228,88 @@ class TestAxiDrawDialogLayerScope:
         assert not dlg._pause_check.isEnabled()
         assert not dlg._pause_check.isChecked()
 
-    def test_active_only_plots_hidden_active_layer(self, qtbot):
+    def test_single_layer_combo_lists_every_layer(self, qtbot):
+        """All layers should be pickable from the dropdown, hidden ones included
+        (with a '(hidden)' suffix) so the user can re-plot anything."""
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        proj = _make_project(n_layers=3, hide_indices=(1,))
+        dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+        qtbot.addWidget(dlg)
+
+        labels = [dlg._layer_combo.itemText(i) for i in range(dlg._layer_combo.count())]
+        assert labels == ["L0", "L1 (hidden)", "L2"]
+        ids = [dlg._layer_combo.itemData(i) for i in range(dlg._layer_combo.count())]
+        assert ids == [lyr.id for lyr in proj.layers]
+
+    def test_single_layer_picks_combo_target_not_active_layer(self, qtbot):
+        """Changing the dropdown should change which layer gets plotted; the
+        active-layer id only matters as the initial default."""
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        proj = _make_project(n_layers=3)
+        dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+        qtbot.addWidget(dlg)
+
+        # Pick L2 from the dropdown and switch to the single-layer scope.
+        dlg._layer_combo.setCurrentIndex(2)
+        dlg._scope_single_radio.setChecked(True)
+        layers = dlg._layers_to_plot()
+        assert [lyr.name for lyr in layers] == ["L2"]
+
+    def test_single_layer_plots_hidden_layer_when_picked(self, qtbot):
+        """Explicitly selecting a hidden layer should still plot it — visibility
+        is a default-filter, not a hard exclusion."""
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
 
         proj = _make_project(n_layers=2, hide_indices=(0,))
         dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
         qtbot.addWidget(dlg)
 
-        dlg._scope_active_radio.setChecked(True)
+        dlg._scope_single_radio.setChecked(True)
         layers = dlg._layers_to_plot()
         assert [lyr.name for lyr in layers] == ["L0"]
 
-    def test_active_only_disabled_when_no_active_layer(self, qtbot):
+    def test_single_layer_disabled_when_project_has_no_layers(self, qtbot):
+        """With an empty project there's nothing to single-layer-plot, so the
+        radio + combo should both be disabled."""
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        proj = _make_project(n_layers=0)
+        dlg = AxiDrawDialog(proj, active_layer_id=None)
+        qtbot.addWidget(dlg)
+
+        assert not dlg._scope_single_radio.isEnabled()
+        assert not dlg._layer_combo.isEnabled()
+
+    def test_single_layer_enabled_even_without_active_layer(self, qtbot):
+        """With layers present but no active layer, the dropdown still lets the
+        user pick one — falling back to the first layer."""
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
 
         proj = _make_project(n_layers=2)
         dlg = AxiDrawDialog(proj, active_layer_id=None)
         qtbot.addWidget(dlg)
 
-        assert not dlg._scope_active_radio.isEnabled()
+        assert dlg._scope_single_radio.isEnabled()
+        assert dlg._layer_combo.isEnabled()
+        # No active layer → combo just stays on its first item (no crash).
+        assert dlg._layer_combo.currentIndex() == 0
+
+    def test_picking_from_combo_auto_selects_single_radio(self, qtbot):
+        """User shouldn't have to click both the radio and the dropdown — using
+        the dropdown should imply 'plot this layer'."""
+        from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+        proj = _make_project(n_layers=3)
+        dlg = AxiDrawDialog(proj, active_layer_id=proj.layers[0].id)
+        qtbot.addWidget(dlg)
+
+        # Initially "All visible layers" is checked.
+        assert dlg._scope_all_radio.isChecked()
+        # Simulate the user choosing an item from the dropdown.
+        dlg._layer_combo.activated.emit(2)
+        assert dlg._scope_single_radio.isChecked()
 
     def test_single_visible_layer_disables_pause(self, qtbot):
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog

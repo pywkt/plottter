@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PyQt6.QtCore import QMutex, QSettings, Qt, QThread, QWaitCondition, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen, QPixmap
+from PyQt6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -308,21 +308,47 @@ class AxiDrawDialog(QDialog):
 
         self._scope_all_radio = QRadioButton("All visible layers")
         self._scope_all_radio.setChecked(True)
-        self._scope_active_radio = QRadioButton("Active layer only")
-        # Disable "Active layer only" when there's no active layer to plot.
-        active_layer = self._find_layer(self._active_layer_id)
-        if active_layer is None:
-            self._scope_active_radio.setEnabled(False)
-            self._scope_active_radio.setToolTip("No active layer selected.")
+        self._scope_single_radio = QRadioButton("Single layer:")
+        self._scope_single_radio.setToolTip(
+            "Plot exactly one layer — useful when stepping through a multi-pen "
+            "project one pen at a time. Picking from the dropdown overrides "
+            "the layer's visibility for this plot only."
+        )
+
+        # Dropdown of every layer in the project (with colour swatch icons).
+        # Defaults to whichever layer was active when the dialog opened so the
+        # common "plot the currently selected layer" workflow stays one click.
+        self._layer_combo = QComboBox()
+        self._populate_layer_combo()
+        # Picking a layer from the dropdown implies the user wants to plot that
+        # one layer — auto-switch the radio so they don't have to click twice.
+        self._layer_combo.activated.connect(
+            lambda _i: self._scope_single_radio.setChecked(True)
+        )
+        self._layer_combo.currentIndexChanged.connect(self._update_layer_summary)
+
+        # Disable the single-layer mode only when the project has no layers at
+        # all — with the dropdown there's no "no active layer" failure mode.
+        if not self._project.layers:
+            self._scope_single_radio.setEnabled(False)
+            self._layer_combo.setEnabled(False)
+            self._scope_single_radio.setToolTip("Project has no layers.")
 
         self._scope_group = QButtonGroup(self)
         self._scope_group.addButton(self._scope_all_radio)
-        self._scope_group.addButton(self._scope_active_radio)
+        self._scope_group.addButton(self._scope_single_radio)
         self._scope_all_radio.toggled.connect(self._update_layer_summary)
-        self._scope_active_radio.toggled.connect(self._update_layer_summary)
+        self._scope_single_radio.toggled.connect(self._update_layer_summary)
 
         layers_layout.addWidget(self._scope_all_radio)
-        layers_layout.addWidget(self._scope_active_radio)
+
+        # Put the radio + combo on one row so the dropdown reads as "this radio's
+        # value", not as a separate setting below it.
+        single_row = QHBoxLayout()
+        single_row.setContentsMargins(0, 0, 0, 0)
+        single_row.addWidget(self._scope_single_radio)
+        single_row.addWidget(self._layer_combo, 1)
+        layers_layout.addLayout(single_row)
 
         self._pause_check = QCheckBox("Pause for pen swap between layers")
         self._pause_check.setToolTip(
@@ -673,11 +699,30 @@ class AxiDrawDialog(QDialog):
                 return lyr
         return None
 
+    def _populate_layer_combo(self) -> None:
+        """Fill the single-layer dropdown with every layer + colour swatch.
+
+        Defaults the selection to ``self._active_layer_id`` so the dialog opens
+        on the currently selected layer — preserving the old "Active layer
+        only" one-click workflow.
+        """
+        self._layer_combo.clear()
+        for lyr in self._project.layers:
+            icon = QIcon(_make_color_swatch(lyr.color, size=16))
+            label = lyr.name if lyr.visible else f"{lyr.name} (hidden)"
+            self._layer_combo.addItem(icon, label, lyr.id)
+        # Default to the layer that was active when the dialog opened.
+        if self._active_layer_id is not None:
+            for i in range(self._layer_combo.count()):
+                if self._layer_combo.itemData(i) == self._active_layer_id:
+                    self._layer_combo.setCurrentIndex(i)
+                    break
+
     def _selected_layer_ids(self) -> list[str] | None:
         """Return explicit layer-id list, or None for 'all visible'."""
-        if self._scope_active_radio.isChecked():
-            active = self._find_layer(self._active_layer_id)
-            return [active.id] if active is not None else []
+        if self._scope_single_radio.isChecked():
+            layer_id = self._layer_combo.currentData()
+            return [layer_id] if layer_id else []
         return None
 
     def _layers_to_plot(self) -> list:
