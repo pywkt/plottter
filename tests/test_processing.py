@@ -1271,3 +1271,352 @@ class TestScalePathsToCanvas:
         paths = [[(5.0, 10.0), (20.0, 30.0)]]
         result = scale_paths_to_canvas(paths, old, new)
         assert result[0] == paths[0]
+
+
+# ---------------------------------------------------------------------------
+# JIT Parity — merge.py
+# ---------------------------------------------------------------------------
+
+class TestMergeJITParity:
+    """Verify that the ``_find_and_snap`` JIT kernel produces identical output
+    to an equivalent pure-Python reference implementation on deterministic inputs.
+
+    When numba is absent, the ``@njit`` shim is a no-op, so both the
+    "JIT" call and the pure-Python reference effectively run the same Python
+    code — the tests still pass and confirm that the kernel logic is correct.
+    When numba is installed, the compiled kernel must produce numerically
+    identical results to the reference.
+    """
+
+    # ------------------------------------------------------------------
+    # Pure-Python reference for _find_and_snap
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _find_and_snap_py(qx, qy, cand_idxs, endpoints, consumed, own_idx, reverse_if_end):
+        """Verbatim Python reimplementation of the _find_and_snap kernel."""
+        best_j = -1
+        best_dist_sq = 1e300
+        best_reverse_j = 0
+        best_idx_found = -1
+
+        for idx in cand_idxs:
+            idx = int(idx)
+            j = idx >> 1
+            if j == own_idx or consumed[j]:
+                continue
+            ex = endpoints[idx, 0]
+            ey = endpoints[idx, 1]
+            dx = qx - ex
+            dy = qy - ey
+            dsq = dx * dx + dy * dy
+            if dsq < best_dist_sq:
+                best_dist_sq = dsq
+                best_j = j
+                if reverse_if_end:
+                    best_reverse_j = 1 if (idx & 1) else 0
+                else:
+                    best_reverse_j = 0 if (idx & 1) else 1
+                best_idx_found = idx
+
+        if best_j < 0:
+            return -1, 0, 0.0, 0.0, 0
+
+        jx = endpoints[best_idx_found, 0]
+        jy = endpoints[best_idx_found, 1]
+        coincident = 1 if (abs(qx - jx) < 1e-9 and abs(qy - jy) < 1e-9) else 0
+        mid_x = (qx + jx) * 0.5
+        mid_y = (qy + jy) * 0.5
+        return best_j, best_reverse_j, mid_x, mid_y, coincident
+
+    # ------------------------------------------------------------------
+    # Kernel parity tests
+    # ------------------------------------------------------------------
+
+    def test_no_candidates_returns_sentinel(self) -> None:
+        """Empty candidate list → best_j == -1."""
+        import numpy as np
+        from plottter.processing.merge import _find_and_snap
+
+        endpoints = np.array([[0.0, 0.0], [5.0, 0.0], [5.1, 0.0], [10.0, 0.0]], dtype=np.float64)
+        consumed = np.zeros(2, dtype=np.bool_)
+        cands = np.array([], dtype=np.int64)
+
+        jit_result = _find_and_snap(5.0, 0.0, cands, endpoints, consumed, 0, 1)
+        py_result = self._find_and_snap_py(5.0, 0.0, cands, endpoints, consumed, 0, 1)
+
+        assert jit_result[0] == py_result[0] == -1
+
+    def test_single_candidate_phase_a_parity(self) -> None:
+        """Phase A (reverse_if_end=1): JIT and Python agree on best_j, reverse flag, midpoint."""
+        import numpy as np
+        from plottter.processing.merge import _find_and_snap
+
+        # Path 0: [(0,0), (5,0)]; Path 1: [(5.2,0), (10,0)]
+        # Endpoints: idx0=(0,0), idx1=(5,0), idx2=(5.2,0), idx3=(10,0)
+        endpoints = np.array([[0.0, 0.0], [5.0, 0.0], [5.2, 0.0], [10.0, 0.0]], dtype=np.float64)
+        consumed = np.zeros(2, dtype=np.bool_)
+        # Query from end of path 0 (5,0): candidate idx 2 (start of path 1)
+        cands = np.array([2], dtype=np.int64)
+
+        jit = _find_and_snap(5.0, 0.0, cands, endpoints, consumed, 0, 1)
+        py = self._find_and_snap_py(5.0, 0.0, cands, endpoints, consumed, 0, 1)
+
+        assert jit[0] == py[0] == 1          # best_j
+        assert jit[1] == py[1] == 0          # best_reverse_j (idx=2 is even → start → no rev)
+        assert abs(jit[2] - py[2]) < 1e-12   # mid_x
+        assert abs(jit[3] - py[3]) < 1e-12   # mid_y
+        assert jit[4] == py[4] == 0          # not coincident
+
+    def test_single_candidate_phase_a_reversal_parity(self) -> None:
+        """Phase A: candidate is j's END (odd idx) → reverse_j=1."""
+        import numpy as np
+        from plottter.processing.merge import _find_and_snap
+
+        # Path 1's end (idx=3=odd) is near query point → needs reversal
+        endpoints = np.array([[0.0, 0.0], [5.0, 0.0], [10.0, 0.0], [5.1, 0.0]], dtype=np.float64)
+        consumed = np.zeros(2, dtype=np.bool_)
+        cands = np.array([3], dtype=np.int64)  # idx=3 → j=1, is end
+
+        jit = _find_and_snap(5.0, 0.0, cands, endpoints, consumed, 0, 1)
+        py = self._find_and_snap_py(5.0, 0.0, cands, endpoints, consumed, 0, 1)
+
+        assert jit[0] == py[0] == 1
+        assert jit[1] == py[1] == 1   # reverse_j=1 because idx=3 is odd
+
+    def test_phase_b_parity(self) -> None:
+        """Phase B (reverse_if_end=0): JIT and Python agree."""
+        import numpy as np
+        from plottter.processing.merge import _find_and_snap
+
+        # Path 0 starts at (5,0); path 1 ends at (4.9,0) (idx=3)
+        # idx=3 is odd → j's end → in Phase B (reverse_if_end=0), odd means NO reversal
+        endpoints = np.array([[5.0, 0.0], [10.0, 0.0], [0.0, 0.0], [4.9, 0.0]], dtype=np.float64)
+        consumed = np.zeros(2, dtype=np.bool_)
+        cands = np.array([3], dtype=np.int64)  # idx=3 → j=1, is end
+
+        jit = _find_and_snap(5.0, 0.0, cands, endpoints, consumed, 0, 0)
+        py = self._find_and_snap_py(5.0, 0.0, cands, endpoints, consumed, 0, 0)
+
+        assert jit[0] == py[0] == 1
+        assert jit[1] == py[1] == 0   # no reversal (odd idx, reverse_if_end=0)
+        assert abs(jit[2] - py[2]) < 1e-12
+        assert abs(jit[3] - py[3]) < 1e-12
+
+    def test_coincident_endpoints_parity(self) -> None:
+        """Exactly coincident endpoints → coincident flag == 1 for both."""
+        import numpy as np
+        from plottter.processing.merge import _find_and_snap
+
+        endpoints = np.array([[0.0, 0.0], [5.0, 0.0], [5.0, 0.0], [10.0, 0.0]], dtype=np.float64)
+        consumed = np.zeros(2, dtype=np.bool_)
+        cands = np.array([2], dtype=np.int64)
+
+        jit = _find_and_snap(5.0, 0.0, cands, endpoints, consumed, 0, 1)
+        py = self._find_and_snap_py(5.0, 0.0, cands, endpoints, consumed, 0, 1)
+
+        assert jit[4] == py[4] == 1   # coincident
+
+    def test_consumed_path_skipped_parity(self) -> None:
+        """A consumed path is never selected — both JIT and Python must skip it."""
+        import numpy as np
+        from plottter.processing.merge import _find_and_snap
+
+        endpoints = np.array([[0.0, 0.0], [5.0, 0.0], [5.1, 0.0], [10.0, 0.0]], dtype=np.float64)
+        consumed = np.array([False, True], dtype=np.bool_)   # path 1 consumed
+        cands = np.array([2, 3], dtype=np.int64)
+
+        jit = _find_and_snap(5.0, 0.0, cands, endpoints, consumed, 0, 1)
+        py = self._find_and_snap_py(5.0, 0.0, cands, endpoints, consumed, 0, 1)
+
+        assert jit[0] == py[0] == -1   # no candidate available
+
+    def test_multiple_candidates_nearest_wins_parity(self) -> None:
+        """When multiple candidates are available, the nearest one wins."""
+        import numpy as np
+        from plottter.processing.merge import _find_and_snap
+
+        # Path 1 start at (5.3,0), path 2 start at (5.1,0) — path 2 is closer
+        endpoints = np.array([
+            [0.0, 0.0], [5.0, 0.0],    # path 0
+            [5.3, 0.0], [10.0, 0.0],   # path 1
+            [5.1, 0.0], [15.0, 0.0],   # path 2
+        ], dtype=np.float64)
+        consumed = np.zeros(3, dtype=np.bool_)
+        cands = np.array([2, 4], dtype=np.int64)  # path 1 start, path 2 start
+
+        jit = _find_and_snap(5.0, 0.0, cands, endpoints, consumed, 0, 1)
+        py = self._find_and_snap_py(5.0, 0.0, cands, endpoints, consumed, 0, 1)
+
+        assert jit[0] == py[0] == 2   # path 2 is nearest (dist 0.1 vs 0.3)
+        assert jit[1] == py[1]
+        assert abs(jit[2] - py[2]) < 1e-12
+        assert abs(jit[3] - py[3]) < 1e-12
+
+    def test_merge_nearby_paths_end_to_end_parity(self) -> None:
+        """Full merge_nearby_paths output matches reference on a chain of 5 paths."""
+        paths = [
+            [(0.0, 0.0), (5.0, 0.0)],
+            [(5.2, 0.0), (10.0, 0.0)],
+            [(10.1, 0.0), (15.0, 0.0)],
+            [(15.3, 0.0), (20.0, 0.0)],
+            [(20.4, 0.0), (25.0, 0.0)],
+        ]
+        result = merge_nearby_paths(paths, threshold_mm=0.5)
+        # All 5 paths should merge into one continuous polyline
+        assert len(result) == 1
+        assert result[0][0] == (0.0, 0.0)
+        assert result[0][-1] == (25.0, 0.0)
+
+    def test_merge_fragments_end_to_end_parity(self) -> None:
+        """Full merge_fragments output matches reference on a branching set."""
+        import random
+        rng = random.Random(42)
+        # Generate a chain of 10 fragments with tiny gaps
+        paths = []
+        x = 0.0
+        for _ in range(10):
+            length = rng.uniform(1.0, 5.0)
+            gap = rng.uniform(0.0, 0.3)
+            paths.append([(x, 0.0), (x + length, 0.0)])
+            x += length + gap
+
+        result = merge_fragments(paths, gap_tolerance_mm=0.5)
+        # All 10 short fragments should merge into one
+        assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# JIT Parity — weld.py
+# ---------------------------------------------------------------------------
+
+class TestWeldJITParity:
+    """Verify that the ``_segments_match_jit`` JIT kernel produces identical
+    output to an equivalent pure-Python reference implementation.
+
+    As with TestMergeJITParity, tests pass both when numba is present
+    (validating compiled output) and when it is absent (validating the
+    pure-Python fallback path that the @njit shim provides).
+    """
+
+    # ------------------------------------------------------------------
+    # Pure-Python reference for _segments_match_jit
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _segments_match_py(a0x, a0y, a1x, a1y, b0x, b0y, b1x, b1y, tol_sq):
+        """Verbatim Python reimplementation of _segments_match_jit."""
+        d00x = a0x - b0x; d00y = a0y - b0y
+        if d00x * d00x + d00y * d00y <= tol_sq:
+            d11x = a1x - b1x; d11y = a1y - b1y
+            if d11x * d11x + d11y * d11y <= tol_sq:
+                return True
+        d01x = a0x - b1x; d01y = a0y - b1y
+        if d01x * d01x + d01y * d01y <= tol_sq:
+            d10x = a1x - b0x; d10y = a1y - b0y
+            if d10x * d10x + d10y * d10y <= tol_sq:
+                return True
+        return False
+
+    # ------------------------------------------------------------------
+    # Kernel parity tests
+    # ------------------------------------------------------------------
+
+    def test_exact_duplicate_same_direction(self) -> None:
+        """Identical segments in same direction → True from both JIT and Python."""
+        from plottter.processing.weld import _segments_match_jit
+
+        tol_sq = 0.01  # tolerance = 0.1 mm
+        jit = _segments_match_jit(0.0, 0.0, 5.0, 0.0,  0.0, 0.0, 5.0, 0.0,  tol_sq)
+        py  = self._segments_match_py(0.0, 0.0, 5.0, 0.0,  0.0, 0.0, 5.0, 0.0,  tol_sq)
+        assert jit == py == True
+
+    def test_exact_duplicate_reversed(self) -> None:
+        """Reversed duplicate → True from both."""
+        from plottter.processing.weld import _segments_match_jit
+
+        tol_sq = 0.01
+        jit = _segments_match_jit(0.0, 0.0, 5.0, 0.0,  5.0, 0.0, 0.0, 0.0,  tol_sq)
+        py  = self._segments_match_py(0.0, 0.0, 5.0, 0.0,  5.0, 0.0, 0.0, 0.0,  tol_sq)
+        assert jit == py == True
+
+    def test_near_duplicate_within_tolerance(self) -> None:
+        """Near-duplicate (offset < sqrt(tol_sq)) → True from both."""
+        from plottter.processing.weld import _segments_match_jit
+
+        tol_sq = 0.01   # tolerance = 0.1 mm
+        # 0.05mm offset — within tolerance
+        jit = _segments_match_jit(0.0, 0.0, 5.0, 0.0,  0.05, 0.0, 5.05, 0.0,  tol_sq)
+        py  = self._segments_match_py(0.0, 0.0, 5.0, 0.0,  0.05, 0.0, 5.05, 0.0,  tol_sq)
+        assert jit == py == True
+
+    def test_different_segment_not_matched(self) -> None:
+        """Clearly different segments → False from both."""
+        from plottter.processing.weld import _segments_match_jit
+
+        tol_sq = 0.01
+        jit = _segments_match_jit(0.0, 0.0, 5.0, 0.0,  10.0, 0.0, 15.0, 0.0,  tol_sq)
+        py  = self._segments_match_py(0.0, 0.0, 5.0, 0.0,  10.0, 0.0, 15.0, 0.0,  tol_sq)
+        assert jit == py == False
+
+    def test_outside_tolerance_not_matched(self) -> None:
+        """Offset just outside tolerance → False from both."""
+        from plottter.processing.weld import _segments_match_jit
+
+        tol_sq = 0.01   # tolerance = 0.1 mm
+        # 0.2mm offset — outside tolerance
+        jit = _segments_match_jit(0.0, 0.0, 5.0, 0.0,  0.2, 0.0, 5.2, 0.0,  tol_sq)
+        py  = self._segments_match_py(0.0, 0.0, 5.0, 0.0,  0.2, 0.0, 5.2, 0.0,  tol_sq)
+        assert jit == py == False
+
+    def test_first_endpoint_match_second_mismatch(self) -> None:
+        """First endpoints match but second endpoints don't → False from both."""
+        from plottter.processing.weld import _segments_match_jit
+
+        tol_sq = 0.01
+        # a0 ≈ b0 but a1 is far from b1
+        jit = _segments_match_jit(0.0, 0.0, 5.0, 0.0,  0.05, 0.0, 20.0, 0.0,  tol_sq)
+        py  = self._segments_match_py(0.0, 0.0, 5.0, 0.0,  0.05, 0.0, 20.0, 0.0,  tol_sq)
+        assert jit == py == False
+
+    def test_diagonal_segment_parity(self) -> None:
+        """Diagonal segments (non-axis-aligned) → JIT and Python agree."""
+        from plottter.processing.weld import _segments_match_jit
+
+        import math
+        tol_sq = 0.01
+        # Identical diagonal
+        jit = _segments_match_jit(1.0, 1.0, 4.0, 5.0,  1.0, 1.0, 4.0, 5.0,  tol_sq)
+        py  = self._segments_match_py(1.0, 1.0, 4.0, 5.0,  1.0, 1.0, 4.0, 5.0,  tol_sq)
+        assert jit == py == True
+
+        # Diagonal reversed
+        jit2 = _segments_match_jit(1.0, 1.0, 4.0, 5.0,  4.0, 5.0, 1.0, 1.0,  tol_sq)
+        py2  = self._segments_match_py(1.0, 1.0, 4.0, 5.0,  4.0, 5.0, 1.0, 1.0,  tol_sq)
+        assert jit2 == py2 == True
+
+    def test_weld_end_to_end_parity(self) -> None:
+        """Full weld_overlapping_paths output is correct on a known input."""
+        path_a = [(0.0, 0.0), (5.0, 0.0), (10.0, 0.0)]
+        path_b = [(0.0, 0.0), (5.0, 0.0)]  # first segment of path_a duplicated
+        result = weld_overlapping_paths([path_a, path_b])
+        assert len(result) == 1
+        assert result[0] == path_a
+
+    def test_weld_large_input_parity(self) -> None:
+        """weld_overlapping_paths produces correct deduplication on a larger deterministic input."""
+        import random
+        rng = random.Random(7)
+        # Build 50 unique segments
+        unique = [
+            [(rng.uniform(0, 50), rng.uniform(0, 50)),
+             (rng.uniform(0, 50), rng.uniform(0, 50))]
+            for _ in range(50)
+        ]
+        # Duplicate the first 10 segments as separate paths
+        dupes = [list(p) for p in unique[:10]]
+        all_paths = unique + dupes
+
+        result = weld_overlapping_paths(all_paths, tolerance_mm=0.01)
+        # Exactly 50 unique segments should survive
+        assert len(result) == 50

@@ -1,10 +1,76 @@
 """Merge polylines whose endpoints are within a threshold distance."""
 
-import math
 import numpy as np
 from scipy.spatial import cKDTree
 
 from plottter.models.path import Polyline
+from plottter.processing._jit import njit
+
+
+@njit(cache=True)
+def _find_and_snap(
+    qx,            # float: query endpoint x
+    qy,            # float: query endpoint y
+    cand_idxs,     # int64 ndarray: candidate endpoint indices (from cKDTree)
+    endpoints,     # (2n, 2) float64 ndarray: all endpoints
+    consumed,      # (n,) bool ndarray: which paths are already consumed
+    own_idx,       # int: index of the path being extended (excluded from match)
+    reverse_if_end,  # int (1 or 0): 1 → reverse j when matched idx is odd (extend-from-end),
+                     #               0 → reverse j when matched idx is even (prepend-from-start)
+):
+    """Find the best merge candidate and precompute the snap midpoint.
+
+    Iterates over *cand_idxs* (the output of ``cKDTree.query_ball_point``), skipping
+    the path's own endpoints and already-consumed paths, then returns the index of
+    the nearest compatible path together with the pre-computed midpoint for the gap
+    snap.
+
+    Returns a 5-tuple ``(best_j, best_reverse_j, mid_x, mid_y, coincident)``
+    where *best_j* is ``-1`` when no candidate was found.
+    *best_reverse_j* and *coincident* are returned as ``int`` (0 or 1) for numba
+    type-inference stability.
+    """
+    best_j = -1
+    best_dist_sq = 1e300
+    best_reverse_j = 0
+    best_idx = -1
+
+    for k in range(len(cand_idxs)):
+        idx = int(cand_idxs[k])
+        j = idx >> 1          # path index = endpoint_index // 2
+        if j == own_idx:
+            continue
+        if consumed[j]:
+            continue
+        ex = endpoints[idx, 0]
+        ey = endpoints[idx, 1]
+        dx = qx - ex
+        dy = qy - ey
+        dsq = dx * dx + dy * dy
+        if dsq < best_dist_sq:
+            best_dist_sq = dsq
+            best_j = j
+            # Determine whether j needs to be reversed before appending.
+            # Phase A (extend from end, reverse_if_end=1):
+            #   odd  idx → j's end matched → reverse j so its start aligns
+            # Phase B (prepend to start, reverse_if_end=0):
+            #   even idx → j's start matched → reverse j so its end aligns
+            if reverse_if_end:
+                best_reverse_j = 1 if (idx & 1) else 0
+            else:
+                best_reverse_j = 0 if (idx & 1) else 1
+            best_idx = idx
+
+    if best_j < 0:
+        return -1, 0, 0.0, 0.0, 0
+
+    jx = endpoints[best_idx, 0]
+    jy = endpoints[best_idx, 1]
+    # Coincident = already exactly touching; snap = midpoint of the gap.
+    coincident = 1 if (abs(qx - jx) < 1e-9 and abs(qy - jy) < 1e-9) else 0
+    mid_x = (qx + jx) * 0.5
+    mid_y = (qy + jy) * 0.5
+    return best_j, best_reverse_j, mid_x, mid_y, coincident
 
 
 def merge_nearby_paths(paths: list[Polyline], threshold_mm: float = 0.5) -> list[Polyline]:
@@ -29,6 +95,10 @@ def merge_nearby_paths(paths: list[Polyline], threshold_mm: float = 0.5) -> list
 
     Self-loops (merging a path's start to its own end) are avoided.
 
+    The inner candidate-selection loop is JIT-compiled via
+    ``_find_and_snap`` when numba is available, falling back to the same
+    pure-Python code path otherwise.
+
     Args:
         paths: Input list of polylines.
         threshold_mm: Maximum endpoint distance that triggers a merge (mm).
@@ -43,7 +113,8 @@ def merge_nearby_paths(paths: list[Polyline], threshold_mm: float = 0.5) -> list
     n = len(paths)
     # Working copy so we can reverse paths without mutating input
     working: list[list[tuple[float, float]]] = [list(p) for p in paths]
-    consumed = [False] * n
+    # numpy bool array so the JIT kernel sees up-to-date consumed flags
+    consumed = np.zeros(n, dtype=np.bool_)
 
     changed = True
     while changed:
@@ -71,50 +142,22 @@ def merge_nearby_paths(paths: list[Polyline], threshold_mm: float = 0.5) -> list
             end_pt = working[i][-1]
             indices = tree.query_ball_point(end_pt, threshold_mm)
 
-            best_j: int | None = None
-            best_dist = float("inf")
-            best_reverse_j = False
+            if not indices:
+                continue
 
-            for idx in indices:
-                j = idx // 2
-                is_end = idx % 2 == 1
+            indices_arr = np.asarray(indices, dtype=np.int64)
+            best_j, best_rev, mid_x, mid_y, coincident = _find_and_snap(
+                end_pt[0], end_pt[1], indices_arr, pts_array, consumed, i, 1
+            )
 
-                if j == i or consumed[j]:
-                    continue
-                # Skip if this is path i's own start (2*i)
-                if idx == 2 * i:
-                    continue
-
-                ex, ey = endpoints[idx]
-                dist = math.hypot(end_pt[0] - ex, end_pt[1] - ey)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_j = j
-                    # If we match the END of j, we must reverse j to append
-                    best_reverse_j = is_end
-
-            if best_j is not None:
-                j = best_j
-                if best_reverse_j:
-                    working[j] = working[j][::-1]
-                # Snap the join point to the midpoint of the gap so the polyline
-                # doesn't encode a straight line across it. We drop j's first
-                # point and replace i's last point with the midpoint — losing
-                # one redundant vertex on each side instead of drawing through
-                # the gap as the old behaviour did.
-                junction_i = working[i][-1]
-                junction_j = working[j][0]
-                if (abs(junction_i[0] - junction_j[0]) < 1e-9 and
-                        abs(junction_i[1] - junction_j[1]) < 1e-9):
-                    # Already coincident — no snap needed, just drop duplicate.
-                    working[i] = working[i] + working[j][1:]
+            if best_j >= 0:
+                if best_rev:
+                    working[best_j] = working[best_j][::-1]
+                if coincident:
+                    working[i] = working[i] + working[best_j][1:]
                 else:
-                    mid: tuple[float, float] = (
-                        (junction_i[0] + junction_j[0]) * 0.5,
-                        (junction_i[1] + junction_j[1]) * 0.5,
-                    )
-                    working[i] = working[i][:-1] + [mid] + working[j][1:]
-                consumed[j] = True
+                    working[i] = working[i][:-1] + [(mid_x, mid_y)] + working[best_j][1:]
+                consumed[best_j] = True
                 changed = True
 
     return [working[i] for i in range(n) if not consumed[i]]
@@ -148,6 +191,9 @@ def merge_fragments(
     Prefers end→start connections (no reversal needed) over end→end / start→start,
     but allows reversals when that is the closest available match.
 
+    The inner candidate-selection loops are JIT-compiled via
+    ``_find_and_snap`` when numba is available.
+
     Args:
         polylines:        Input list of polylines.
         gap_tolerance_mm: Maximum endpoint distance to trigger a merge (mm).
@@ -163,7 +209,8 @@ def merge_fragments(
     n = len(polylines)
     # Working copies so we can reverse fragments without mutating the input
     working: list[list[tuple[float, float]]] = [list(p) for p in polylines]
-    consumed = [False] * n
+    # numpy bool array so the JIT kernel sees up-to-date consumed flags
+    consumed = np.zeros(n, dtype=np.bool_)
 
     changed = True
     while changed:
@@ -192,81 +239,42 @@ def merge_fragments(
             end_pt = working[i][-1]
             end_idxs = tree.query_ball_point(end_pt, gap_tolerance_mm)
 
-            best_j: int | None = None
-            best_dist = float("inf")
-            best_rev_j = False
-
-            for idx in end_idxs:
-                j = idx // 2
-                if j == i or consumed[j]:
+            if end_idxs:
+                end_arr = np.asarray(end_idxs, dtype=np.int64)
+                best_j, best_rev, mid_x, mid_y, coincident = _find_and_snap(
+                    end_pt[0], end_pt[1], end_arr, pts_array, consumed, i, 1
+                )
+                if best_j >= 0:
+                    if best_rev:
+                        working[best_j] = working[best_j][::-1]
+                    if coincident:
+                        working[i] = working[i] + working[best_j][1:]
+                    else:
+                        working[i] = working[i][:-1] + [(mid_x, mid_y)] + working[best_j][1:]
+                    consumed[best_j] = True
+                    changed = True
+                    # Skip phase B this pass; the next outer iteration will
+                    # rebuild the tree and try again.
                     continue
-                if idx == 2 * i:  # own start — would create a self-loop
-                    continue
-                ex, ey = endpoints[idx]
-                dist = math.hypot(end_pt[0] - ex, end_pt[1] - ey)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_j = j
-                    # Matching j's end (odd index) → must reverse j so its
-                    # start aligns with i's end.
-                    best_rev_j = (idx % 2 == 1)
-
-            if best_j is not None:
-                j = best_j
-                if best_rev_j:
-                    working[j] = working[j][::-1]
-                # Snap to the midpoint of the gap instead of leaving a hidden
-                # straight-line bridge inside the resulting polyline.
-                ix, iy = working[i][-1]
-                jx, jy = working[j][0]
-                if abs(ix - jx) < 1e-9 and abs(iy - jy) < 1e-9:
-                    working[i] = working[i] + working[j][1:]
-                else:
-                    mid_a: tuple[float, float] = ((ix + jx) * 0.5, (iy + jy) * 0.5)
-                    working[i] = working[i][:-1] + [mid_a] + working[j][1:]
-                consumed[j] = True
-                changed = True
-                # Skip phase B this pass; the next outer iteration will
-                # rebuild the tree and try again.
-                continue
 
             # ---- Phase B: prepend to START of path i ----
             start_pt = working[i][0]
             start_idxs = tree.query_ball_point(start_pt, gap_tolerance_mm)
 
-            best_j = None
-            best_dist = float("inf")
-            best_rev_j = False
-
-            for idx in start_idxs:
-                j = idx // 2
-                if j == i or consumed[j]:
-                    continue
-                if idx == 2 * i + 1:  # own end — would create a self-loop
-                    continue
-                ex, ey = endpoints[idx]
-                dist = math.hypot(start_pt[0] - ex, start_pt[1] - ey)
-                if dist < best_dist:
-                    best_dist = dist
-                    best_j = j
-                    # Matching j's start (even index) → must reverse j so its
-                    # end aligns with i's start.
-                    best_rev_j = (idx % 2 == 0)
-
-            if best_j is not None:
-                j = best_j
-                if best_rev_j:
-                    working[j] = working[j][::-1]
-                # j's end is now near i's start — prepend j to i, snapping the
-                # join to the midpoint so no phantom bridge appears.
-                jx, jy = working[j][-1]
-                ix, iy = working[i][0]
-                if abs(jx - ix) < 1e-9 and abs(jy - iy) < 1e-9:
-                    working[i] = working[j][:-1] + working[i]
-                else:
-                    mid_b: tuple[float, float] = ((jx + ix) * 0.5, (jy + iy) * 0.5)
-                    working[i] = working[j][:-1] + [mid_b] + working[i][1:]
-                consumed[j] = True
-                changed = True
+            if start_idxs:
+                start_arr = np.asarray(start_idxs, dtype=np.int64)
+                best_j, best_rev, mid_x, mid_y, coincident = _find_and_snap(
+                    start_pt[0], start_pt[1], start_arr, pts_array, consumed, i, 0
+                )
+                if best_j >= 0:
+                    if best_rev:
+                        working[best_j] = working[best_j][::-1]
+                    # j's end is now near i's start — prepend j to i.
+                    if coincident:
+                        working[i] = working[best_j][:-1] + working[i]
+                    else:
+                        working[i] = working[best_j][:-1] + [(mid_x, mid_y)] + working[i][1:]
+                    consumed[best_j] = True
+                    changed = True
 
     return [working[i] for i in range(n) if not consumed[i]]

@@ -5,6 +5,42 @@ from __future__ import annotations
 from typing import Callable
 
 from plottter.models.path import Polyline
+from plottter.processing._jit import njit
+
+
+@njit(cache=True)
+def _segments_match_jit(
+    a0x, a0y, a1x, a1y,   # segment A endpoints
+    b0x, b0y, b1x, b1y,   # segment B endpoints
+    tol_sq,                # tolerance squared
+):
+    """Return True if segment (a0→a1) duplicates segment (b0→b1) within *tol_sq*.
+
+    Checks both same-direction and reversed-direction duplicates.  Uses
+    short-circuit evaluation: only computes the second distance if the first
+    is within tolerance, halving the average work for non-duplicate pairs.
+
+    This function is JIT-compiled by numba when available (``cache=True`` so
+    compilation is reused across runs).  When numba is absent the decorator is
+    a no-op and the function runs as ordinary Python.
+    """
+    # Same direction: a0≈b0 AND a1≈b1
+    d00x = a0x - b0x
+    d00y = a0y - b0y
+    if d00x * d00x + d00y * d00y <= tol_sq:
+        d11x = a1x - b1x
+        d11y = a1y - b1y
+        if d11x * d11x + d11y * d11y <= tol_sq:
+            return True
+    # Reversed direction: a0≈b1 AND a1≈b0
+    d01x = a0x - b1x
+    d01y = a0y - b1y
+    if d01x * d01x + d01y * d01y <= tol_sq:
+        d10x = a1x - b0x
+        d10y = a1y - b0y
+        if d10x * d10x + d10y * d10y <= tol_sq:
+            return True
+    return False
 
 
 def weld_overlapping_paths(
@@ -26,6 +62,10 @@ def weld_overlapping_paths(
 
     A grid-based spatial index on segment midpoints is used for efficient
     candidate lookup, giving O(n) average-case performance rather than O(n²).
+
+    The per-candidate segment comparison is handled by the JIT-compiled
+    ``_segments_match_jit`` kernel (falls back to pure Python when numba is
+    absent).
 
     Args:
         paths: Input list of polylines.
@@ -49,26 +89,6 @@ def weld_overlapping_paths(
     cell_size = max(tolerance_mm, 1e-9)
     total = len(paths)
 
-    def _dist_sq(a: tuple[float, float], b: tuple[float, float]) -> float:
-        dx = a[0] - b[0]
-        dy = a[1] - b[1]
-        return dx * dx + dy * dy
-
-    def _segments_match(
-        a0: tuple[float, float],
-        a1: tuple[float, float],
-        b0: tuple[float, float],
-        b1: tuple[float, float],
-    ) -> bool:
-        """True if segment (a0→a1) duplicates segment (b0→b1) within tolerance."""
-        # Same direction
-        if _dist_sq(a0, b0) <= tol_sq and _dist_sq(a1, b1) <= tol_sq:
-            return True
-        # Reversed direction
-        if _dist_sq(a0, b1) <= tol_sq and _dist_sq(a1, b0) <= tol_sq:
-            return True
-        return False
-
     # Spatial index: grid_key → list of canonical segment indices
     # Each canonical segment stored as (p0, p1).
     _grid: dict[tuple[int, int], list[int]] = {}
@@ -88,7 +108,12 @@ def weld_overlapping_paths(
     def _is_duplicate(
         s0: tuple[float, float], s1: tuple[float, float]
     ) -> bool:
-        """Check whether (s0→s1) duplicates any canonical segment."""
+        """Check whether (s0→s1) duplicates any canonical segment.
+
+        The grid lookup stays in Python (dict-of-int-keys is not JIT-able).
+        The per-candidate comparison delegates to the JIT-compiled
+        ``_segments_match_jit`` kernel.
+        """
         mx = (s0[0] + s1[0]) * 0.5
         my = (s0[1] + s1[1]) * 0.5
         gx, gy = _grid_key(mx, my)
@@ -98,7 +123,11 @@ def weld_overlapping_paths(
                 cell = (gx + dx, gy + dy)
                 for cidx in _grid.get(cell, ()):
                     c0, c1 = _canonical[cidx]
-                    if _segments_match(s0, s1, c0, c1):
+                    if _segments_match_jit(
+                        s0[0], s0[1], s1[0], s1[1],
+                        c0[0], c0[1], c1[0], c1[1],
+                        tol_sq,
+                    ):
                         return True
         return False
 
