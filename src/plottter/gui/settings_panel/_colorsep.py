@@ -73,10 +73,7 @@ class _ColorSepMixin:
         self._palette_picker_widget.setVisible(is_palette)
 
         if is_palette:
-            self._palette_picker_combo.clear()
-            from plottter.color.palettes import list_presets
-            for palette in list_presets():
-                self._palette_picker_combo.addItem(palette.name, palette)
+            self._populate_palette_picker()
 
         layout = self._channel_check_widget.layout()
         # Clear existing checkboxes
@@ -141,6 +138,79 @@ class _ColorSepMixin:
                 continue
             # Replace the mask, keep the preprocessed image reference.
             self._layer_masks[layer_id] = (new_mask, cached[1])
+
+    def _populate_palette_picker(self, select_name: str | None = None) -> None:
+        """Rebuild the palette picker combo from built-in + user palettes.
+
+        Built-in presets appear first in their natural order; user palettes
+        follow alphabetically.  If a user palette's name clashes with a
+        built-in, it is shown as ``"<name> (user)"`` in the picker while the
+        built-in retains the plain name.  The underlying ``PenPalette`` object
+        is always stored as the item data (unmodified name).
+
+        Parameters
+        ----------
+        select_name:
+            If given, the item whose display text matches this string will be
+            made current after the combo is rebuilt.  Pass the display name
+            (with ``" (user)"`` suffix if applicable) rather than the palette's
+            raw ``name`` attribute.
+        """
+        from plottter.color.palette import load_user_palettes
+        from plottter.color.palettes import list_presets
+
+        builtin = list_presets()
+        builtin_names = {p.name for p in builtin}
+        user = load_user_palettes()
+
+        self._palette_picker_combo.blockSignals(True)
+        self._palette_picker_combo.clear()
+
+        # Built-in presets first (insertion order).
+        for palette in builtin:
+            self._palette_picker_combo.addItem(palette.name, palette)
+
+        # User palettes after, with "(user)" suffix on name collision.
+        for palette in user:
+            display_name = (
+                f"{palette.name} (user)"
+                if palette.name in builtin_names
+                else palette.name
+            )
+            self._palette_picker_combo.addItem(display_name, palette)
+
+        # Restore selection by display name if requested.
+        if select_name is not None:
+            for i in range(self._palette_picker_combo.count()):
+                if self._palette_picker_combo.itemText(i) == select_name:
+                    self._palette_picker_combo.setCurrentIndex(i)
+                    break
+
+        self._palette_picker_combo.blockSignals(False)
+
+    def _on_edit_palette(self) -> None:
+        """Open the palette editor for the currently selected palette.
+
+        On dialog acceptance, refreshes the palette picker and selects the
+        palette that was just saved.
+        """
+        from plottter.gui.dialogs.palette_editor_dialog import PaletteEditorDialog
+        from plottter.color.palettes import list_presets
+
+        current_palette = self._palette_picker_combo.currentData()
+        dlg = PaletteEditorDialog(parent=self, initial=current_palette)
+        if dlg.exec():
+            result = dlg.get_result()
+            if result is None:
+                return
+            # Determine the display name used in the picker (may have "(user)" suffix).
+            builtin_names = {p.name for p in list_presets()}
+            display_name = (
+                f"{result.name} (user)"
+                if result.name in builtin_names
+                else result.name
+            )
+            self._populate_palette_picker(select_name=display_name)
 
     def _rebuild_color_sep_preset_combo(self) -> None:
         """Rebuild the color separation preset combo based on the selected generator."""

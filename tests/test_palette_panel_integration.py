@@ -334,3 +334,184 @@ class TestDispatch:
                 panel._on_separate()
 
         assert not mock_sep.called
+
+
+# ---------------------------------------------------------------------------
+# Tests: Phase 159.6 — user palettes loaded + collision naming
+# ---------------------------------------------------------------------------
+
+
+class TestUserPaletteLoading:
+    """_populate_palette_picker merges built-ins + user palettes correctly."""
+
+    def test_user_palettes_appear_after_builtins(
+        self, settings_panel, tmp_path, monkeypatch
+    ):
+        """User palettes must be appended after all built-in presets."""
+        import json
+
+        from plottter.color.palette import palette_to_dict
+
+        user_pal = PenPalette(name="My Watercolours", colors=("#1E3A5F", "#C13B4F"))
+        (tmp_path / "my-watercolours.json").write_text(
+            json.dumps(palette_to_dict(user_pal))
+        )
+        monkeypatch.setattr("plottter.color.palette.palette_dir", lambda: tmp_path)
+
+        settings_panel._on_color_sep_method_changed("Custom Palette")
+        combo = settings_panel._palette_picker_combo
+        texts = [combo.itemText(i) for i in range(combo.count())]
+
+        builtin_count = len(list_presets())
+        assert "My Watercolours" in texts
+        assert texts.index("My Watercolours") >= builtin_count
+
+    def test_user_palette_collision_gets_user_suffix(
+        self, settings_panel, tmp_path, monkeypatch
+    ):
+        """A user palette whose name matches a built-in must appear as '<name> (user)'."""
+        import json
+
+        from plottter.color.palette import palette_to_dict
+
+        # Write a user palette whose name collides with the "Basic 6" built-in.
+        user_basic6 = PenPalette(name="Basic 6", colors=("#AABBCC",))
+        (tmp_path / "basic-6.json").write_text(
+            json.dumps(palette_to_dict(user_basic6))
+        )
+        monkeypatch.setattr("plottter.color.palette.palette_dir", lambda: tmp_path)
+
+        settings_panel._on_color_sep_method_changed("Custom Palette")
+        combo = settings_panel._palette_picker_combo
+        texts = [combo.itemText(i) for i in range(combo.count())]
+
+        # The built-in keeps its plain name.
+        assert "Basic 6" in texts
+        # The user version gets the suffix.
+        assert "Basic 6 (user)" in texts
+
+    def test_builtin_and_user_collision_carry_correct_data(
+        self, settings_panel, tmp_path, monkeypatch
+    ):
+        """Built-in 'Basic 6' and user 'Basic 6 (user)' must carry distinct PenPalettes."""
+        import json
+
+        from plottter.color.palette import palette_to_dict
+
+        user_basic6 = PenPalette(name="Basic 6", colors=("#AABBCC",))
+        (tmp_path / "basic-6.json").write_text(
+            json.dumps(palette_to_dict(user_basic6))
+        )
+        monkeypatch.setattr("plottter.color.palette.palette_dir", lambda: tmp_path)
+
+        settings_panel._on_color_sep_method_changed("Custom Palette")
+        combo = settings_panel._palette_picker_combo
+
+        # Collect display_name → PenPalette mappings.
+        by_text: dict[str, PenPalette] = {}
+        for i in range(combo.count()):
+            by_text[combo.itemText(i)] = combo.itemData(i)
+
+        builtin_data = by_text["Basic 6"]
+        user_data = by_text["Basic 6 (user)"]
+
+        # Both carry a PenPalette with name == "Basic 6" (raw name unchanged on disk).
+        assert builtin_data.name == "Basic 6"
+        assert user_data.name == "Basic 6"
+        # But they are different objects with different colour counts.
+        assert len(builtin_data.colors) > 1  # built-in has 6 colors
+        assert len(user_data.colors) == 1  # user has just #AABBCC
+
+
+# ---------------------------------------------------------------------------
+# Tests: Phase 159.6 — "Edit / New Palette…" button wiring
+# ---------------------------------------------------------------------------
+
+
+class TestEditPaletteButton:
+    """The 'Edit / New Palette…' button exists and is wired correctly."""
+
+    def test_edit_button_exists_on_panel(self, settings_panel):
+        """SettingsPanel must expose a _palette_edit_btn attribute."""
+        assert hasattr(settings_panel, "_palette_edit_btn")
+        assert settings_panel._palette_edit_btn is not None
+
+    def test_edit_button_visible_with_custom_palette_mode(self, settings_panel):
+        """The button must not be hidden when Custom Palette mode is active."""
+        settings_panel._on_color_sep_method_changed("Custom Palette")
+        assert not settings_panel._palette_edit_btn.isHidden()
+
+    def test_edit_button_opens_dialog_with_current_palette(
+        self, settings_panel, monkeypatch
+    ):
+        """Clicking Edit must open PaletteEditorDialog pre-populated with the
+        palette that is currently selected in the combo."""
+        settings_panel._on_color_sep_method_changed("Custom Palette")
+        current_palette = settings_panel._palette_picker_combo.currentData()
+        assert isinstance(current_palette, PenPalette)
+
+        captured: dict = {}
+
+        class _FakeDialog:
+            def __init__(self, parent=None, initial=None):
+                captured["initial"] = initial
+
+            def exec(self):
+                return 0  # Rejected — don't save anything.
+
+            def get_result(self):
+                return None
+
+        monkeypatch.setattr(
+            "plottter.gui.dialogs.palette_editor_dialog.PaletteEditorDialog",
+            _FakeDialog,
+        )
+
+        settings_panel._on_edit_palette()
+
+        assert captured.get("initial") == current_palette
+
+    def test_accepting_editor_rebuilds_picker_and_selects_new_palette(
+        self, settings_panel, tmp_path, monkeypatch
+    ):
+        """After accepting the dialog the picker is rebuilt and the saved palette
+        is selected."""
+        import json
+
+        from plottter.color.palette import palette_to_dict
+
+        new_pal = PenPalette(name="My Test Set", colors=("#FF0000", "#00FF00"))
+        # Simulate what the dialog's Save button does: write the file to the
+        # user palette directory (monkeypatched to tmp_path).
+        (tmp_path / "my-test-set.json").write_text(
+            json.dumps(palette_to_dict(new_pal))
+        )
+        monkeypatch.setattr("plottter.color.palette.palette_dir", lambda: tmp_path)
+
+        settings_panel._on_color_sep_method_changed("Custom Palette")
+
+        class _FakeDialog:
+            def __init__(self, parent=None, initial=None):
+                pass
+
+            def exec(self):
+                return 1  # Accepted.
+
+            def get_result(self):
+                return new_pal
+
+        monkeypatch.setattr(
+            "plottter.gui.dialogs.palette_editor_dialog.PaletteEditorDialog",
+            _FakeDialog,
+        )
+
+        settings_panel._on_edit_palette()
+
+        combo = settings_panel._palette_picker_combo
+        texts = [combo.itemText(i) for i in range(combo.count())]
+
+        # New palette must appear in the combo…
+        assert "My Test Set" in texts
+        # …and must be the selected item.
+        assert combo.currentText() == "My Test Set"
+        assert combo.currentData() == new_pal

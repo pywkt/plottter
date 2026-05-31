@@ -455,10 +455,16 @@ class _UIBuildMixin:
 
         # Palette picker widget (Custom Palette mode only)
         self._palette_picker_widget = QWidget()
-        palette_picker_form = QFormLayout(self._palette_picker_widget)
+        palette_picker_vbox = QVBoxLayout(self._palette_picker_widget)
+        palette_picker_vbox.setContentsMargins(0, 0, 0, 0)
+        palette_picker_vbox.setSpacing(4)
+        palette_picker_form = QFormLayout()
         palette_picker_form.setContentsMargins(0, 0, 0, 0)
         self._palette_picker_combo = QComboBox()
         palette_picker_form.addRow(QLabel("Palette"), self._palette_picker_combo)
+        palette_picker_vbox.addLayout(palette_picker_form)
+        self._palette_edit_btn = QPushButton("Edit / New Palette\u2026")
+        palette_picker_vbox.addWidget(self._palette_edit_btn)
         color_sep_layout.addWidget(self._palette_picker_widget)
         self._palette_picker_widget.setVisible(False)
 
@@ -517,6 +523,7 @@ class _UIBuildMixin:
         # next Generate Lines reflects the new value, without forcing the
         # user to re-click Separate Into Layers.
         self._cmyk_k_amount_spin.valueChanged.connect(self._on_cmyk_k_amount_changed)
+        self._palette_edit_btn.clicked.connect(self._on_edit_palette)
         # Initialise label/range for the current (default) method
         self._on_color_sep_method_changed(self._color_sep_method_combo.currentText())
 
