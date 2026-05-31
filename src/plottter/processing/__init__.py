@@ -23,6 +23,7 @@ from plottter.processing.brush import apply_brush
 from plottter.processing.taper import taper_paths
 from plottter.processing.offset import offset_paths
 from plottter.processing.scale import scale_paths_to_canvas
+from plottter.processing.join import join_at_junctions
 
 __all__ = [
     "PROCESSING_PLUGINS",
@@ -46,4 +47,5 @@ __all__ = [
     "taper_paths",
     "offset_paths",
     "scale_paths_to_canvas",
+    "join_at_junctions",
 ]
