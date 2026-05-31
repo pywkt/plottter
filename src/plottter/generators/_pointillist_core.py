@@ -215,7 +215,7 @@ def _render_crosses(coords_mm: np.ndarray, size_mm: float) -> list[Polyline]:
 
 
 def _render_circles(coords_mm: np.ndarray, size_mm: float) -> list[Polyline]:
-    """1 closed polyline of 12 vertices per dot."""
+    """1 closed polyline per dot: 12 circle vertices + duplicate of vertex 0."""
     r = size_mm * 0.5
     result: list[Polyline] = []
     angles = [2.0 * math.pi * k / _CIRCLE_SIDES for k in range(_CIRCLE_SIDES)]
@@ -224,5 +224,6 @@ def _render_circles(coords_mm: np.ndarray, size_mm: float) -> list[Polyline]:
     for row in coords_mm:
         x, y = float(row[0]), float(row[1])
         pts: Polyline = [(x + r * cos_a[k], y + r * sin_a[k]) for k in range(_CIRCLE_SIDES)]
+        pts.append(pts[0])  # close the loop so the pen returns to start
         result.append(pts)
     return result

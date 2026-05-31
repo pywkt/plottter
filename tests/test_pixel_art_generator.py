@@ -199,6 +199,37 @@ class TestGenerateLayers:
         # No x should be before draw_x1 (they start at draw_x1 + gap/2)
         assert all(x >= self.draw_x1 - 1e-6 for x in all_xs_gap)
 
+    def test_fit_mode_preserves_image_aspect(self):
+        """In Fit mode, the rendered grid must match the source image aspect.
+
+        A 4:1 wide image on a portrait A4 drawing area should produce cells that
+        span the full canvas width but only ~1/4 of the canvas height — never
+        stretched to fill both dimensions.
+        """
+        # All-black image: every cell maps to index 0 → fills with hatch lines
+        # (white cells get density 0 and produce nothing).
+        img = np.zeros((16, 64, 3), dtype=np.uint8)
+        params = {
+            "_source_image": img,
+            "grid_width": 32,
+            "palette": "grayscale_4",
+            "cell_fill_style": "solid_hatch",
+            "fill_density": 0.5,
+            "cell_border": True,  # guarantees a polyline per cell
+            "cell_gap_mm": 0.0,
+            "image_fit_mode": "fit",
+        }
+        specs = self.gen.generate_layers(params, self.canvas)
+        all_xs = [x for s in specs for path in s.paths for x, _ in path]
+        all_ys = [y for s in specs for path in s.paths for _, y in path]
+        assert all_xs and all_ys
+        used_w = max(all_xs) - min(all_xs)
+        used_h = max(all_ys) - min(all_ys)
+        # Image is 4:1 — used_w/used_h should be ~4 (allow 25% slack).
+        assert used_w / used_h > 3.0, (
+            f"aspect not preserved: used_w={used_w:.1f}, used_h={used_h:.1f}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # generate() — single-layer fallback

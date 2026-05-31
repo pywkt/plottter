@@ -192,6 +192,7 @@ class PointillistGenerator(Generator):
     ) -> list[LayerSpec]:
         """Return one LayerSpec per non-empty, non-skipped palette colour."""
         from plottter.color import get_preset, palette_separate
+        from plottter.generators._helpers import compute_image_rect
         from plottter.generators._pointillist_core import (
             image_to_canvas_mm,
             mitchell_sample,
@@ -206,8 +207,22 @@ class PointillistGenerator(Generator):
         dither = str(params.get("dither", "floyd-steinberg"))
         masks = palette_separate(image, palette, dither=dither)
 
-        left, top, right, bottom = canvas.drawing_area()
-        canvas_area_cm2 = ((right - left) * (bottom - top)) / 100.0
+        img_h, img_w = image.shape[:2]
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        img_rect = compute_image_rect(
+            str(params.get("image_fit_mode", "fit")),
+            img_w,
+            img_h,
+            draw_x1,
+            draw_y1,
+            draw_x2,
+            draw_y2,
+            custom_w_mm=params.get("image_width_mm"),
+            custom_h_mm=params.get("image_height_mm"),
+            offset_x_mm=float(params.get("image_offset_x_mm", 0.0)),
+            offset_y_mm=float(params.get("image_offset_y_mm", 0.0)),
+        )
+        rect_area_cm2 = ((img_rect[2] - img_rect[0]) * (img_rect[3] - img_rect[1])) / 100.0
 
         seed = int(params.get("seed", 0))
         style = str(params.get("dot_style", "point"))
@@ -222,14 +237,12 @@ class PointillistGenerator(Generator):
             if not (mask == 255).any():
                 continue
 
-            n = int(round(density * canvas_area_cm2 * float((mask == 255).mean())))
+            n = int(round(density * rect_area_cm2 * float((mask == 255).mean())))
             if n <= 0:
                 continue
 
             dots_image = mitchell_sample(mask, n, seed=seed + i, candidates=10)
-            dots_mm = image_to_canvas_mm(
-                dots_image, mask.shape[:2], canvas.drawing_area()
-            )
+            dots_mm = image_to_canvas_mm(dots_image, mask.shape[:2], img_rect)
             paths = render_dots(dots_mm, style=style, size_mm=size_mm)
 
             layer_specs.append(

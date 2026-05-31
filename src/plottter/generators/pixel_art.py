@@ -480,6 +480,7 @@ class PixelArtGenerator(Generator):
                 cell_border=cell_border,
                 cell_gap_mm=cell_gap_mm,
                 canvas=canvas,
+                params=params,
                 progress_callback=progress_callback,
                 cancelled_callback=cancelled_callback,
             )
@@ -493,12 +494,29 @@ class PixelArtGenerator(Generator):
             dithering=dithering,
         )
 
-        n_rows, n_cols = indices.shape
-        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
-        draw_w = draw_x2 - draw_x1
+        from plottter.generators._helpers import compute_image_rect
 
-        # cell_size_mm is the pitch (cell + gap); effective_cell_mm is the fill area.
-        cell_size_mm = draw_w / n_cols
+        n_rows, n_cols = indices.shape
+        img_h, img_w = source.shape[:2]
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        img_x1, img_y1, img_x2, img_y2 = compute_image_rect(
+            str(params.get("image_fit_mode", "fit")),
+            img_w,
+            img_h,
+            draw_x1,
+            draw_y1,
+            draw_x2,
+            draw_y2,
+            custom_w_mm=params.get("image_width_mm"),
+            custom_h_mm=params.get("image_height_mm"),
+            offset_x_mm=float(params.get("image_offset_x_mm", 0.0)),
+            offset_y_mm=float(params.get("image_offset_y_mm", 0.0)),
+        )
+        # In fit/custom mode the rect preserves image aspect, so rect_w/n_cols
+        # equals rect_h/n_rows and cells are square. In fill mode rect == drawing
+        # area and the rect_w-derived cell size matches the previous behaviour.
+        rect_w = img_x2 - img_x1
+        cell_size_mm = rect_w / n_cols
         effective_cell_mm = max(0.01, cell_size_mm - cell_gap_mm)
 
         hex_colors = palette.to_hex_list()
@@ -530,8 +548,8 @@ class PixelArtGenerator(Generator):
                     continue
 
                 # Top-left corner of this cell's fill area.
-                cell_x = draw_x1 + c * cell_size_mm + cell_gap_mm / 2.0
-                cell_y = draw_y1 + r * cell_size_mm + cell_gap_mm / 2.0
+                cell_x = img_x1 + c * cell_size_mm + cell_gap_mm / 2.0
+                cell_y = img_y1 + r * cell_size_mm + cell_gap_mm / 2.0
 
                 # Scale density by darkness: black → full density, white → 0.
                 cell_density = density * (1.0 - color_brightness[idx])
@@ -597,6 +615,7 @@ class PixelArtGenerator(Generator):
         cell_border: bool,
         cell_gap_mm: float,
         canvas: Canvas,
+        params: dict[str, Any],
         progress_callback: Any = None,
         cancelled_callback: Any = None,
     ) -> list[LayerSpec]:
@@ -609,13 +628,29 @@ class PixelArtGenerator(Generator):
         """
         from shapely.geometry import Polygon as _ShapelyPolygon  # lazy
 
-        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
-        draw_w = draw_x2 - draw_x1
-        draw_h = draw_y2 - draw_y1
+        from plottter.generators._helpers import compute_image_rect
 
-        # Circumradius: n_cols flat-top hexes spanning draw_w.
-        # Total x-extent = s*(2 + 1.5*(n_cols-1)) = s*(0.5 + 1.5*n_cols)
-        s = draw_w / (0.5 + 1.5 * grid_width)
+        img_h_px, img_w_px = source.shape[:2]
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        img_x1, img_y1, img_x2, img_y2 = compute_image_rect(
+            str(params.get("image_fit_mode", "fit")),
+            img_w_px,
+            img_h_px,
+            draw_x1,
+            draw_y1,
+            draw_x2,
+            draw_y2,
+            custom_w_mm=params.get("image_width_mm"),
+            custom_h_mm=params.get("image_height_mm"),
+            offset_x_mm=float(params.get("image_offset_x_mm", 0.0)),
+            offset_y_mm=float(params.get("image_offset_y_mm", 0.0)),
+        )
+        rect_w = img_x2 - img_x1
+        rect_h = img_y2 - img_y1
+
+        # Circumradius: grid_width flat-top hexes spanning rect_w.
+        # Total x-extent = s*(2 + 1.5*(grid_width-1)) = s*(0.5 + 1.5*grid_width)
+        s = rect_w / (0.5 + 1.5 * grid_width)
         hex_h = s * math.sqrt(3)  # centre-to-centre row spacing
 
         palette_colors = palette.colors  # list of (R, G, B) tuples
@@ -630,15 +665,16 @@ class PixelArtGenerator(Generator):
 
         img_h, img_w = source.shape[:2]
 
-        # Build all hex centres using even-q offset layout.
+        # Build all hex centres using even-q offset layout, anchored within the
+        # fitted image rect (so map preserves source aspect ratio).
         hex_centers: list[tuple[float, float]] = []
         for q in range(grid_width):
-            cx = draw_x1 + s + q * 1.5 * s
+            cx = img_x1 + s + q * 1.5 * s
             y_offset = hex_h / 2.0 if (q % 2 == 1) else 0.0
             r = 0
             while True:
-                cy = draw_y1 + hex_h / 2.0 + y_offset + r * hex_h
-                if cy > draw_y2 + hex_h / 2.0:
+                cy = img_y1 + hex_h / 2.0 + y_offset + r * hex_h
+                if cy > img_y2 + hex_h / 2.0:
                     break
                 hex_centers.append((cx, cy))
                 r += 1
@@ -653,8 +689,8 @@ class PixelArtGenerator(Generator):
                 break
 
             # Sample source image at hex centre (nearest-neighbour).
-            px = int((cx - draw_x1) / draw_w * img_w)
-            py = int((cy - draw_y1) / draw_h * img_h)
+            px = int((cx - img_x1) / rect_w * img_w)
+            py = int((cy - img_y1) / rect_h * img_h)
             px = max(0, min(img_w - 1, px))
             py = max(0, min(img_h - 1, py))
             pixel = source[py, px, :3]

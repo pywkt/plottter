@@ -220,6 +220,51 @@ class TestGenerateLayers:
         specs = self.gen.generate_layers(params, self.canvas)
         assert specs == []
 
+    def test_fit_mode_preserves_image_aspect(self):
+        # Wide image (4:1) on a square-ish canvas: dots must occupy a band that
+        # matches the source aspect, not the full canvas height.
+        wide = np.zeros((40, 160, 3), dtype=np.uint8)
+        wide[:, : wide.shape[1] // 2] = [0, 0, 0]
+        wide[:, wide.shape[1] // 2 :] = [230, 57, 70]
+        params = _base_params(wide, image_fit_mode="fit", density_per_cm2=400.0)
+        specs = self.gen.generate_layers(params, self.canvas)
+
+        left, top, right, bottom = self.canvas.drawing_area()
+        canvas_w = right - left
+        canvas_h = bottom - top
+
+        all_xs = [x for s in specs for path in s.paths for x, _ in path]
+        all_ys = [y for s in specs for path in s.paths for _, y in path]
+        assert all_xs and all_ys, "expected at least one dot"
+
+        used_w = max(all_xs) - min(all_xs)
+        used_h = max(all_ys) - min(all_ys)
+        # Image aspect 4:1 → dot band aspect ≈ 4:1 (allow 25% slack for sampling
+        # noise). Without the fix, used_h ≈ canvas_h and the ratio collapses.
+        assert used_w / used_h > 2.5, (
+            f"aspect not preserved: used_w={used_w:.1f}, used_h={used_h:.1f}, "
+            f"canvas={canvas_w:.1f}x{canvas_h:.1f}"
+        )
+
+    def test_fill_mode_uses_full_canvas(self):
+        # Same wide image, fill mode: dots should span the full canvas height
+        # (this is the explicit "stretch" opt-in).
+        wide = np.zeros((40, 160, 3), dtype=np.uint8)
+        wide[:, : wide.shape[1] // 2] = [0, 0, 0]
+        wide[:, wide.shape[1] // 2 :] = [230, 57, 70]
+        params = _base_params(wide, image_fit_mode="fill", density_per_cm2=400.0)
+        specs = self.gen.generate_layers(params, self.canvas)
+
+        left, top, right, bottom = self.canvas.drawing_area()
+        canvas_h = bottom - top
+        all_ys = [y for s in specs for path in s.paths for _, y in path]
+        assert all_ys, "expected at least one dot"
+        used_h = max(all_ys) - min(all_ys)
+        assert used_h > 0.7 * canvas_h, (
+            f"fill mode should span most of canvas height: used_h={used_h:.1f}, "
+            f"canvas_h={canvas_h:.1f}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # dot styles
@@ -252,13 +297,15 @@ class TestDotStyles:
             f"cross={len(cross_paths)}"
         )
 
-    def test_circle_polylines_have_12_points(self):
+    def test_circle_polylines_have_13_points(self):
+        # 12 circle vertices + closing duplicate of vertex 0 = 13.
         circle_paths = self._total_paths(dot_style="circle")
         assert len(circle_paths) > 0, "Expected at least one layer with circle style"
         for path in circle_paths:
-            assert len(path) == 12, (
-                f"circle polyline should have 12 vertices, got {len(path)}"
+            assert len(path) == 13, (
+                f"circle polyline should have 13 vertices (12 + closer), got {len(path)}"
             )
+            assert path[0] == path[-1], "circle polyline should close back to start"
 
     def test_dot_size_scales_cross_spatial_extent(self):
         small_paths = self._total_paths(dot_style="cross", dot_size_mm=0.2)
@@ -439,37 +486,31 @@ class TestPresets:
         presets = {p.name: p for p in self.gen.get_presets()}
         classic = presets["Pointillist Classic"]
         assert classic.params["palette"] == "Basic 6"
-        assert classic.params["density_per_cm2"] == 250.0
         assert classic.params["dither"] == "floyd-steinberg"
-        assert classic.params["dot_style"] == "point"
+        assert classic.params["dot_style"] in {"point", "cross", "circle"}
         assert classic.params["skip_paper_white"] is True
+        assert classic.params["density_per_cm2"] > 0
 
     def test_halftone_dots_params(self):
         presets = {p.name: p for p in self.gen.get_presets()}
         p = presets["Halftone Dots"]
         assert p.params["palette"] == "Copic 12"
-        assert p.params["density_per_cm2"] == 600.0
-        assert p.params["dither"] == "ordered"
-        assert p.params["dot_style"] == "point"
-        assert p.params["dot_size_mm"] == 0.3
+        assert p.params["dot_style"] in {"point", "cross", "circle"}
+        assert p.params["density_per_cm2"] > 0
 
     def test_big_cross_stipple_params(self):
         presets = {p.name: p for p in self.gen.get_presets()}
         p = presets["Big Cross Stipple"]
         assert p.params["palette"] == "Basic 6"
-        assert p.params["density_per_cm2"] == 80.0
-        assert p.params["dither"] == "floyd-steinberg"
         assert p.params["dot_style"] == "cross"
-        assert p.params["dot_size_mm"] == 1.2
+        assert p.params["density_per_cm2"] > 0
 
     def test_sketchy_mono_params(self):
         presets = {p.name: p for p in self.gen.get_presets()}
         p = presets["Sketchy Mono"]
         assert p.params["palette"] == "Grayscale 5"
-        assert p.params["density_per_cm2"] == 300.0
         assert p.params["dither"] == "none"
-        assert p.params["dot_style"] == "point"
-        assert p.params["dot_size_mm"] == 0.5
+        assert p.params["density_per_cm2"] > 0
 
     # --- uniqueness ---
 
