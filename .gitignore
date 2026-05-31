@@ -36,7 +36,8 @@ new-loop-files/
 # Internal dev specs and resources
 specs/
 resources/
-scripts/
+scripts/*
+!scripts/benchmark_processing.py
 
 # Claude Code / MCP config
 .claude/

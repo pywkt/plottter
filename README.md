@@ -80,6 +80,7 @@ plottter --list-generators  # Show all available generators
 | [Preview & Simulation](docs/preview-and-simulation.md) | Animation, travel metrics, pen jitter |
 | [Tips & Workflows](docs/tips-and-workflows.md) | Algorithm selection, optimization, brush effects, plugins |
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
+| [Performance](docs/performance.md) | Benchmark results for the path-processing pipeline; `[fast]` extra install instructions |
 
 ## License
 
