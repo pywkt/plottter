@@ -264,6 +264,40 @@ class CrtTvGenerator(Generator):
                     "seed": 0,
                 },
             ),
+            Preset(
+                name="B&W TV",
+                params={
+                    "palette": "Grayscale 5",
+                    "crt_resolution_w": 200,
+                    "mask_type": "shadow_mask",
+                    "subpixel_shape": "circle",
+                    "subpixel_size_mm": 0.30,
+                    "dither": "floyd-steinberg",
+                    "scanline_intensity": 0.9,
+                    "scanline_period": 2,
+                    "vignette_strength": 0.4,
+                    "barrel_strength": 0.0,
+                    "gamma": 1.1,
+                    "seed": 0,
+                },
+            ),
+            Preset(
+                name="Arcade Cabinet",
+                params={
+                    "palette": "Basic 6",
+                    "crt_resolution_w": 200,
+                    "mask_type": "shadow_mask",
+                    "subpixel_shape": "circle",
+                    "subpixel_size_mm": 0.30,
+                    "dither": "floyd-steinberg",
+                    "scanline_intensity": 0.85,
+                    "scanline_period": 2,
+                    "vignette_strength": 0.5,
+                    "barrel_strength": 0.10,
+                    "gamma": 1.2,
+                    "seed": 0,
+                },
+            ),
         ]
 
     # ------------------------------------------------------------------

@@ -621,6 +621,50 @@ class TestEffects:
                 f"Dot at ({x:.2f},{y:.2f}) found near corner cell with vignette=1"
             )
 
+    def test_barrel_strength_shifts_corner_outward(self):
+        """barrel_strength=0.10 shifts corner cell x-coordinate outward by >= 1 mm.
+
+        With a uniform black image and no scanlines/vignette, all pixels are
+        assigned to pen 0 (black). The leftmost column dots sit close to
+        rect_x1 with no barrel. Barrel distortion pushes them further left
+        (away from canvas centre), so the minimum x across all dots should
+        decrease by at least 1 mm.
+        """
+        size = 20
+        img = self._uniform_image(color=(0, 0, 0), size=size)
+
+        base_kw = dict(
+            crt_resolution_w=size,
+            scanline_intensity=0.0,
+            vignette_strength=0.0,
+            seed=0,
+            subpixel_shape="point",
+        )
+
+        specs_no = self.gen.generate_layers(
+            _base_params(img, barrel_strength=0.0, **base_kw), self.canvas
+        )
+        specs_barrel = self.gen.generate_layers(
+            _base_params(img, barrel_strength=0.10, **base_kw), self.canvas
+        )
+
+        assert specs_no, "Expected layers with barrel_strength=0.0"
+        assert specs_barrel, "Expected layers with barrel_strength=0.10"
+
+        # Minimum x across all dots — leftmost point comes from left-edge cells
+        min_x_no = min(x for s in specs_no for path in s.paths for x, _ in path)
+        min_x_barrel = min(
+            x for s in specs_barrel for path in s.paths for x, _ in path
+        )
+
+        # Barrel pushes left-side points further left (smaller x)
+        shift = min_x_no - min_x_barrel
+        assert shift >= 1.0, (
+            f"Expected corner x to shift outward by >= 1 mm with "
+            f"barrel_strength=0.10; no_barrel min_x={min_x_no:.2f}, "
+            f"barrel min_x={min_x_barrel:.2f}, shift={shift:.2f}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Determinism
@@ -807,4 +851,28 @@ class TestPresets:
         img[:16, :] = [0, 0, 0]
         img[16:, :] = [230, 57, 70]
         specs = self._run_preset("VGA Monitor", image=img)
+        assert len(specs) >= 1
+
+    def test_bw_tv_preset_present(self):
+        names = [p.name for p in self.gen.get_presets()]
+        assert "B&W TV" in names
+
+    def test_bw_tv_preset_runs_and_emits_layers(self):
+        """B&W TV preset on a synthetic image should produce at least 1 layer."""
+        img = np.zeros((32, 128, 3), dtype=np.uint8)
+        img[:16, :] = [0, 0, 0]
+        img[16:, :] = [200, 200, 200]
+        specs = self._run_preset("B&W TV", image=img)
+        assert len(specs) >= 1
+
+    def test_arcade_cabinet_preset_present(self):
+        names = [p.name for p in self.gen.get_presets()]
+        assert "Arcade Cabinet" in names
+
+    def test_arcade_cabinet_preset_runs_and_emits_layers(self):
+        """Arcade Cabinet preset on a synthetic image should produce at least 1 layer."""
+        img = np.zeros((32, 128, 3), dtype=np.uint8)
+        img[:16, :] = [0, 0, 0]
+        img[16:, :] = [230, 57, 70]
+        specs = self._run_preset("Arcade Cabinet", image=img)
         assert len(specs) >= 1
