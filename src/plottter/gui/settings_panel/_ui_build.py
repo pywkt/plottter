@@ -408,7 +408,7 @@ class _UIBuildMixin:
         # Method selector (signal connected after all widgets are created to avoid AttributeError)
         method_form = QFormLayout()
         self._color_sep_method_combo = QComboBox()
-        self._color_sep_method_combo.addItems(["K-Means", "Luminance", "RGB", "CMYK", "AI Layer Separation"])
+        self._color_sep_method_combo.addItems(["K-Means", "Luminance", "RGB", "CMYK", "AI Layer Separation", "Custom Palette"])
         method_form.addRow(QLabel("Method"), self._color_sep_method_combo)
 
         # num_colors spinner (K-means / Luminance)
@@ -452,6 +452,15 @@ class _UIBuildMixin:
         k_form.addRow(QLabel("K Amount"), self._cmyk_k_amount_spin)
         color_sep_layout.addWidget(self._cmyk_k_amount_widget)
         self._cmyk_k_amount_widget.setVisible(False)
+
+        # Palette picker widget (Custom Palette mode only)
+        self._palette_picker_widget = QWidget()
+        palette_picker_form = QFormLayout(self._palette_picker_widget)
+        palette_picker_form.setContentsMargins(0, 0, 0, 0)
+        self._palette_picker_combo = QComboBox()
+        palette_picker_form.addRow(QLabel("Palette"), self._palette_picker_combo)
+        color_sep_layout.addWidget(self._palette_picker_widget)
+        self._palette_picker_widget.setVisible(False)
 
         # Line-art algorithm for separated layers
         gen_form = QFormLayout()

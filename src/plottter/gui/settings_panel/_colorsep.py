@@ -51,6 +51,7 @@ class _ColorSepMixin:
         is_rgb = method == "RGB"
         is_cmyk = method == "CMYK"
         is_ai = method == "AI Layer Separation"
+        is_palette = method == "Custom Palette"
 
         self._color_sep_num_colors_spin.setVisible(is_kmeans or is_lum or is_ai)
         self._color_sep_num_colors_label.setVisible(is_kmeans or is_lum or is_ai)
@@ -68,6 +69,15 @@ class _ColorSepMixin:
         self._channel_check_widget.setVisible(is_rgb or is_cmyk)
         # K Amount slider is only meaningful for CMYK separation.
         self._cmyk_k_amount_widget.setVisible(is_cmyk)
+        # Palette picker is only shown for Custom Palette mode.
+        self._palette_picker_widget.setVisible(is_palette)
+
+        if is_palette:
+            self._palette_picker_combo.clear()
+            from plottter.color.palettes import list_presets
+            for palette in list_presets():
+                self._palette_picker_combo.addItem(palette.name, palette)
+
         layout = self._channel_check_widget.layout()
         # Clear existing checkboxes
         while layout.count():
@@ -427,6 +437,19 @@ class _ColorSepMixin:
                         filtered_names.append(layer_names[i])
                 results = filtered
                 layer_names = filtered_names
+            elif method == "Custom Palette":
+                from plottter.color import palette_separate
+                raw_rgb = source
+                if raw_rgb.ndim == 2:
+                    raw_rgb = np.stack([raw_rgb] * 3, axis=-1)
+                elif raw_rgb.ndim == 3 and raw_rgb.shape[2] == 4:
+                    raw_rgb = raw_rgb[:, :, :3]
+                palette = self._palette_picker_combo.currentData()
+                if palette is None:
+                    QMessageBox.warning(self, "No Palette", "Please select a palette.")
+                    return
+                results = palette_separate(raw_rgb, palette, dither="none")
+                layer_names = [f"Pen: {color}" for _, color in results]
             else:
                 return
         except Exception as exc:
