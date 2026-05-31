@@ -30,6 +30,8 @@ _DEFAULTS = {
     "run_clip": True,
     "run_merge": True,
     "merge_threshold": 0.5,
+    "run_join": False,
+    "join_threshold": 0.1,
     "run_2opt": True,
     "run_3opt": False,
     "run_or_opt": True,
@@ -106,6 +108,18 @@ class OptimizeSettingsDialog(QDialog):
         merge_layout.addWidget(self._merge_check)
         merge_layout.addLayout(self._indent(self._labeled_spin("Threshold:", self._merge_thresh_spin)))
 
+        self._join_check = QCheckBox("Join paths at junctions")
+        self._join_check.setToolTip(
+            "Like Merge nearby endpoints, but also splits paths at T-junctions "
+            "and follows Eulerian chains across the connectivity graph. Far more "
+            "effective on road networks; slower than plain Merge."
+        )
+        self._join_thresh_spin = self._make_spin(0.01, 10.0, 0.05, 2, " mm",
+            "Vertex-proximity threshold for T-junction detection and endpoint "
+            "snapping (mm).")
+        merge_layout.addWidget(self._join_check)
+        merge_layout.addLayout(self._indent(self._labeled_spin("Threshold:", self._join_thresh_spin)))
+
         layout.addWidget(merge_group)
 
         # --- Reordering group ---
@@ -149,6 +163,7 @@ class OptimizeSettingsDialog(QDialog):
         self._simplify_check.toggled.connect(self._simplify_tol_spin.setEnabled)
         self._filter_check.toggled.connect(self._filter_len_spin.setEnabled)
         self._merge_check.toggled.connect(self._merge_thresh_spin.setEnabled)
+        self._join_check.toggled.connect(self._join_thresh_spin.setEnabled)
 
         # Load persisted values (or defaults)
         self._load_settings()
@@ -209,6 +224,9 @@ class OptimizeSettingsDialog(QDialog):
         self._merge_check.setChecked(s.value("run_merge", d["run_merge"], type=bool))
         self._merge_thresh_spin.setValue(s.value("merge_threshold", d["merge_threshold"], type=float))
 
+        self._join_check.setChecked(s.value("run_join", d["run_join"], type=bool))
+        self._join_thresh_spin.setValue(s.value("join_threshold", d["join_threshold"], type=float))
+
         self._opt2_check.setChecked(s.value("run_2opt", d["run_2opt"], type=bool))
         self._opt3_check.setChecked(s.value("run_3opt", d["run_3opt"], type=bool))
         self._oropt_check.setChecked(s.value("run_or_opt", d["run_or_opt"], type=bool))
@@ -220,6 +238,7 @@ class OptimizeSettingsDialog(QDialog):
         self._simplify_tol_spin.setEnabled(self._simplify_check.isChecked())
         self._filter_len_spin.setEnabled(self._filter_check.isChecked())
         self._merge_thresh_spin.setEnabled(self._merge_check.isChecked())
+        self._join_thresh_spin.setEnabled(self._join_check.isChecked())
 
     def _save_settings(self) -> None:
         s = QSettings("Plottter", "Plottter")
@@ -233,6 +252,8 @@ class OptimizeSettingsDialog(QDialog):
         s.setValue("run_clip", self._clip_check.isChecked())
         s.setValue("run_merge", self._merge_check.isChecked())
         s.setValue("merge_threshold", self._merge_thresh_spin.value())
+        s.setValue("run_join", self._join_check.isChecked())
+        s.setValue("join_threshold", self._join_thresh_spin.value())
         s.setValue("run_2opt", self._opt2_check.isChecked())
         s.setValue("run_3opt", self._opt3_check.isChecked())
         s.setValue("run_or_opt", self._oropt_check.isChecked())
@@ -249,6 +270,8 @@ class OptimizeSettingsDialog(QDialog):
         self._clip_check.setChecked(d["run_clip"])
         self._merge_check.setChecked(d["run_merge"])
         self._merge_thresh_spin.setValue(d["merge_threshold"])
+        self._join_check.setChecked(d["run_join"])
+        self._join_thresh_spin.setValue(d["join_threshold"])
         self._opt2_check.setChecked(d["run_2opt"])
         self._opt3_check.setChecked(d["run_3opt"])
         self._oropt_check.setChecked(d["run_or_opt"])
@@ -273,6 +296,8 @@ class OptimizeSettingsDialog(QDialog):
             "run_clip": self._clip_check.isChecked(),
             "run_merge": self._merge_check.isChecked(),
             "merge_threshold": self._merge_thresh_spin.value(),
+            "run_join": self._join_check.isChecked(),
+            "join_threshold": self._join_thresh_spin.value(),
             "run_2opt": self._opt2_check.isChecked(),
             "run_3opt": self._opt3_check.isChecked(),
             "run_or_opt": self._oropt_check.isChecked(),

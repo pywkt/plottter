@@ -69,6 +69,8 @@ class _OptimizeWorker(QThread):
         clip_bounds: tuple[float, float, float, float] | None = None,
         run_merge: bool = True,
         merge_threshold: float = 0.5,
+        run_join: bool = False,
+        join_threshold: float = 0.1,
         run_2opt: bool = True,
         run_3opt: bool = False,
         run_or_opt: bool = True,
@@ -87,6 +89,8 @@ class _OptimizeWorker(QThread):
         self._clip_bounds = clip_bounds
         self._run_merge = run_merge
         self._merge_threshold = merge_threshold
+        self._run_join = run_join
+        self._join_threshold = join_threshold
         self._run_2opt = run_2opt
         self._run_3opt = run_3opt
         self._run_or_opt = run_or_opt
@@ -105,6 +109,7 @@ class _OptimizeWorker(QThread):
                 filter_short_paths,
                 clip_to_bounds,
                 merge_nearby_paths,
+                join_at_junctions,
                 reorder_paths,
                 optimize_2opt,
                 optimize_3opt,
@@ -128,6 +133,8 @@ class _OptimizeWorker(QThread):
                 paths = clip_to_bounds(paths, self._clip_bounds)
             if self._run_merge:
                 paths = merge_nearby_paths(paths, threshold_mm=self._merge_threshold)
+            if self._run_join:
+                paths = join_at_junctions(paths, threshold_mm=self._join_threshold)
             self.progress.emit(10)
 
             if self._cancelled:

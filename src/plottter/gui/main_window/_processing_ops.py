@@ -389,6 +389,8 @@ class _ProcessingOpsMixin:
             clip_bounds=self._opt_bounds,
             run_merge=s.get("run_merge", True),
             merge_threshold=s.get("merge_threshold", 0.5),
+            run_join=s.get("run_join", False),
+            join_threshold=s.get("join_threshold", 0.1),
             run_2opt=s.get("run_2opt", True),
             run_3opt=s.get("run_3opt", False),
             run_or_opt=s.get("run_or_opt", True),
