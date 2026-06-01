@@ -648,3 +648,152 @@ class TestDitherChecksums:
         # …and must be the selected item.
         assert combo.currentText() == "My Test Set"
         assert combo.currentData() == new_pal
+
+
+# ---------------------------------------------------------------------------
+# "Skip near-white layer" — pure helper functions
+# ---------------------------------------------------------------------------
+
+
+class TestIsNearWhiteHex:
+    def test_pure_white_returns_true(self):
+        from plottter.gui.settings_panel._colorsep import _is_near_white_hex
+
+        assert _is_near_white_hex("#FFFFFF") is True
+
+    def test_off_white_returns_true(self):
+        from plottter.gui.settings_panel._colorsep import _is_near_white_hex
+
+        # All channels >= 240
+        assert _is_near_white_hex("#F0F0F0") is True
+        assert _is_near_white_hex("#FAFAFA") is True
+
+    def test_just_below_threshold_returns_false(self):
+        from plottter.gui.settings_panel._colorsep import _is_near_white_hex
+
+        # One channel < 240
+        assert _is_near_white_hex("#EFEFEF") is False
+        assert _is_near_white_hex("#FFEFFF") is False
+
+    def test_dark_colors_return_false(self):
+        from plottter.gui.settings_panel._colorsep import _is_near_white_hex
+
+        assert _is_near_white_hex("#000000") is False
+        assert _is_near_white_hex("#7F7F7F") is False
+        assert _is_near_white_hex("#E63946") is False  # Basic 6 red
+
+    def test_invalid_hex_returns_false(self):
+        from plottter.gui.settings_panel._colorsep import _is_near_white_hex
+
+        # No "#"
+        assert _is_near_white_hex("FFFFFF") is False
+        # Wrong length
+        assert _is_near_white_hex("#FFF") is False
+        # Non-hex chars
+        assert _is_near_white_hex("#ZZZZZZ") is False
+        # Not a string
+        assert _is_near_white_hex(None) is False  # type: ignore[arg-type]
+
+
+class TestFilterNearWhiteLayers:
+    def test_drops_only_near_white_entries(self):
+        from plottter.gui.settings_panel._colorsep import filter_near_white_layers
+
+        mask = np.zeros((4, 4), dtype=np.uint8)
+        results = [
+            (mask, "#000000"),
+            (mask, "#FFFFFF"),  # drop
+            (mask, "#E63946"),
+            (mask, "#F0F0F0"),  # drop (above threshold)
+            (mask, "#EFEFEF"),  # keep (one channel below threshold)
+        ]
+        names = ["A", "B", "C", "D", "E"]
+
+        out_results, out_names = filter_near_white_layers(results, names)
+
+        assert [hex_ for _, hex_ in out_results] == ["#000000", "#E63946", "#EFEFEF"]
+        assert out_names == ["A", "C", "E"]
+
+    def test_no_near_white_returns_inputs_intact(self):
+        from plottter.gui.settings_panel._colorsep import filter_near_white_layers
+
+        mask = np.zeros((4, 4), dtype=np.uint8)
+        results = [(mask, "#000000"), (mask, "#E63946")]
+        names = ["X", "Y"]
+
+        out_results, out_names = filter_near_white_layers(results, names)
+
+        assert [hex_ for _, hex_ in out_results] == ["#000000", "#E63946"]
+        assert out_names == ["X", "Y"]
+
+    def test_all_near_white_returns_empty(self):
+        from plottter.gui.settings_panel._colorsep import filter_near_white_layers
+
+        mask = np.zeros((4, 4), dtype=np.uint8)
+        results = [(mask, "#FFFFFF"), (mask, "#FAFAFA")]
+        names = ["A", "B"]
+
+        out_results, out_names = filter_near_white_layers(results, names)
+
+        assert out_results == []
+        assert out_names == []
+
+    def test_does_not_mutate_inputs(self):
+        from plottter.gui.settings_panel._colorsep import filter_near_white_layers
+
+        mask = np.zeros((4, 4), dtype=np.uint8)
+        results = [(mask, "#FFFFFF"), (mask, "#000000")]
+        names = ["A", "B"]
+
+        filter_near_white_layers(results, names)
+
+        # Originals unchanged
+        assert [hex_ for _, hex_ in results] == ["#FFFFFF", "#000000"]
+        assert names == ["A", "B"]
+
+    def test_custom_threshold(self):
+        from plottter.gui.settings_panel._colorsep import filter_near_white_layers
+
+        mask = np.zeros((4, 4), dtype=np.uint8)
+        results = [(mask, "#808080"), (mask, "#FFFFFF")]
+        names = ["mid", "white"]
+
+        # Threshold=128 → both qualify as "near white"
+        out_results, _ = filter_near_white_layers(results, names, threshold=128)
+        assert out_results == []
+
+        # Threshold=250 → only #FFFFFF qualifies
+        out_results, out_names = filter_near_white_layers(results, names, threshold=250)
+        assert [hex_ for _, hex_ in out_results] == ["#808080"]
+        assert out_names == ["mid"]
+
+
+# ---------------------------------------------------------------------------
+# "Skip near-white layer" — panel integration
+# ---------------------------------------------------------------------------
+
+
+class TestSkipWhiteLayerVisibility:
+    def test_visible_for_kmeans(self, settings_panel):
+        settings_panel._on_color_sep_method_changed("K-Means")
+        assert not settings_panel._skip_white_layer_check.isHidden()
+
+    def test_visible_for_luminance(self, settings_panel):
+        settings_panel._on_color_sep_method_changed("Luminance")
+        assert not settings_panel._skip_white_layer_check.isHidden()
+
+    def test_visible_for_custom_palette(self, settings_panel):
+        settings_panel._on_color_sep_method_changed("Custom Palette")
+        assert not settings_panel._skip_white_layer_check.isHidden()
+
+    def test_hidden_for_rgb(self, settings_panel):
+        settings_panel._on_color_sep_method_changed("RGB")
+        assert settings_panel._skip_white_layer_check.isHidden()
+
+    def test_hidden_for_cmyk(self, settings_panel):
+        settings_panel._on_color_sep_method_changed("CMYK")
+        assert settings_panel._skip_white_layer_check.isHidden()
+
+    def test_hidden_for_ai_layer_separation(self, settings_panel):
+        settings_panel._on_color_sep_method_changed("AI Layer Separation")
+        assert settings_panel._skip_white_layer_check.isHidden()

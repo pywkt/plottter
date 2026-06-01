@@ -44,6 +44,46 @@ def _separation_mask_to_luminance(mask: np.ndarray, src_img: np.ndarray) -> np.n
     return (255 - mask).astype(np.uint8)
 
 
+def _is_near_white_hex(hex_color: str, threshold: int = 240) -> bool:
+    """Return True if a ``#RRGGBB`` colour has all channels >= *threshold*.
+
+    Used to detect "background" layers that arise when AI BG removal
+    composites the removed region onto pure white and a partitioning
+    separator (K-Means / Luminance / Custom Palette) then assigns those
+    pixels to a near-white layer.
+    """
+    if not isinstance(hex_color, str) or len(hex_color) != 7 or hex_color[0] != "#":
+        return False
+    try:
+        r = int(hex_color[1:3], 16)
+        g = int(hex_color[3:5], 16)
+        b = int(hex_color[5:7], 16)
+    except ValueError:
+        return False
+    return r >= threshold and g >= threshold and b >= threshold
+
+
+def filter_near_white_layers(
+    results: list,
+    layer_names: list,
+    threshold: int = 240,
+) -> tuple[list, list]:
+    """Drop entries whose hex colour is near white (per :func:`_is_near_white_hex`).
+
+    Operates on the ``(mask, hex_color)`` tuples and ``layer_names`` list in
+    lockstep — both inputs are sliced identically.  Returns new lists; the
+    inputs are not mutated.
+    """
+    filtered_results: list = []
+    filtered_names: list = []
+    for (mask, hex_color), lname in zip(results, layer_names):
+        if _is_near_white_hex(hex_color, threshold=threshold):
+            continue
+        filtered_results.append((mask, hex_color))
+        filtered_names.append(lname)
+    return filtered_results, filtered_names
+
+
 class _ColorSepMixin:
     """Mixin for color separation methods."""
 
@@ -74,6 +114,11 @@ class _ColorSepMixin:
         # Palette picker is only shown for Custom Palette mode.
         self._palette_picker_widget.setVisible(is_palette)
         self._palette_dither_combo.setVisible(is_palette)
+        # "Skip near-white layer" is only meaningful for partitioning separators
+        # that may assign white pixels to their own layer (the AI-BG-on-white
+        # region).  RGB / CMYK / AI already emit zero ink for white pixels.
+        if hasattr(self, "_skip_white_layer_check"):
+            self._skip_white_layer_check.setVisible(is_kmeans or is_lum or is_palette)
 
         if is_palette:
             self._populate_palette_picker()
@@ -219,6 +264,13 @@ class _ColorSepMixin:
         """Persist the selected dither method to QSettings."""
         from PyQt6.QtCore import QSettings
         QSettings("Plottter", "Plottter").setValue("colorsep/palette_dither", text)
+
+    def _on_skip_white_layer_toggled(self, checked: bool) -> None:
+        """Persist the 'Skip near-white layer' checkbox state to QSettings."""
+        from PyQt6.QtCore import QSettings
+        QSettings("Plottter", "Plottter").setValue(
+            "colorsep/skip_white_layer", "true" if checked else "false"
+        )
 
     def _rebuild_color_sep_preset_combo(self) -> None:
         """Rebuild the color separation preset combo based on the selected generator."""
@@ -585,6 +637,17 @@ class _ColorSepMixin:
         preprocessed: "np.ndarray",
     ) -> None:
         """Create layers from separation results (called from both sync and async paths)."""
+        # "Skip near-white layer" filter — drops the layer(s) whose representative
+        # colour is essentially white.  Only applied for partitioning separators
+        # where a white layer is a real risk (K-Means / Luminance / Custom
+        # Palette).  RGB / CMYK / AI Layer Separation are unaffected.
+        if (
+            getattr(self, "_skip_white_layer_check", None) is not None
+            and self._skip_white_layer_check.isChecked()
+            and method in ("K-Means", "Luminance", "Custom Palette")
+        ):
+            results, layer_names = filter_near_white_layers(results, layer_names)
+
         # Remove previous separation layers before creating new ones
         self._controller.undo_stack.beginMacro("Separate Into Layers")
         for old_lid in list(self._separated_layer_ids):

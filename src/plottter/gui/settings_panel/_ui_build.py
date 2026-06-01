@@ -507,6 +507,30 @@ class _UIBuildMixin:
         )
         self._rebuild_color_sep_preset_combo()
 
+        # "Skip near-white layer" checkbox — drops any output layer whose
+        # representative colour is near white.  Useful after AI Background
+        # Removal: the BG region becomes pure white in the composited image
+        # and would otherwise show up as a "background" layer for K-Means /
+        # Luminance / Custom Palette.  RGB and CMYK already emit zero ink
+        # for white pixels so they don't need this.
+        self._skip_white_layer_check = QCheckBox("Skip near-white layer")
+        self._skip_white_layer_check.setToolTip(
+            "Drop any output layer whose representative colour is near white "
+            "(R/G/B all ≥ 240).  Useful after AI Background Removal — the BG "
+            "region becomes pure white in the composited image and would "
+            "otherwise produce a 'background' layer for K-Means, Luminance, "
+            "or Custom Palette.  RGB and CMYK already emit zero ink for "
+            "white pixels and ignore this option."
+        )
+        _saved_skip = _QS("Plottter", "Plottter").value(
+            "colorsep/skip_white_layer", "false"
+        )
+        self._skip_white_layer_check.setChecked(str(_saved_skip).lower() == "true")
+        self._skip_white_layer_check.toggled.connect(
+            self._on_skip_white_layer_toggled
+        )
+        color_sep_layout.addWidget(self._skip_white_layer_check)
+
         # Separate and Generate Lines buttons
         self._separate_btn = QPushButton("Separate into Layers")
         self._separate_btn.clicked.connect(self._on_separate)
