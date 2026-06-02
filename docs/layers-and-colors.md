@@ -171,7 +171,58 @@ respective hex colors `#FF0000`, `#00FF00`, `#0000FF`.
 Converts RGB to CMYK and splits into Cyan, Magenta, Yellow, and Key (Black) channels.
 Produces four layers with standard process colors.
 
+| Parameter | Description |
+|-----------|-------------|
+| `K Amount` | How much luminance to pull into the K (black) channel vs. leaving as CMY — 0 = no K pull, 0.5 = balanced, 1 = maximum K. Default 0.3. Adjusting the spinbox refreshes the cached masks in place, no need to re-Separate. |
+
 **Best for:** Simulating CMYK print-style separations for risograph-style plotter art.
+
+#### Custom Palette
+
+Quantises the image to a user-defined pen palette using perceptually-correct Lab-space
+nearest-neighbour matching. **This is a partitioning separator** — each pixel is assigned
+to *exactly one* pen (its perceptually closest match), so the output masks are mutually
+exclusive and exhaustive (every pixel belongs to some layer).
+
+Different from RGB/CMYK in two important ways:
+
+- It quantises rather than decomposes — there's no "how much of each pen" per pixel
+- Optional **dithering** (Floyd-Steinberg / ordered / Atkinson) scatters intermediate shades
+  across nearby pixels so adjacent dots of different pens mix optically at viewing distance
+
+| Parameter | Description |
+|-----------|-------------|
+| `Palette` | Pen palette: Basic 6, Copic 12, Sakura Metallic 5, Grayscale 5, RYBK 4 (artist primaries), CMYKOG 6 (Hexachrome-style extended gamut), Risograph 6 (Fluorescent Pink / Federal Blue / etc.), or any user-saved palette |
+| `Dither` | `None`, `Floyd-Steinberg` (default — best for gradient reproduction), `Ordered`, `Atkinson` |
+
+The **Edit / New Palette…** button opens a palette editor where you can create your own
+palettes (name + list of hex colours), saved under `~/.plottter/palettes/`. Saved user
+palettes appear in the picker alongside the built-ins (with a `(user)` suffix if the name
+collides).
+
+**Best for:** Pen-plotter colour work where you want output restricted to the pens you
+actually own. Pairs naturally with the **Pointillist** generator for optical-mixing dot art.
+
+#### AI Layer Separation
+
+Uses Replicate's SAM-2 segmentation model to split the image into semantic regions
+(foreground objects, distinct shapes). Each segment becomes its own layer. Requires a
+Replicate.com API key configured in Preferences.
+
+**Best for:** Subject/background separation, isolating distinct objects for per-object styling.
+
+### Skip near-white layer
+
+A checkbox above the **Separate into Layers** button, visible only for K-Means, Luminance,
+and Custom Palette. When checked, any output layer whose representative colour has all
+R/G/B channels ≥ 240 (i.e. essentially white) is dropped before layer creation.
+
+**Why this exists:** After **AI Background Removal**, the removed background region is
+composited onto pure white in the source image. RGB and CMYK separators correctly emit
+zero ink for white pixels, but K-Means / Luminance / Custom Palette are *partitioning*
+separators that assign every pixel — including the now-white background — to some output
+layer. Without this option, you'd see a "background" layer the white pen would plot over
+in every separation. The state persists across sessions.
 
 ---
 
@@ -226,6 +277,9 @@ appending) on subsequent re-generations:
 | Generator | Layers per run |
 |-----------|----------------|
 | **Pixel Art** (Image-to-Lines) | One layer per palette color used in the rendered image |
+| **Pointillist** (Image-to-Lines) | One layer per non-empty palette pen — dots of pure pen colour, no overlap |
+| **CRT TV** (Image-to-Lines) | One layer per palette pen — CRT-style subpixel triads, scanlines, vignette |
+| **Map** (Map mode) | One layer per enabled OpenStreetMap feature category (roads, water, parks, buildings, …) |
 
 When you regenerate a multi-layer-emitting generator, plottter scans the project for any
 prior run of that generator and replaces those layers before adding the new ones. This is
@@ -251,3 +305,10 @@ duplicates within the same project don't protect against the replacement — the
 - **Pixel Art** is a built-in multi-color workflow — the generator outputs one layer per
   palette color directly, no separation step required. See the
   [Image-to-Lines Guide](image-to-lines-guide.md#pixel-art) for details.
+- **Pointillist + CMYKOG 6** is the go-to combo for "full-colour" pen plotting — the
+  CMYKOG palette covers a wider gamut than CMYK alone (Hexachrome-style extended gamut),
+  and Pointillist's optical-mixing dots avoid the ink-on-ink interaction problems that
+  plague CMYK overprinting on a plotter.
+- For the **AI Background Removal → Color Separation** flow, enable the **Skip near-white
+  layer** checkbox so K-Means / Luminance / Custom Palette don't leave you with a stray
+  "background" layer to hide manually.

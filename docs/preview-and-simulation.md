@@ -23,6 +23,34 @@ modify paths, the canvas updates immediately.
 Zoom is centered on the cursor position, so the point under your cursor stays fixed as
 you zoom in or out.
 
+### Preview pen width
+
+Each pen's preview stroke width is configurable. Open **View › Preview Pen Width**
+(or use the inline canvas control) to pick a width in mm. The **Marker** preset
+emulates a thicker felt-tip marker (~1.2 mm) — useful when previewing plots that
+will use thick pens, since the default thin preview can make spacing look more
+generous than it'll actually plot.
+
+### Ink Preview mode
+
+Toggle **View › Ink Preview** to switch from the default "pen preview" rendering
+(each layer drawn on top opaquely, in stacking order) to **subtractive ink
+mixing** — where strokes overlap, the displayed colour darkens as if the inks
+had physically mixed on paper. Yellow + cyan visibly approaches green, magenta +
+yellow approaches red, and CMYK stacks correctly approach black where all four
+overlap.
+
+Use this mode when previewing:
+
+- CMYK separations to see how the channel layers will combine on paper
+- Pointillist or Paired Wave Shading output where the optical-mixing effect
+  matters more than per-pen line clarity
+- Any multi-pen plot where you want to spot accidental over-inking before
+  committing to paper
+
+Pen Preview remains the better choice when you want to see individual layer
+strokes clearly (e.g. for path-routing debugging or sparse line work).
+
 ---
 
 ## Stroke-Order Animation

@@ -2,9 +2,10 @@
 
 Image-to-Lines mode converts raster images (photos, illustrations, scans) into plotter-ready
 polyline paths. The workflow has two stages: **preprocessing** (adjusting the image) and
-**line generation** (choosing an algorithm to trace paths). There are **19 image algorithms**
+**line generation** (choosing an algorithm to trace paths). There are **21 image algorithms**
 available, ranging from edge detection and hatching to stippling, halftone, flow-based
-streamline art, and multi-layer pixel-art rendering.
+streamline art, paired-wave continuous-tone shading, optical-mixing pointillism, retro
+CRT-monitor simulation, and multi-layer pixel-art rendering.
 
 ---
 
@@ -674,6 +675,114 @@ If you regenerate after adjusting parameters, Pixel Art **replaces** its previou
 - For maximum tonal range with a small palette, enable **Floyd-Steinberg dithering** — it scatters intermediate shades to give an impression of more colors
 - Set `cell_gap_mm = 0.3` to visually separate adjacent cells of different pen colors, which helps the eye read the pixel structure
 - For a single-pen plot, hide all but one palette layer or merge them after generation
+
+---
+
+## Pointillist
+
+**Generator:** Pointillist
+
+Reproduces a colour image as **non-overlapping dots of pure pen colours** — Seurat / Signac optical mixing rather than CMYK-style overprinting. Each pen owns its own paper, so pens that fight each other on overlap (gel + alcohol, metallic + matte) coexist cleanly, and the eye blends *colours* before it interprets *coverage* — letting you reach perceived hues that no single pen produces and that CMYK can't reach (saturated oranges, vivid greens).
+
+The generator picks a `PenPalette`, quantises the image to it (with optional Floyd-Steinberg / ordered / Atkinson dithering), and emits one layer per pen colour with dot positions chosen by Mitchell's best-candidate sampler — a deterministic blue-noise algorithm that scatters dots evenly without visible regularity.
+
+### Key Parameters
+
+| Parameter | Effect |
+|-----------|--------|
+| `palette` | Pen palette: Basic 6, Copic 12, Sakura Metallic 5, Grayscale 5, RYBK 4, CMYKOG 6, Risograph 6, or any user palette saved via the editor |
+| `density_per_cm2` | Target dot density per cm² for a fully-covered pen layer (10–2000) |
+| `dither` | `none`, `floyd-steinberg`, `ordered`, `atkinson` — affects how mid-tones blend optically |
+| `dot_style` | `point` (minimal pen mark), `cross` (two perpendicular strokes), `circle` (12-vertex closed polyline) |
+| `dot_size_mm` | Mark size in mm — used by `cross` and `circle` only |
+| `seed` | Deterministic randomisation for dot positions |
+| `skip_paper_white` | When the palette contains `#FFFFFF`, drop the white-pen layer (no point plotting white on white) |
+
+### Presets
+
+- **Pointillist Classic** — Basic 6 palette with circle dots, balanced density
+- **Halftone Dots** — Copic 12 with denser dots, more colour fidelity
+- **Big Cross Stipple** — Sparse, bold cross marks on Basic 6
+- **Sketchy Mono** — Grayscale 5 only, no colour, sketch-density circles
+
+### Tips
+
+- Use **Floyd-Steinberg dithering** for smooth gradient reproduction — the spatial dither does the same job as Hexachrome chroma swapping
+- Pair with the **CMYKOG 6** palette for extended-gamut output that can hit vivid oranges and greens CMYK can't
+- Increase `density_per_cm2` until the source image is recognisable at viewing distance — typically 200–500 for portraits
+
+---
+
+## CRT TV
+
+**Generator:** CRT TV
+
+Imitates the visual artefacts of cathode-ray-tube TVs and monitors using pen-plotter marks. Real CRTs produced colour via three physical mechanisms — a sub-pixel triad (RGB phosphor dots behind a metal shadow mask), horizontal scanlines (visible dark gaps between active beam rows), and screen geometry (slight barrel distortion + edge vignetting). This generator reproduces all three geometrically (phosphor glow / bloom isn't plottable and is skipped).
+
+It's palette-driven rather than RGB-hardcoded: pick any `PenPalette` and each pen gets a fixed position within the per-pixel triad cell. Three mask types control the layout:
+
+- **shadow_mask** — Triangular RGB-triad layout. Round phosphor dots in triangle triplets. Authentic for classic NES-era TVs.
+- **aperture_grille** — Vertical RGB stripes running full screen height. Authentic for Sony Trinitron / arcade monitors. Use with `subpixel_shape = "rect"`.
+- **slot_mask** — Rounded vertical rectangles in offset rows. Hybrid layout used by JVC / Hitachi tubes. Use with `subpixel_shape = "rect"`.
+
+### Key Parameters
+
+| Parameter | Effect |
+|-----------|--------|
+| `palette` | Pen palette (any built-in or user palette) |
+| `crt_resolution_w` | Output pixel grid width (40–800). Image is downsampled to this width; height derives from source aspect. 80–320 recommended for A4 |
+| `mask_type` | `shadow_mask` / `aperture_grille` / `slot_mask` |
+| `subpixel_shape` | `circle` (round phosphor dots), `cross`, `point`, or `rect` (vertical filled bars — physically accurate for aperture / slot masks) |
+| `subpixel_size_mm` | Bar/dot size in mm. Should be < cell_size / n_pens to avoid overlap |
+| `dither` | Dithering applied during palette quantisation |
+| `scanline_intensity` | 0–1 — strength of scanline darkening; 0 = none, 1 = fully drop targeted rows |
+| `scanline_period` | Apply scanline darkening every Nth row. 2 = classic every-other-row look |
+| `vignette_strength` | 0–1 — corner darkening from curved-phosphor edge falloff |
+| `barrel_strength` | 0–0.15 — barrel distortion of the dot grid (hard-capped because pen plots distort badly under aggressive warps) |
+| `gamma` | Pre-quantisation gamma curve |
+
+### Presets
+
+- **NES** — Shadow-mask + circle dots, 256-wide, strong scanlines. The 8-bit console look
+- **Trinitron** — Aperture-grille + rect bars, 320-wide, light scanlines. Sharp arcade monitor
+- **VGA Monitor** — Slot-mask + rect bars, 320-wide, subtle barrel. Early-90s PC monitor
+- **B&W TV** — Grayscale 5 palette, heavy scanlines + vignette. Old broadcast monochrome
+- **Arcade Cabinet** — Shadow-mask with the full retro treatment: heavy scanlines, strong vignette, barrel distortion
+
+### Tips
+
+- **Trinitron + VGA Monitor** use vertical bars (`rect`) — the authentic look. Switch to `circle` for a stylised dot variant
+- Stay under `crt_resolution_w = 320` on A4 — at higher resolutions, cells become too small to fit a triad cleanly
+- `barrel_strength = 0.0` is fine; values above 0.10 start looking weird on a plotter because lines distort awkwardly under the warp
+
+---
+
+## Paired Wave Shading
+
+**Generator:** Paired Wave Shading
+
+Each horizontal scan line emits a **pair of polylines** — one above its centre line and one below — whose vertical separation tracks local brightness. Dark regions push the two lines far apart; bright regions let them collapse back together. The lines themselves stay smooth (the deviation curve gets box-smoothed) so the result reads as a soft, continuous-tone shading rather than the binary on/off feel of hatching or stippling.
+
+The technique becomes especially interesting when stacked across colour channels via **Color Separation**. Run a CMYK separation, generate paired-wave shading on each channel layer, and you get a "hidden image" colour plot — neither layer on its own shows the image clearly, but stacked together at the printer they reveal the source.
+
+### Key Parameters
+
+| Parameter | Effect |
+|-----------|--------|
+| `line_spacing_mm` | Vertical distance between scan-line pairs (0.3–10.0) |
+| `max_deviation_mm` | How far the two lines spread apart in the darkest regions — the apparent ink-width knob |
+| `min_deviation_mm` | Baseline gap between the pair in pure-white regions. Set > 0 to keep the pair always visible |
+| `sample_interval_mm` | How finely brightness is sampled along each line; smaller = more detail + more points |
+| `tone_gamma` | Power curve on darkness: > 1 emphasises mid-tones, < 1 pushes more energy into shadows |
+| `smoothing_mm` | Box-smooth the deviation curve over this length to kill high-frequency jitter |
+| `skip_white_above` | Drop the pair where brightness exceeds this 0–255 threshold so near-white areas leave the paper blank |
+| `brightness` / `contrast` / `blur_radius` | Standard image preprocessing |
+
+### Tips
+
+- The **"Color Split — Channel Pair"** preset is tuned for the CMYK-stacked use case
+- A **Marker (~1.2 mm tip)** preset handles thicker pens by widening the deviation and spacing
+- For a single-pen plot, use larger `max_deviation_mm` so the shading is readable as ink-width variation
 
 ---
 

@@ -27,6 +27,9 @@ real paper.
 | Generative / pattern | Voronoi / Delaunay | Cell diagrams and triangulation meshes from point distributions |
 | Generative / pattern | Penrose Tiling | Aperiodic rhombus tiling; arc decorations produce continuous curves |
 | Retro / pixel art | Pixel Art | Multi-pen retro palette rendering (NES, Game Boy, PICO-8, …) with hatched or stippled cells |
+| Retro / monitor | CRT TV | Multi-pen CRT-monitor simulation — shadow-mask dots or aperture-grille bars, scanlines, vignette, optional barrel distortion |
+| Multi-pen colour photo | Pointillist | Optical-mixing dot art — palette-driven, escapes ink-on-ink interaction. Pair with CMYKOG 6 palette for widest gamut |
+| Two-pen continuous tone | Paired Wave Shading | Paired-line shading where line separation tracks brightness; stack across CMYK for "hidden image" plots |
 | Code-driven / generative | TurtleToy (plugin) | Paste JavaScript from turtletoy.net; supports adjustable-variable comment sliders |
 
 ---
@@ -120,9 +123,26 @@ Large images with many paths can take hours to plot if not optimized:
 4. For stipple paths, enable **connect_tsp** to produce a single continuous polyline (zero pen lifts)
 5. For edge detection results, try increasing `close_gaps_mm` to connect more contour segments
 
-The Optimize dialog includes an optional **3-opt** step (disabled by default). Enable it for stipple or dot art with 1000+ paths — 3-opt finds route improvements that 2-opt cannot, at the cost of longer computation time.
+The Optimize dialog includes:
 
-Typical optimization improvement: 30–60% reduction in pen-up travel distance.
+- An optional **3-opt** step (disabled by default). Enable it for stipple or dot art with 1000+ paths — 3-opt finds route improvements that 2-opt cannot, at the cost of longer computation time.
+- A **Join paths at junctions** checkbox under the Merge group. Unlike plain Merge (which only joins endpoint↔endpoint), Join splits paths at T-junctions and traces Eulerian chains across the connectivity graph. Far more effective on road networks and any output with branching structure — typically ≥30% additional pen-lift reduction on top of Merge alone. **Automatically enabled for Map-generated layers**; opt in manually for non-map work where you've got a dense connected graph.
+
+### Optional: numba JIT acceleration
+
+The optimize / merge / weld inner loops can be JIT-accelerated via the optional `[fast]`
+extra:
+
+```bash
+pip install -e ".[fast]"
+```
+
+Cold-start adds ~2–5 s the first run per Python process (the on-disk cache makes
+subsequent runs fast). Recommended if you plot maps or dense generative work
+regularly. See [Performance](performance.md) for benchmark numbers.
+
+Typical optimization improvement: 30–60% reduction in pen-up travel distance (with
+Join enabled on appropriate inputs, additionally ≥30% on top).
 
 ---
 
