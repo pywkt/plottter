@@ -148,7 +148,11 @@ class TestAutoRegenOn:
         panel._auto_regen_3d_cb.setChecked(True)
         panel._current_mode = "3D Scene"
 
-        explicit_l1_paths = [[(7.0, 8.0), (9.0, 10.0)]]
+        # Coordinates must sit inside the A4 drawing area (10..200, 10..287) so
+        # the default-on Clip-to-Canvas step leaves them untouched — otherwise
+        # clipping would empty the paths and mask whether layer1 was wrongly
+        # re-regenerated, which is what this test actually checks.
+        explicit_l1_paths = [[(70.0, 80.0), (90.0, 100.0)]]
         panel._on_generation_finished(explicit_l1_paths, lid1)
         _wait_auto_regen_done(panel, qtbot)
 
