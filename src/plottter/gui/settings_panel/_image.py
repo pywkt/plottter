@@ -378,6 +378,50 @@ class _ImageMixin:
         self._unsharp_val_label.setText(f"{self._unsharp_slider.value() / 10:.1f}")
         self._preprocess_timer.start()
 
+    def _on_reset_preprocessing(self) -> None:
+        """Restore the image-adjustment controls to their defaults.
+
+        Layout controls (fit mode, custom size, offsets) are intentionally
+        left alone — only the visual-adjustment widgets are reset.
+        """
+        widgets = (
+            self._auto_contrast_check,
+            self._bright_slider,
+            self._contrast_slider,
+            self._gamma_slider,
+            self._blur_slider,
+            self._unsharp_slider,
+            self._threshold_check,
+            self._threshold_slider,
+            self._invert_check,
+            self._remove_bg_check,
+            self._bg_tolerance_spin,
+            self._ai_bg_check,
+            self._crop_to_canvas_check,
+        )
+        for w in widgets:
+            w.blockSignals(True)
+        try:
+            self._auto_contrast_check.setChecked(True)
+            self._bright_slider.setValue(0)
+            self._contrast_slider.setValue(0)
+            self._gamma_slider.setValue(100)
+            self._blur_slider.setValue(0)
+            self._unsharp_slider.setValue(0)
+            self._threshold_check.setChecked(False)
+            self._threshold_slider.setValue(128)
+            self._threshold_slider.setEnabled(False)
+            self._invert_check.setChecked(False)
+            self._remove_bg_check.setChecked(False)
+            self._bg_tolerance_spin.setValue(20.0)
+            self._bg_tolerance_spin.setEnabled(False)
+            self._ai_bg_check.setChecked(False)
+            self._crop_to_canvas_check.setChecked(True)
+        finally:
+            for w in widgets:
+                w.blockSignals(False)
+        self._on_preprocessing_changed()
+
     def _reset_image_size_to_canvas(self) -> None:
         """Set custom size spinboxes to match the canvas drawing area dimensions."""
         try:

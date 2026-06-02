@@ -321,6 +321,18 @@ class _UIBuildMixin:
         self._crop_to_canvas_check.stateChanged.connect(self._on_preprocessing_changed)
         prep_form.addRow(QLabel(""), self._crop_to_canvas_check)
 
+        # Reset image adjustments to their defaults so the user can return to
+        # the original imported image without re-importing.
+        self._reset_preprocessing_btn = QPushButton("Reset Adjustments")
+        self._reset_preprocessing_btn.setToolTip(
+            "Restore the image-adjustment controls (Auto Contrast, Brightness, "
+            "Contrast, Gamma, Blur, Unsharp Mask, Threshold, Invert, Remove "
+            "Background, AI Background Removal, Crop to Canvas) to their "
+            "defaults. Fit Mode, size and offset are not reset."
+        )
+        self._reset_preprocessing_btn.clicked.connect(self._on_reset_preprocessing)
+        prep_form.addRow(QLabel(""), self._reset_preprocessing_btn)
+
         # ------------------------------------------------------------------
         # Image Size & Position
         # ------------------------------------------------------------------
