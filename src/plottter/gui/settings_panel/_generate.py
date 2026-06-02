@@ -101,6 +101,23 @@ class _GenerateMixin:
                 self._preprocessed_color if wants_color else self._preprocessed_image
             )
 
+            # When clip-to-canvas is on, crop the source image to the visible
+            # canvas region before generation so density-based generators
+            # don't waste work producing paths that get clipped away.
+            # ``compute_visible_image_crop`` returns the cropped image plus
+            # adjusted image_fit_mode/width/height/offset params so the
+            # generator's call to compute_image_rect() lands on the
+            # intersection. Skips quietly when no crop is needed.
+            if self._clip_to_canvas_check.isChecked():
+                crop_result = self.compute_visible_image_crop(
+                    params["_source_image"], params
+                )
+                if crop_result is not None:
+                    cropped, override = crop_result
+                    params["_source_image"] = cropped
+                    params.update(override)
+                    self._notify_auto_crop()
+
         # For multi-layer generators, find any prior run of THIS generator
         # anywhere in the project (not just on the active layer — the user
         # may have clicked Generate while still on the original empty
@@ -181,6 +198,7 @@ class _GenerateMixin:
                     paths = apply_brush(paths, brush_type, brush_params)
                 except Exception:
                     pass
+        paths = self._maybe_clip_to_canvas(paths)
         self._controller.set_layer_paths(layer_id, paths, "Generate")
 
         # Persist _dynamic_overrides into generator_info (spec §5.1).
@@ -199,6 +217,43 @@ class _GenerateMixin:
             and self._auto_regen_3d_cb.isChecked()
         ):
             self._trigger_auto_regen_siblings(layer_id)
+
+    def _notify_auto_crop(self) -> None:
+        """Show a transient status-bar message that the source image was cropped.
+
+        Mirrors the pattern used elsewhere in the panel (e.g. the Replicate
+        'connected' message). Walks parent widgets to find the main window's
+        status bar so we don't depend on a specific parent layout.
+        """
+        widget = self.parent()
+        while widget is not None:
+            status_fn = getattr(widget, "statusBar", None)
+            if callable(status_fn):
+                try:
+                    status_fn().showMessage(
+                        "Auto-cropped image to visible canvas region for faster generation",
+                        4000,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+            widget = widget.parent() if hasattr(widget, "parent") else None
+
+    def _maybe_clip_to_canvas(self, paths: list) -> list:
+        """Clip generated paths to the canvas drawing area if the toggle is on.
+
+        Reused by single-layer and multi-layer generation-finish handlers so
+        output never extends past the canvas margins by default.
+        """
+        if not self._clip_to_canvas_check.isChecked():
+            return paths
+        try:
+            canvas = self._controller.current_project.canvas
+            bounds = canvas.drawing_area()
+            from plottter.processing import clip_to_bounds
+            return clip_to_bounds(paths, bounds)
+        except Exception:  # noqa: BLE001 — never let clipping fail generation
+            return paths
 
     def _on_multilayer_generation_finished(self, layer_specs: list) -> None:
         """Handle results from a multi-layer generator.
@@ -270,7 +325,7 @@ class _GenerateMixin:
                 layer = Layer(
                     name=spec.name,
                     color=spec.color,
-                    paths=spec.paths,
+                    paths=self._maybe_clip_to_canvas(spec.paths),
                     generator_info=gen_info,
                 )
                 self._controller.add_layer(layer)

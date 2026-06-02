@@ -954,3 +954,42 @@ class _SnapshotMixin:
         """Reset per-layer settings memory tracking when a new project is loaded."""
         # Clear any stale layer selection so _on_active_layer_changed starts fresh
         self._load_camera_from_project()
+        self._restore_image_view_from_metadata()
+
+    def _restore_image_view_from_metadata(self) -> None:
+        """Re-apply a persisted image_view dict from ``project.metadata``.
+
+        Mirrors the map_view restore path: when a .plottter file is loaded
+        that has an ``image_view`` entry, populate the fit-mode combo and
+        custom-size / offset spinboxes so the next preview emit places the
+        overlay where the user left it.
+        """
+        try:
+            project = self._controller.current_project
+            view = project.metadata.get("image_view") if project else None
+        except Exception:  # noqa: BLE001
+            return
+        if not isinstance(view, dict):
+            return
+        fit_mode = str(view.get("fit_mode", "custom"))
+        combo_text = {
+            "fit": "Fit (Keep Aspect)",
+            "fill": "Fill Canvas",
+            "custom": "Custom Size",
+        }.get(fit_mode, "Custom Size")
+        self._image_fit_combo.blockSignals(True)
+        self._image_fit_combo.setCurrentText(combo_text)
+        self._image_fit_combo.blockSignals(False)
+        for key, spin in (
+            ("custom_w_mm", self._image_width_spin),
+            ("custom_h_mm", self._image_height_spin),
+            ("offset_x_mm", self._image_offset_x_spin),
+            ("offset_y_mm", self._image_offset_y_spin),
+        ):
+            if key in view:
+                spin.blockSignals(True)
+                spin.setValue(float(view[key]))
+                spin.blockSignals(False)
+        # Let _on_image_fit_mode_changed surface the right widgets and
+        # trigger one debounced preview refresh.
+        self._on_image_fit_mode_changed()

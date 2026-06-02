@@ -154,6 +154,11 @@ class MainWindow(
             self._settings_panel._on_canvas_map_view_changed
         )
 
+        # Canvas → panel: image overlay rect dragged/zoomed on canvas
+        self._canvas.image_view_changed.connect(
+            self._settings_panel._on_canvas_image_view_changed
+        )
+
         # Wire mask-paint brush controls to canvas
         self._settings_panel.set_canvas(self._canvas)
 

@@ -69,6 +69,29 @@ class _EventsMixin:
                 self.update()
                 return
 
+        # Image positioning mode: wheel zooms the overlay rect about the
+        # cursor. Modifier-based screen pan (Ctrl/Alt) falls through.
+        if self._image_position_active and self._image_overlay_rect_mm is not None:
+            modifiers = event.modifiers()
+            if not (modifiers & Qt.KeyboardModifier.ControlModifier) and \
+               not (modifiers & Qt.KeyboardModifier.AltModifier):
+                angle_delta = event.angleDelta().y()
+                factor = 1.1 if angle_delta > 0 else (1.0 / 1.1)
+                x1, y1, x2, y2 = self._image_overlay_rect_mm
+                cursor_mm_x, cursor_mm_y = self.pixel_to_mm(event.position())
+                # Scale the rect about the cursor point so the mm point under
+                # the cursor stays fixed: new_x = cursor + (old - cursor) * f
+                new_x1 = cursor_mm_x + (x1 - cursor_mm_x) * factor
+                new_y1 = cursor_mm_y + (y1 - cursor_mm_y) * factor
+                new_x2 = cursor_mm_x + (x2 - cursor_mm_x) * factor
+                new_y2 = cursor_mm_y + (y2 - cursor_mm_y) * factor
+                # Clamp to a sensible minimum size so the user can't zoom away.
+                if (new_x2 - new_x1) >= 1.0 and (new_y2 - new_y1) >= 1.0:
+                    self._image_overlay_rect_mm = (new_x1, new_y1, new_x2, new_y2)
+                    self.image_view_changed.emit(new_x1, new_y1, new_x2, new_y2)
+                    self.update()
+                return
+
         # Modifier-based pan must be checked BEFORE falling through to zoom.
         # Use angleDelta exclusively — pixelDelta-based heuristics caused
         # simultaneous zoom+pan on mice that emit both deltas per click.
@@ -126,6 +149,17 @@ class _EventsMixin:
                     self._map_view["center_lat"], self._map_view["center_lon"]
                 )
                 self._map_pan_start_merc = (mcx, mcy)
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            return
+
+        # ── Image positioning mode: left drag pans the image overlay ─────
+        if self._image_position_active:
+            if (
+                event.button() == Qt.MouseButton.LeftButton
+                and self._image_overlay_rect_mm is not None
+            ):
+                self._image_pan_drag_start = event.pos()
+                self._image_pan_start_rect = self._image_overlay_rect_mm
                 self.setCursor(Qt.CursorShape.ClosedHandCursor)
             return
 
@@ -303,6 +337,26 @@ class _EventsMixin:
             self.mouse_position_mm.emit(x_mm, y_mm)
             return
 
+        # ── Image positioning mode: left-drag pans the overlay rect ──────
+        if self._image_position_active:
+            if (
+                self._image_pan_drag_start is not None
+                and self._image_pan_start_rect is not None
+                and event.buttons() & Qt.MouseButton.LeftButton
+            ):
+                delta = event.pos() - self._image_pan_drag_start
+                # Pixel delta → mm delta. self._zoom mm = 1 pixel.
+                dx_mm = delta.x() / self._zoom
+                dy_mm = delta.y() / self._zoom
+                sx1, sy1, sx2, sy2 = self._image_pan_start_rect
+                new_rect = (sx1 + dx_mm, sy1 + dy_mm, sx2 + dx_mm, sy2 + dy_mm)
+                self._image_overlay_rect_mm = new_rect
+                self.image_view_changed.emit(*new_rect)
+                self.update()
+            x_mm, y_mm = self.pixel_to_mm(QPointF(event.pos()))
+            self.mouse_position_mm.emit(x_mm, y_mm)
+            return
+
         # FMM source pick mode: update live crosshair preview on mouse move
         if self._fmm_source_mode:
             self._fmm_cursor_preview_mm = self.pixel_to_mm(QPointF(event.pos()))
@@ -420,6 +474,15 @@ class _EventsMixin:
                     self._map_pan_drag_start = None
                     self._map_pan_start_merc = None
                 self.setCursor(Qt.CursorShape.CrossCursor)
+            return
+
+        # ── Image positioning mode: end pan drag ─────────────────────────
+        if self._image_position_active:
+            if event.button() == Qt.MouseButton.LeftButton:
+                if self._image_pan_drag_start is not None:
+                    self._image_pan_drag_start = None
+                    self._image_pan_start_rect = None
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
             return
 
         # Drag-to-move: finalize on left-button release

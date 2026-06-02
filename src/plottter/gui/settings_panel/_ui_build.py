@@ -351,6 +351,31 @@ class _UIBuildMixin:
         self._image_fit_combo.currentIndexChanged.connect(self._on_image_fit_mode_changed)
         prep_form.addRow(QLabel("Fit Mode"), self._image_fit_combo)
 
+        # Direct-manipulation positioning: toggle button + reset.
+        self._position_image_btn = QPushButton("Position Image")
+        self._position_image_btn.setCheckable(True)
+        self._position_image_btn.setEnabled(False)
+        self._position_image_btn.setToolTip(
+            "Move and resize the image directly on the canvas.\n"
+            "  Left-drag: pan\n"
+            "  Scroll: zoom about the cursor\n"
+            "Enabling this switches Fit Mode to 'Custom Size' so the drag "
+            "writes back to width/height/offset."
+        )
+        self._position_image_btn.toggled.connect(self._on_position_image_toggled)
+        self._reset_image_position_btn = QPushButton("Reset Position")
+        self._reset_image_position_btn.setToolTip(
+            "Restore Fit Mode to 'Fit (Keep Aspect)' with zero offset."
+        )
+        self._reset_image_position_btn.clicked.connect(self._on_reset_image_position)
+        position_row = QWidget()
+        position_row_layout = QHBoxLayout(position_row)
+        position_row_layout.setContentsMargins(0, 0, 0, 0)
+        position_row_layout.addWidget(self._position_image_btn)
+        position_row_layout.addWidget(self._reset_image_position_btn)
+        position_row_layout.addStretch()
+        prep_form.addRow(QLabel(""), position_row)
+
         # Custom size controls (visible only in Custom Size mode)
         self._custom_size_widget = QWidget()
         custom_size_layout = QFormLayout(self._custom_size_widget)
@@ -1072,6 +1097,27 @@ class _UIBuildMixin:
                 self._post_proc_layout.addRow(_pp_label, _pp_widget)
         except ImportError:
             pass
+
+        # Generic "Clip to Canvas" toggle applied to every generated layer.
+        # Default ON so users don't get surprise lines outside the canvas
+        # when the source image is positioned or scaled beyond the margins.
+        from PyQt6.QtCore import QSettings as _QS_clip
+        self._clip_to_canvas_check = QCheckBox("Clip to Canvas")
+        self._clip_to_canvas_check.setToolTip(
+            "After generation, clip all output polylines to the canvas drawing "
+            "area. Prevents an enlarged or off-centre source image from "
+            "producing lines outside the canvas."
+        )
+        _saved_clip = _QS_clip("Plottter", "Plottter").value(
+            "generate/clip_to_canvas", True, type=bool
+        )
+        self._clip_to_canvas_check.setChecked(bool(_saved_clip))
+        self._clip_to_canvas_check.toggled.connect(
+            lambda v: _QS_clip("Plottter", "Plottter").setValue(
+                "generate/clip_to_canvas", bool(v)
+            )
+        )
+        self._post_proc_layout.addRow(QLabel(""), self._clip_to_canvas_check)
 
         self._layout.addWidget(self._post_proc_group)
         self._update_post_proc_visibility()

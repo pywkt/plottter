@@ -456,6 +456,217 @@ class _ImageMixin:
             return "custom"
         return "fill"
 
+    # ------------------------------------------------------------------
+    # Direct-manipulation image positioning (drag/zoom on canvas)
+    # ------------------------------------------------------------------
+
+    def _on_position_image_toggled(self, checked: bool) -> None:
+        """Toggle interactive image-positioning on the canvas widget.
+
+        When enabling, switch Fit Mode to 'Custom Size' so the drag has a
+        stable model to write back into (width/height + X/Y offset). The
+        currently-displayed rect is captured into the spinboxes first so
+        the image doesn't jump on toggle.
+        """
+        if self._canvas_ref is None:
+            self._position_image_btn.setChecked(False)
+            return
+        if checked:
+            current_rect = self._canvas_ref.get_image_overlay_rect_mm()
+            if current_rect is None or self._raw_image is None:
+                self._position_image_btn.setChecked(False)
+                return
+            # Capture the current rect into the spinboxes before switching
+            # modes so the visible image stays exactly where it is.
+            self._write_rect_to_custom_spinboxes(current_rect)
+            if self._image_fit_combo.currentText() != "Custom Size":
+                self._image_fit_combo.blockSignals(True)
+                self._image_fit_combo.setCurrentText("Custom Size")
+                self._image_fit_combo.blockSignals(False)
+                self._on_image_fit_mode_changed()
+        self._canvas_ref.set_image_position_active(checked)
+
+    def _on_reset_image_position(self) -> None:
+        """Restore the default fit-to-canvas placement."""
+        # Exit position mode if active.
+        if self._position_image_btn.isChecked():
+            self._position_image_btn.setChecked(False)
+        self._image_offset_x_spin.blockSignals(True)
+        self._image_offset_y_spin.blockSignals(True)
+        self._image_offset_x_spin.setValue(0.0)
+        self._image_offset_y_spin.setValue(0.0)
+        self._image_offset_x_spin.blockSignals(False)
+        self._image_offset_y_spin.blockSignals(False)
+        self._image_fit_combo.setCurrentText("Fit (Keep Aspect)")
+        # _on_image_fit_mode_changed will fire from the combo signal and
+        # trigger a preview refresh.
+
+    def _write_rect_to_custom_spinboxes(
+        self, rect_mm: tuple[float, float, float, float]
+    ) -> None:
+        """Invert ``rect_mm`` back to (custom_w, custom_h, offset_x, offset_y).
+
+        Mirrors :func:`compute_image_rect` for ``fit_mode == 'custom'``:
+        width/height = rect size, and offset is the rect centre minus the
+        drawing-area centre. Spinbox writes block signals so the 200 ms
+        preprocessing debounce doesn't fire; the canvas overlay is already
+        showing the new rect from the drag/wheel.
+        """
+        x1, y1, x2, y2 = rect_mm
+        try:
+            canvas = self._controller.current_project.canvas
+        except AttributeError:
+            return
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        draw_cx = (draw_x1 + draw_x2) / 2.0
+        draw_cy = (draw_y1 + draw_y2) / 2.0
+        w = max(1.0, x2 - x1)
+        h = max(1.0, y2 - y1)
+        rect_cx = (x1 + x2) / 2.0
+        rect_cy = (y1 + y2) / 2.0
+        offset_x = rect_cx - draw_cx
+        offset_y = rect_cy - draw_cy
+        for s, v in (
+            (self._image_width_spin, w),
+            (self._image_height_spin, h),
+            (self._image_offset_x_spin, offset_x),
+            (self._image_offset_y_spin, offset_y),
+        ):
+            s.blockSignals(True)
+            s.setValue(round(v, 2))
+            s.blockSignals(False)
+
+    # 8-pixel halo added to the cropped source image so Category C generators
+    # (Edge Detect, XDoG, FDoG) still have neighbourhood pixels available
+    # near the canvas boundary. The halo is in source-image pixel space, not
+    # mm — small enough to cost almost nothing, big enough to keep edge
+    # responses correct at the canvas margin.
+    _AUTO_CROP_PADDING_PX = 8
+
+    def compute_visible_image_crop(
+        self,
+        image: "np.ndarray | None",
+        params: dict,
+    ) -> "tuple[np.ndarray, dict] | None":
+        """Crop the source image + image-rect params to the visible canvas area.
+
+        Returns ``None`` when no crop is needed (rect already inside the
+        drawing area), when the image and canvas have no overlap (caller can
+        skip generation), or when the necessary inputs are missing.
+
+        Otherwise returns ``(cropped_image, override_params)`` where
+        ``override_params`` contains adjusted ``image_fit_mode`` /
+        ``image_width_mm`` / ``image_height_mm`` / ``image_offset_x_mm`` /
+        ``image_offset_y_mm`` such that
+        ``compute_image_rect("custom", ...)`` on the cropped image yields
+        exactly the intersection of the original rect with the canvas
+        drawing area.
+        """
+        if image is None or image.size == 0:
+            return None
+        try:
+            canvas = self._controller.current_project.canvas
+        except AttributeError:
+            return None
+        from plottter.generators._helpers import compute_image_rect
+
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        if image.ndim < 2:
+            return None
+        img_h, img_w = image.shape[:2]
+        fit_mode = str(params.get("image_fit_mode", "fit"))
+        full_rect = compute_image_rect(
+            fit_mode=fit_mode,
+            image_w_px=img_w,
+            image_h_px=img_h,
+            draw_x1=draw_x1,
+            draw_y1=draw_y1,
+            draw_x2=draw_x2,
+            draw_y2=draw_y2,
+            custom_w_mm=params.get("image_width_mm"),
+            custom_h_mm=params.get("image_height_mm"),
+            offset_x_mm=float(params.get("image_offset_x_mm", 0.0)),
+            offset_y_mm=float(params.get("image_offset_y_mm", 0.0)),
+        )
+        rx1, ry1, rx2, ry2 = full_rect
+        # Visible intersection.
+        vx1 = max(rx1, draw_x1)
+        vy1 = max(ry1, draw_y1)
+        vx2 = min(rx2, draw_x2)
+        vy2 = min(ry2, draw_y2)
+        if vx2 <= vx1 or vy2 <= vy1:
+            # Image rect is entirely off-canvas; let caller skip generation.
+            return None
+        # No-op when the rect already lives inside the drawing area (with a
+        # tolerance for float wobble). Saves cost on the common case.
+        if (
+            vx1 <= rx1 + 1e-6
+            and vy1 <= ry1 + 1e-6
+            and vx2 >= rx2 - 1e-6
+            and vy2 >= ry2 - 1e-6
+        ):
+            return None
+
+        rect_w = rx2 - rx1
+        rect_h = ry2 - ry1
+        if rect_w <= 0 or rect_h <= 0:
+            return None
+
+        # mm-fraction within the original rect → source pixel coords.
+        frac_x1 = (vx1 - rx1) / rect_w
+        frac_y1 = (vy1 - ry1) / rect_h
+        frac_x2 = (vx2 - rx1) / rect_w
+        frac_y2 = (vy2 - ry1) / rect_h
+        pad = self._AUTO_CROP_PADDING_PX
+        px_x1 = max(0, int(frac_x1 * img_w) - pad)
+        px_y1 = max(0, int(frac_y1 * img_h) - pad)
+        px_x2 = min(img_w, int(round(frac_x2 * img_w)) + pad)
+        px_y2 = min(img_h, int(round(frac_y2 * img_h)) + pad)
+        if px_x2 <= px_x1 or px_y2 <= px_y1:
+            return None
+        cropped = image[px_y1:px_y2, px_x1:px_x2]
+
+        # Recompute the *actual* mm rect that this crop occupies — the
+        # padding may have nudged it outward beyond ``visible_rect``.
+        actual_x1 = rx1 + (px_x1 / img_w) * rect_w
+        actual_y1 = ry1 + (px_y1 / img_h) * rect_h
+        actual_x2 = rx1 + (px_x2 / img_w) * rect_w
+        actual_y2 = ry1 + (px_y2 / img_h) * rect_h
+        new_w = actual_x2 - actual_x1
+        new_h = actual_y2 - actual_y1
+        draw_cx = (draw_x1 + draw_x2) / 2.0
+        draw_cy = (draw_y1 + draw_y2) / 2.0
+        new_cx = (actual_x1 + actual_x2) / 2.0
+        new_cy = (actual_y1 + actual_y2) / 2.0
+        override = {
+            "image_fit_mode": "custom",
+            "image_width_mm": new_w,
+            "image_height_mm": new_h,
+            "image_offset_x_mm": new_cx - draw_cx,
+            "image_offset_y_mm": new_cy - draw_cy,
+        }
+        return cropped, override
+
+    def _on_canvas_image_view_changed(
+        self, x1: float, y1: float, x2: float, y2: float
+    ) -> None:
+        """Mirror a canvas-side drag/zoom into spinboxes + project metadata."""
+        rect = (x1, y1, x2, y2)
+        self._write_rect_to_custom_spinboxes(rect)
+        # Persist so the placement survives a save/reload (mirrors map_view).
+        try:
+            project = self._controller.current_project
+            if project is not None:
+                project.metadata["image_view"] = {
+                    "fit_mode": "custom",
+                    "custom_w_mm": self._image_width_spin.value(),
+                    "custom_h_mm": self._image_height_spin.value(),
+                    "offset_x_mm": self._image_offset_x_spin.value(),
+                    "offset_y_mm": self._image_offset_y_spin.value(),
+                }
+        except Exception:  # noqa: BLE001 — persistence is best-effort
+            pass
+
     def _on_image_width_changed(self, value: float) -> None:
         """If lock aspect ratio is checked, update height proportionally."""
         if self._lock_aspect_check.isChecked() and self._raw_image is not None:
@@ -534,7 +745,12 @@ class _ImageMixin:
             self._thumbnail_label.clear()
             self.image_preprocessed.emit(None)
             self.image_rect_changed.emit(None)
+            # No image → exit + disable Position Image.
+            if self._position_image_btn.isChecked():
+                self._position_image_btn.setChecked(False)
+            self._position_image_btn.setEnabled(False)
             return
+        self._position_image_btn.setEnabled(True)
 
         try:
             from plottter.io.image_import import preprocess, to_grayscale

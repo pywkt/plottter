@@ -126,6 +126,11 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
     # Args: (center_lat, center_lon, scale)
     map_view_changed = pyqtSignal(float, float, float)
 
+    # Emitted while the user drags or zooms the source image overlay in
+    # image-position mode. Args: (x1_mm, y1_mm, x2_mm, y2_mm) — the new
+    # mm rectangle of the image overlay.
+    image_view_changed = pyqtSignal(float, float, float, float)
+
     # Emitted when the user finishes a drag-to-move operation on the active layer.
     # Args: (dx_mm, dy_mm) — translation applied to all paths in the active layer.
     layer_move_finished = pyqtSignal(float, float)
@@ -253,6 +258,12 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # Map pan drag tracking (mirroring 3D orbit/pan)
         self._map_pan_drag_start = None   # QPoint where left-drag began
         self._map_pan_start_merc: tuple[float, float] | None = None  # centre in Mercator at drag start  # {center_lat, center_lon, scale}
+
+        # Image positioning interactive mode state
+        self._image_position_active: bool = False
+        self._image_pan_drag_start = None  # QPoint where left-drag began
+        # The image overlay rect at the moment the drag began; mm tuple
+        self._image_pan_start_rect: tuple[float, float, float, float] | None = None
 
         # Drag-to-move tool state
         self._drag_move_active: bool = False
@@ -566,8 +577,33 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
             self._mask_paint_active = False
             self._shape_draw_active = False
             self._3d_preview_active = False
+            self._image_position_active = False
             self.setCursor(Qt.CursorShape.CrossCursor)
         else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def set_image_position_active(self, active: bool) -> None:
+        """Enable or disable image-positioning interactive mode.
+
+        When active, mouse interactions transform the imported source-image
+        overlay rect in place:
+          - Left drag → translate the overlay
+          - Scroll    → scale about the cursor
+        Mutates ``_image_overlay_rect_mm`` directly during the gesture and
+        emits ``image_view_changed`` so the settings panel can mirror the
+        new rect into its spinboxes and persist it.
+        """
+        self._image_position_active = active
+        if active:
+            self._mask_paint_active = False
+            self._shape_draw_active = False
+            self._3d_preview_active = False
+            self._map_position_active = False
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        else:
+            self._image_pan_drag_start = None
+            self._image_pan_start_rect = None
             self.setCursor(Qt.CursorShape.ArrowCursor)
         self.update()
 
