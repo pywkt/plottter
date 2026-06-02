@@ -150,18 +150,23 @@ def test_custom_orientation_toggle(dlg):
 
 @pytest.fixture
 def isolated_settings(qapp, tmp_path):
-    """Redirect QSettings to a temp INI file so tests don't touch the real one."""
+    """Give each test a clean settings slate.
+
+    The whole config location is already redirected to a throwaway directory
+    for the session by ``_isolate_qsettings`` in ``conftest.py``, so these
+    ``clear()`` calls only ever touch the sandbox — never the real
+    ``~/.config/Plottter/Plottter.conf``. This fixture just guarantees a clean
+    store before and after each test that exercises preset persistence.
+
+    It must NOT call ``setDefaultFormat``/``setPath`` itself: those are
+    process-global and unrestored changes leak into every later test.
+    """
     from PyQt6.QtCore import QSettings
 
-    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-    QSettings.setPath(
-        QSettings.Format.IniFormat,
-        QSettings.Scope.UserScope,
-        str(tmp_path),
-    )
-    QSettings("Plottter", "Plottter").clear()
+    settings = QSettings("Plottter", "Plottter")
+    settings.clear()
     yield tmp_path
-    QSettings("Plottter", "Plottter").clear()
+    settings.clear()
 
 
 def test_default_checkbox_unchecked_by_default(dlg):
