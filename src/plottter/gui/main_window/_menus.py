@@ -86,6 +86,7 @@ class _MenusMixin:
         edit_menu.addSeparator()
 
         self._act_canvas_settings = QAction("&Canvas Settings…", self)
+        self._act_canvas_settings.setShortcut(QKeySequence("Ctrl+Shift+C"))
         self._act_canvas_settings.triggered.connect(self._on_canvas_settings)
         edit_menu.addAction(self._act_canvas_settings)
 

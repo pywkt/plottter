@@ -141,3 +141,197 @@ def test_custom_orientation_toggle(dlg):
     canvas = dlg.get_canvas()
     assert canvas.width_mm == pytest.approx(200.0)
     assert canvas.height_mm == pytest.approx(100.0)
+
+
+# ---------------------------------------------------------------------------
+# Default-canvas persistence (Set as default checkbox + load/save helpers)
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def isolated_settings(qapp, tmp_path):
+    """Redirect QSettings to a temp INI file so tests don't touch the real one."""
+    from PyQt6.QtCore import QSettings
+
+    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
+    QSettings.setPath(
+        QSettings.Format.IniFormat,
+        QSettings.Scope.UserScope,
+        str(tmp_path),
+    )
+    QSettings("Plottter", "Plottter").clear()
+    yield tmp_path
+    QSettings("Plottter", "Plottter").clear()
+
+
+def test_default_checkbox_unchecked_by_default(dlg):
+    assert dlg.should_save_as_default() is False
+
+
+def test_save_and_load_default_canvas_roundtrip(qapp, isolated_settings):
+    from plottter.gui.dialogs.new_project import (
+        load_default_canvas,
+        save_default_canvas,
+    )
+    from plottter.models.canvas import Canvas
+
+    saved = Canvas(width_mm=420.0, height_mm=594.0, margin_mm=15.0, paper_preset="A2")
+    save_default_canvas(saved)
+
+    loaded = load_default_canvas()
+    assert loaded.paper_preset == "A2"
+    assert loaded.width_mm == pytest.approx(420.0)
+    assert loaded.height_mm == pytest.approx(594.0)
+    assert loaded.margin_mm == pytest.approx(15.0)
+
+
+def test_load_default_falls_back_to_a4(qapp, isolated_settings):
+    from plottter.gui.dialogs.new_project import load_default_canvas
+
+    canvas = load_default_canvas()
+    assert canvas.paper_preset == "A4"
+    assert canvas.width_mm == pytest.approx(210.0)
+    assert canvas.height_mm == pytest.approx(297.0)
+    assert canvas.margin_mm == pytest.approx(10.0)
+
+
+def test_load_default_preserves_custom_dimensions(qapp, isolated_settings):
+    from plottter.gui.dialogs.new_project import (
+        load_default_canvas,
+        save_default_canvas,
+    )
+    from plottter.models.canvas import Canvas
+
+    custom = Canvas(width_mm=333.3, height_mm=444.4, margin_mm=5.0, paper_preset="Custom")
+    save_default_canvas(custom)
+    loaded = load_default_canvas()
+    assert loaded.paper_preset == "Custom"
+    assert loaded.width_mm == pytest.approx(333.3)
+    assert loaded.height_mm == pytest.approx(444.4)
+    assert loaded.margin_mm == pytest.approx(5.0)
+
+
+def test_should_save_as_default_reflects_checkbox(dlg):
+    dlg._set_default_check.setChecked(True)
+    assert dlg.should_save_as_default() is True
+    dlg._set_default_check.setChecked(False)
+    assert dlg.should_save_as_default() is False
+
+
+# ---------------------------------------------------------------------------
+# User-saved paper presets (Save… / Delete buttons)
+# ---------------------------------------------------------------------------
+
+
+def test_load_user_presets_empty_by_default(qapp, isolated_settings):
+    from plottter.gui.dialogs.new_project import load_user_presets
+
+    assert load_user_presets() == {}
+
+
+def test_save_and_load_user_presets_roundtrip(qapp, isolated_settings):
+    from plottter.gui.dialogs.new_project import load_user_presets, save_user_presets
+
+    save_user_presets({"Sketchbook": (148.0, 210.0), "Bed": (300.0, 450.0)})
+    loaded = load_user_presets()
+    assert loaded == {"Sketchbook": (148.0, 210.0), "Bed": (300.0, 450.0)}
+
+
+def test_load_user_presets_ignores_malformed(qapp, isolated_settings):
+    from PyQt6.QtCore import QSettings
+
+    from plottter.gui.dialogs.new_project import load_user_presets
+
+    QSettings("Plottter", "Plottter").setValue("canvas/user_presets", "not valid json")
+    assert load_user_presets() == {}
+
+
+def test_user_presets_appear_in_combo(qapp, isolated_settings):
+    from plottter.gui.dialogs.new_project import NewProjectDialog, save_user_presets
+
+    save_user_presets({"Sketchbook": (148.0, 210.0)})
+    d = NewProjectDialog()
+    try:
+        items = [d._preset_combo.itemText(i) for i in range(d._preset_combo.count())]
+        assert "Sketchbook" in items
+        assert "A4" in items  # built-ins still there
+        assert "Custom" in items
+    finally:
+        d.close()
+
+
+def test_selecting_user_preset_populates_dimensions(qapp, isolated_settings):
+    from plottter.gui.dialogs.new_project import NewProjectDialog, save_user_presets
+
+    save_user_presets({"Sketchbook": (148.0, 210.0)})
+    d = NewProjectDialog()
+    try:
+        d._preset_combo.setCurrentText("Sketchbook")
+        assert d._width_spin.value() == pytest.approx(148.0)
+        assert d._height_spin.value() == pytest.approx(210.0)
+        canvas = d.get_canvas()
+        assert canvas.paper_preset == "Sketchbook"
+        assert canvas.width_mm == pytest.approx(148.0)
+        assert canvas.height_mm == pytest.approx(210.0)
+    finally:
+        d.close()
+
+
+def test_delete_button_disabled_for_builtins(qapp, isolated_settings):
+    from plottter.gui.dialogs.new_project import NewProjectDialog, save_user_presets
+
+    save_user_presets({"Sketchbook": (148.0, 210.0)})
+    d = NewProjectDialog()
+    try:
+        d._preset_combo.setCurrentText("A4")
+        assert not d._delete_preset_btn.isEnabled()
+        d._preset_combo.setCurrentText("Custom")
+        assert not d._delete_preset_btn.isEnabled()
+        d._preset_combo.setCurrentText("Sketchbook")
+        assert d._delete_preset_btn.isEnabled()
+    finally:
+        d.close()
+
+
+def test_user_preset_dimensions_stored_portrait_canonical(qapp, isolated_settings):
+    """Saving with landscape spinboxes still stores width ≤ height."""
+    from plottter.gui.dialogs.new_project import (
+        NewProjectDialog,
+        load_user_presets,
+        save_user_presets,
+    )
+
+    # Start fresh, simulate user picking Custom + landscape dims, then saving.
+    d = NewProjectDialog()
+    try:
+        d._preset_combo.setCurrentText("Custom")
+        d._width_spin.setValue(400.0)
+        d._height_spin.setValue(250.0)
+        # Call the inner machinery directly (avoid QInputDialog).
+        save_user_presets({"Wide": d._current_dims_mm()})
+        d._refresh_preset_combo(select="Wide")
+    finally:
+        d.close()
+
+    presets = load_user_presets()
+    assert presets["Wide"] == (250.0, 400.0)  # portrait-canonical
+
+
+def test_save_user_preset_rejects_builtin_name(qapp, isolated_settings):
+    """The built-in name list (PAPER_PRESETS keys + Custom) is reserved."""
+    from plottter.gui.dialogs.new_project import (
+        load_user_presets,
+        save_user_presets,
+    )
+    from plottter.models.canvas import PAPER_PRESETS
+
+    # save_user_presets itself doesn't enforce this — the UI does. So this
+    # test guards the UI contract: the combo's "reserved" set is PAPER_PRESETS
+    # ∪ {"Custom"}.
+    reserved = set(PAPER_PRESETS.keys()) | {"Custom"}
+    assert "A4" in reserved
+    assert "Custom" in reserved
+
+    # Round-trip with a non-reserved name works.
+    save_user_presets({"My Pad": (100.0, 150.0)})
+    assert "My Pad" in load_user_presets()

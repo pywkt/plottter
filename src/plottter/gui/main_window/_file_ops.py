@@ -20,11 +20,17 @@ class _FileOpsMixin:
     def _on_new(self) -> None:
         if not self._prompt_save_if_modified():
             return
-        from plottter.gui.dialogs.new_project import NewProjectDialog
-        dialog = NewProjectDialog(self)
+        from plottter.gui.dialogs.new_project import (
+            NewProjectDialog,
+            load_default_canvas,
+            save_default_canvas,
+        )
+        dialog = NewProjectDialog(self, initial_canvas=load_default_canvas())
         if dialog.exec() != NewProjectDialog.DialogCode.Accepted:
             return
         canvas = dialog.get_canvas()
+        if dialog.should_save_as_default():
+            save_default_canvas(canvas)
         project = Project(name="Untitled", canvas=canvas)
         project.add_layer(Layer(name="Layer 1", color="#000000"))
         self._current_file = None

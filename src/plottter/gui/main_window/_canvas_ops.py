@@ -13,13 +13,15 @@ class _CanvasOpsMixin:
     """Mixin providing canvas-related operations for MainWindow."""
 
     def _on_canvas_settings(self) -> None:
-        from plottter.gui.dialogs.new_project import NewProjectDialog
+        from plottter.gui.dialogs.new_project import NewProjectDialog, save_default_canvas
         project = self._controller.current_project
         old_canvas = project.canvas
         dialog = NewProjectDialog(self, initial_canvas=old_canvas)
         if dialog.exec() != NewProjectDialog.DialogCode.Accepted:
             return
         new_canvas = dialog.get_canvas()
+        if dialog.should_save_as_default():
+            save_default_canvas(new_canvas)
 
         # Only offer scaling when there is art to scale
         layers_with_paths = [layer for layer in project.layers if layer.paths]
