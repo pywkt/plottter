@@ -367,9 +367,13 @@ class PreferencesDialog(QDialog):
         import json
 
         try:
+            from plottter.ai.replicate_client import _USER_AGENT
             req = urllib.request.Request(
                 "https://api.replicate.com/v1/account",
-                headers={"Authorization": f"Bearer {key}"},
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "User-Agent": _USER_AGENT,
+                },
             )
             with urllib.request.urlopen(req) as resp:
                 data = json.loads(resp.read().decode())

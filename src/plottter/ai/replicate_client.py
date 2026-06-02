@@ -33,6 +33,12 @@ MODEL_SAM2 = "meta/sam-2-video:33432afdfc06a10da6b4018932893d39b0159f838b6d11dd1
 MODEL_GROUNDED_SAM = "schananas/grounded_sam:ee871c19efb1941f55f66a3d7d960428c8a5afcb77449547fe8e5a3ab9ebc21c"
 
 
+# Identify ourselves to Replicate's Cloudflare layer. The default
+# `Python-urllib/X.Y` User-Agent gets blocked with HTTP 403 / Cloudflare error
+# 1010 ("browser signature banned"), so every request must set this header.
+_USER_AGENT = "Plottter/0.1.0 (https://github.com/pywkt/plottter)"
+
+
 class ReplicateAPIError(Exception):
     """Raised on network failures, invalid key, rate limits, or model errors."""
 
@@ -721,6 +727,7 @@ def _replicate_run(api_key: str, model: str, input_data: dict) -> object:
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "User-Agent": _USER_AGENT,
         },
         method="POST",
     )
@@ -746,7 +753,10 @@ def _replicate_run(api_key: str, model: str, input_data: dict) -> object:
     while True:
         poll_req = urllib.request.Request(
             poll_url,
-            headers={"Authorization": f"Bearer {api_key}"},
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": _USER_AGENT,
+            },
         )
         try:
             with urllib.request.urlopen(poll_req) as resp:
@@ -802,7 +812,8 @@ def _fetch_url_as_rgba(url: str | object) -> np.ndarray:
         data = url.read()  # type: ignore[union-attr]
         pil = _PIL_Image.open(io.BytesIO(data)).convert("RGBA")
     else:
-        with urllib.request.urlopen(str(url)) as resp:
+        req = urllib.request.Request(str(url), headers={"User-Agent": _USER_AGENT})
+        with urllib.request.urlopen(req) as resp:
             data = resp.read()
         pil = _PIL_Image.open(io.BytesIO(data)).convert("RGBA")
     return np.array(pil)
@@ -816,7 +827,8 @@ def _fetch_url_as_rgb(url: str | object) -> np.ndarray:
         data = url.read()  # type: ignore[union-attr]
         pil = _PIL_Image.open(io.BytesIO(data)).convert("RGB")
     else:
-        with urllib.request.urlopen(str(url)) as resp:
+        req = urllib.request.Request(str(url), headers={"User-Agent": _USER_AGENT})
+        with urllib.request.urlopen(req) as resp:
             data = resp.read()
         pil = _PIL_Image.open(io.BytesIO(data)).convert("RGB")
     return np.array(pil)
@@ -882,7 +894,8 @@ def _fetch_mask_as_binary(
         data = url.read()  # type: ignore[union-attr]
         pil = _PIL_Image.open(io.BytesIO(data)).convert("L")
     else:
-        with urllib.request.urlopen(str(url)) as resp:
+        req = urllib.request.Request(str(url), headers={"User-Agent": _USER_AGENT})
+        with urllib.request.urlopen(req) as resp:
             data = resp.read()
         pil = _PIL_Image.open(io.BytesIO(data)).convert("L")
 
