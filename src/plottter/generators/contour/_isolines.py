@@ -24,50 +24,56 @@ def _trace_isolines(
     simplify_tol: float,
     min_length: int,
     smooth_iterations: int = 0,
+    supersample: int = 1,
 ) -> list[Polyline]:
-    """Trace contour lines at a single brightness threshold using OpenCV."""
-    try:
-        import cv2
-    except ImportError:  # pragma: no cover
-        raise RuntimeError("opencv-python is required for ContourGenerator.")
+    """Trace contour lines at a single brightness threshold using sub-pixel marching squares.
 
-    # Threshold the grayscale image to isolate the isoline
-    _, binary = cv2.threshold(gray, threshold, 255, cv2.THRESH_BINARY)
+    Uses ``skimage.measure.find_contours`` via :func:`._subpixel.extract_subpixel_contours`
+    instead of ``cv2.findContours``.  Marching squares linearly interpolates where the
+    iso-value crosses *between* adjacent pixels, so diagonal edges become smooth diagonal
+    lines rather than pixel-grid staircases.
 
-    # Find contours at this threshold level
-    contours, _ = cv2.findContours(
-        binary, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE
-    )
+    Contour Levels rings are mostly closed interior loops; border-touching contours are
+    treated as open polylines and are **not** force-closed (doing so would add a spurious
+    chord from the last point back to the first).
+    """
+    from ._subpixel import extract_subpixel_contours
+
+    raw_contours = extract_subpixel_contours(gray, float(threshold), min_length, supersample)
+
+    px_per_mm = img_w / (draw_x2 - draw_x1) if (draw_x2 - draw_x1) > 0 else 1.0
 
     polylines: list[Polyline] = []
-    for contour in contours:
-        if len(contour) < min_length:
-            continue
+    for pts_xy, is_closed in raw_contours:
+        # pts_xy is (N, 2) float array of (x, y) = (col, row) pixel coordinates
 
-        # Simplify using approxPolyDP (RDP-like)
+        # RDP simplification in pixel space
         if simplify_tol > 0:
-            # Convert simplify_tol from mm to pixels
-            px_per_mm = img_w / (draw_x2 - draw_x1) if (draw_x2 - draw_x1) > 0 else 1.0
+            try:
+                import cv2
+            except ImportError:  # pragma: no cover
+                raise RuntimeError("opencv-python is required for ContourGenerator.")
             tol_px = max(1.0, simplify_tol * px_per_mm)
-            contour = cv2.approxPolyDP(contour, tol_px, closed=True)
+            pts_arr = pts_xy.reshape(-1, 1, 2).astype(np.float32)
+            pts_arr = cv2.approxPolyDP(pts_arr, tol_px, closed=is_closed)
+            pts_xy = pts_arr.reshape(-1, 2)
 
-        pts = contour.reshape(-1, 2)
-        if len(pts) < 2:
+        if len(pts_xy) < 2:
             continue
 
         # Convert pixel coords to mm
         poly: Polyline = [
             _px_to_mm(float(p[0]), float(p[1]), img_w, img_h,
                       draw_x1, draw_y1, draw_x2, draw_y2)
-            for p in pts
+            for p in pts_xy
         ]
 
-        # Apply Chaikin smoothing before closing
+        # Chaikin smoothing with closed=is_closed: open strokes stay open
         if smooth_iterations > 0:
-            poly = _chaikin_smooth(poly, smooth_iterations, closed=True)
+            poly = _chaikin_smooth(poly, smooth_iterations, closed=is_closed)
 
-        # Close the contour
-        if poly[0] != poly[-1]:
+        # Close only when it is a closed interior loop; border-touching strokes stay open
+        if is_closed and poly and poly[0] != poly[-1]:
             poly.append(poly[0])
 
         polylines.append(poly)

@@ -430,6 +430,7 @@ class ContourGenerator(Generator):
         num_levels = int(params.get("num_levels", 8))
         spacing = str(params.get("spacing", "linear"))
         smooth_iterations = int(params.get("smooth_iterations", 0))
+        trace_supersample = int(params.get("trace_supersample", 1))
 
         # Compute threshold values in [1, 254] range
         thresholds = _compute_thresholds(num_levels, spacing)
@@ -453,6 +454,7 @@ class ContourGenerator(Generator):
                 simplify_mm,
                 min_contour_px,
                 smooth_iterations,
+                trace_supersample,
             )
             all_polylines.extend(polys)
 
