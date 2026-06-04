@@ -174,6 +174,7 @@ class ContourGenerator(Generator):
                     smooth_iterations,
                     adaptive_thresh,
                     adaptive_c,
+                    trace_supersample,
                 )
 
                 if progress_callback:

@@ -462,3 +462,121 @@ class TestTraceLineArt:
             f"Expected at least one open polyline for border-crossing stripe, "
             f"but all {len(polylines)} polylines are closed (possible spurious chord bug)"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests for fills — spec §7
+# ---------------------------------------------------------------------------
+
+class TestFillsStillWork:
+    """§7: Concentric and Hatching fills on a simple shape produce non-empty
+    output; every fill line lies within the (now smooth) outer ring's bounds.
+    """
+
+    SIZE = 64
+    DRAW_X1, DRAW_Y1 = 0.0, 0.0
+    DRAW_X2, DRAW_Y2 = float(SIZE), float(SIZE)
+
+    @staticmethod
+    def _make_circle_image(size: int = 64, radius: float = 16.0) -> np.ndarray:
+        """Dark-ink circle on white background."""
+        img = np.full((size, size), 255, dtype=np.uint8)
+        cy, cx = size / 2.0, size / 2.0
+        ys, xs = np.ogrid[:size, :size]
+        mask = (xs - cx) ** 2 + (ys - cy) ** 2 <= radius ** 2
+        img[mask] = 0
+        return img
+
+    def _extract(self, img: np.ndarray, **kwargs):
+        from plottter.generators.contour._isolines import _extract_contours_with_hierarchy
+        defaults = dict(
+            threshold=127,
+            img_w=self.SIZE,
+            img_h=self.SIZE,
+            draw_x1=self.DRAW_X1,
+            draw_y1=self.DRAW_Y1,
+            draw_x2=self.DRAW_X2,
+            draw_y2=self.DRAW_Y2,
+            simplify_tol=0.0,
+            min_length=3,
+            smooth_iterations=0,
+        )
+        defaults.update(kwargs)
+        return _extract_contours_with_hierarchy(img, **defaults)
+
+    def test_extract_produces_pairs(self):
+        """_extract_contours_with_hierarchy returns at least one (outer, holes) pair."""
+        img = self._make_circle_image()
+        pairs = self._extract(img)
+        assert pairs, "Should produce at least one (outer, holes) pair for a filled circle"
+        outer, holes = pairs[0]
+        assert len(outer) >= 3, "Outer ring must have at least 3 vertices"
+
+    def test_hatch_fill_non_empty(self):
+        """Hatching fill on a circle produces non-empty output."""
+        from plottter.generators.contour._fills import _fill_polygon_hatch
+
+        img = self._make_circle_image()
+        pairs = self._extract(img)
+        assert pairs, "Need at least one pair to test hatching"
+
+        outer, holes = pairs[0]
+        fill_lines = _fill_polygon_hatch(outer, holes, angle_deg=45.0, spacing_mm=2.0)
+        assert fill_lines, "Hatching fill should produce non-empty output for a circle"
+
+    def test_hatch_fill_lines_within_bounds(self):
+        """All hatch fill lines lie within the outer ring's bounding box."""
+        from plottter.generators.contour._fills import _fill_polygon_hatch
+        from shapely.geometry import Point, Polygon as ShapelyPolygon
+
+        img = self._make_circle_image()
+        pairs = self._extract(img)
+        assert pairs
+
+        outer, holes = pairs[0]
+        fill_lines = _fill_polygon_hatch(outer, holes, angle_deg=0.0, spacing_mm=2.0)
+        assert fill_lines
+
+        # Build the outer polygon in mm space for containment checking
+        outer_poly = ShapelyPolygon([(p[0], p[1]) for p in outer])
+        expanded = outer_poly.buffer(0.6)  # slight tolerance for clipping artefacts
+
+        for line in fill_lines:
+            for pt in line:
+                assert expanded.contains(Point(pt[0], pt[1])), (
+                    f"Fill point {pt} is outside the (buffered) outer ring"
+                )
+
+    def test_concentric_fill_non_empty(self):
+        """Concentric fill on a circle produces non-empty output."""
+        from plottter.generators.contour._fills import _fill_polygon_concentric
+
+        img = self._make_circle_image()
+        pairs = self._extract(img)
+        assert pairs, "Need at least one pair to test concentric fill"
+
+        outer, holes = pairs[0]
+        fill_lines = _fill_polygon_concentric(outer, holes, spacing_mm=2.0)
+        assert fill_lines, "Concentric fill should produce non-empty output for a circle"
+
+    def test_concentric_fill_lines_within_bounds(self):
+        """All concentric fill rings lie within the outer ring's bounding box."""
+        from plottter.generators.contour._fills import _fill_polygon_concentric
+        from shapely.geometry import Point, Polygon as ShapelyPolygon
+
+        img = self._make_circle_image()
+        pairs = self._extract(img)
+        assert pairs
+
+        outer, holes = pairs[0]
+        fill_lines = _fill_polygon_concentric(outer, holes, spacing_mm=2.0)
+        assert fill_lines
+
+        outer_poly = ShapelyPolygon([(p[0], p[1]) for p in outer])
+        expanded = outer_poly.buffer(0.6)
+
+        for line in fill_lines:
+            for pt in line:
+                assert expanded.contains(Point(pt[0], pt[1])), (
+                    f"Concentric fill point {pt} is outside the (buffered) outer ring"
+                )
