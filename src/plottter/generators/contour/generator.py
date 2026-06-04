@@ -138,6 +138,7 @@ class ContourGenerator(Generator):
             fill_angle = float(params.get("fill_angle", 45.0))
             adaptive_thresh = bool(params.get("adaptive_threshold", False))
             adaptive_c = float(params.get("adaptive_c", 5.0))
+            trace_supersample = int(params.get("trace_supersample", 1))
 
             if fill_style == "None":
                 # Original outline-only behaviour
@@ -155,6 +156,7 @@ class ContourGenerator(Generator):
                     smooth_iterations,
                     adaptive_thresh,
                     adaptive_c,
+                    trace_supersample,
                 )
             else:
                 # Extract contours with hierarchy for fill generation

@@ -297,3 +297,168 @@ class TestBuildContourHierarchy:
         assert len(result) == 1
         _, holes = result[0]
         assert holes == []
+
+
+# ---------------------------------------------------------------------------
+# Diagonal smoothness regression
+# ---------------------------------------------------------------------------
+
+class TestDiagonalSmoothness:
+    """Sub-pixel tracing must produce dramatically fewer staircase corners
+    than cv2.findContours on the same rasterized circle image.
+
+    The test uses a Gaussian-blurred circle to represent an anti-aliased source
+    (scanned line art, photographed drawings).  Marching squares on the gray
+    image interpolates the true smooth boundary; cv2.findContours on the
+    binarized image is quantized to pixel-center positions and produces sharp
+    direction changes (~45°) at pixel-grid transitions — the staircase artifact.
+    """
+
+    @staticmethod
+    def _count_staircase_corners(pts: np.ndarray, angle_thresh_deg: float = 20.0) -> int:
+        """Count vertices where the incoming/outgoing segment directions differ
+        by more than *angle_thresh_deg*.  These are the 'staircase corners' that
+        appear in pixel-quantized contours at grid transitions."""
+        count = 0
+        for i in range(len(pts) - 2):
+            ab = pts[i + 1] - pts[i]
+            bc = pts[i + 2] - pts[i + 1]
+            la = float(np.linalg.norm(ab))
+            lb = float(np.linalg.norm(bc))
+            if la < 1e-9 or lb < 1e-9:
+                continue
+            cos_t = float(np.clip(np.dot(ab, bc) / (la * lb), -1.0, 1.0))
+            if math.degrees(math.acos(cos_t)) > angle_thresh_deg:
+                count += 1
+        return count
+
+    def test_circle_subpixel_fewer_staircase_corners_than_findcontours(self):
+        """Sub-pixel traced circle on an anti-aliased gray image has dramatically
+        fewer staircase corners than cv2.findContours on the binarized image.
+
+        Rasterize a circle with Gaussian blur (representing a real scanned or
+        photographed line), then compare:
+        - Sub-pixel (marching squares on gray): smooth sub-pixel interpolation.
+        - cv2.findContours on binary: quantized pixel-center tracing with
+          direction jumps (~45° per pixel-grid step transition) that are the
+          mathematical signature of the staircase artifact.
+
+        Count vertices where the incoming and outgoing segment directions differ
+        by > 20°.  Sub-pixel must yield dramatically fewer such corners (< 20% of
+        cv2's count), proving the staircase is gone for anti-aliased sources.
+        """
+        from scipy.ndimage import gaussian_filter
+        import cv2
+
+        size = 128
+        radius = 40.0
+        cx, cy = size / 2.0, size / 2.0
+
+        # Rasterize a circle, then blur to create an anti-aliased source image
+        # (models a real scanned or photographed line-art stroke)
+        img = np.zeros((size, size), dtype=np.uint8)
+        ys, xs = np.ogrid[:size, :size]
+        mask = (xs - cx) ** 2 + (ys - cy) ** 2 <= radius ** 2
+        img[mask] = 255
+        gray = gaussian_filter(img.astype(float), sigma=3.0).astype(np.uint8)
+
+        # -- Sub-pixel path: marching squares on the gray image (new behaviour) --
+        contours_sp = extract_subpixel_contours(gray, level=127.0, min_points=5)
+        assert contours_sp, "Should find at least one contour"
+        pts_sp, _ = contours_sp[0]
+
+        # -- cv2 path: binarize first, then findContours (old behaviour) --
+        _, binary = cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)
+        cv_contours, _ = cv2.findContours(binary, cv2.RETR_CCOMP, cv2.CHAIN_APPROX_NONE)
+        assert cv_contours, "cv2 should also find a contour"
+        cv_pts = max(cv_contours, key=len).reshape(-1, 2).astype(float)
+
+        corners_sp = self._count_staircase_corners(pts_sp)
+        corners_cv = self._count_staircase_corners(cv_pts)
+
+        # Sub-pixel must produce dramatically fewer staircase corners
+        assert corners_sp < corners_cv * 0.2, (
+            f"Sub-pixel trace has {corners_sp} staircase corners (direction change > 20°); "
+            f"cv2 has {corners_cv}. Expected sub-pixel to be dramatically smoother "
+            "(< 20% of cv2 corners), proving the staircase is eliminated."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Tests for _trace_line_art
+# ---------------------------------------------------------------------------
+
+class TestTraceLineArt:
+    """Tests for the _trace_line_art function (open/closed behaviour)."""
+
+    # Shared canvas params (1:1 pixel-to-mm mapping for easy assertions)
+    SIZE = 64
+    DRAW_X1, DRAW_Y1 = 0.0, 0.0
+    DRAW_X2, DRAW_Y2 = float(SIZE), float(SIZE)
+
+    def _trace(self, img: np.ndarray, **kwargs) -> list:
+        from plottter.generators.contour._line_art import _trace_line_art
+        defaults = dict(
+            threshold=127,
+            img_w=self.SIZE,
+            img_h=self.SIZE,
+            draw_x1=self.DRAW_X1,
+            draw_y1=self.DRAW_Y1,
+            draw_x2=self.DRAW_X2,
+            draw_y2=self.DRAW_Y2,
+            simplify_tol=0.0,
+            min_length=3,
+            smooth_iterations=0,
+        )
+        defaults.update(kwargs)
+        return _trace_line_art(img, **defaults)
+
+    def test_interior_circle_contour_is_closed(self):
+        """A filled circle inside the image produces a closed contour."""
+        size = self.SIZE
+        img = np.zeros((size, size), dtype=np.uint8)
+        cy, cx = size / 2.0, size / 2.0
+        ys, xs = np.ogrid[:size, :size]
+        mask = (xs - cx) ** 2 + (ys - cy) ** 2 <= (size / 4.0) ** 2
+        # Dark circle on white background → ink is dark → invert for gray
+        # _trace_line_art traces pixels *darker* than threshold as ink.
+        # Make the circle pixels dark (0) and background light (255).
+        img[:] = 255
+        img[mask] = 0
+
+        polylines = self._trace(img)
+        assert polylines, "Should produce at least one polyline for interior circle"
+
+        # At least one polyline should be closed (first point == last point)
+        closed_count = sum(
+            1 for poly in polylines if len(poly) >= 2 and poly[0] == poly[-1]
+        )
+        assert closed_count >= 1, (
+            f"Expected at least one closed polyline for interior circle, "
+            f"got 0 closed out of {len(polylines)}"
+        )
+
+    def test_border_crossing_stripe_not_force_closed(self):
+        """A horizontal stripe crossing the image border yields open (not force-closed)
+        polylines — no spurious chord from last to first point."""
+        size = self.SIZE
+        img = np.zeros((size, size), dtype=np.uint8)
+        # White background, dark horizontal stripe across full width (border-touching)
+        img[:] = 255
+        mid = size // 2
+        img[mid - 4 : mid + 4, :] = 0  # dark stripe from col 0 to col size-1
+
+        polylines = self._trace(img)
+        assert polylines, "Should produce at least one polyline for border-crossing stripe"
+
+        # None of the polylines should be "force-closed" by a spurious chord.
+        # A closed polyline has poly[0] == poly[-1].  For a stripe that exits
+        # both sides, the correct result is open polylines.
+        # We check that at least one polyline is open (not closed).
+        open_count = sum(
+            1 for poly in polylines if len(poly) >= 2 and poly[0] != poly[-1]
+        )
+        assert open_count >= 1, (
+            f"Expected at least one open polyline for border-crossing stripe, "
+            f"but all {len(polylines)} polylines are closed (possible spurious chord bug)"
+        )

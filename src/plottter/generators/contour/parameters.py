@@ -421,6 +421,16 @@ def build_parameters() -> list[Parameter]:
             description="How closely the fitted curves must follow the original points — lower = more faithful but more points",
         ),
         IntParam(
+            name="trace_supersample",
+            label="Trace Detail (Supersample)",
+            min=1,
+            max=4,
+            step=1,
+            default=1,
+            visible_when={"mode": ["Contour Levels", "Line Art Trace"]},
+            description="Upsamples the image before sub-pixel tracing for extra-smooth contours on low-resolution sources (1 = off). Higher values cost time and memory.",
+        ),
+        IntParam(
             name="min_contour_px",
             label="Min Contour Length (px)",
             min=3,
