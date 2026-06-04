@@ -142,3 +142,158 @@ class TestExtractSubpixelContours:
         assert centroid_x > centroid_y, (
             f"Expected x > y in (col>row) centroid, got x={centroid_x:.1f} y={centroid_y:.1f}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Helpers for hierarchy tests
+# ---------------------------------------------------------------------------
+
+def _square_ring(x0: float, y0: float, x1: float, y1: float) -> np.ndarray:
+    """Return a closed rectangular ring as (N, 2) float array (x, y)."""
+    return np.array(
+        [
+            [x0, y0],
+            [x1, y0],
+            [x1, y1],
+            [x0, y1],
+            [x0, y0],  # closing vertex
+        ],
+        dtype=float,
+    )
+
+
+def _circle_ring(cx: float, cy: float, r: float, n: int = 64) -> np.ndarray:
+    """Return a closed circular ring as (N, 2) float array (x, y)."""
+    angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    pts = np.column_stack((cx + r * np.cos(angles), cy + r * np.sin(angles)))
+    pts = np.vstack([pts, pts[0]])  # close
+    return pts
+
+
+# ---------------------------------------------------------------------------
+# Tests for build_contour_hierarchy
+# ---------------------------------------------------------------------------
+
+class TestBuildContourHierarchy:
+
+    def test_empty_input(self):
+        """Empty input returns empty list."""
+        from plottter.generators.contour._subpixel import build_contour_hierarchy
+
+        result = build_contour_hierarchy([])
+        assert result == []
+
+    def test_single_ring_no_holes(self):
+        """A single ring produces one (outer, []) pair."""
+        from plottter.generators.contour._subpixel import build_contour_hierarchy
+
+        outer = _square_ring(0, 0, 10, 10)
+        result = build_contour_hierarchy([outer])
+        assert len(result) == 1
+        outer_ring, holes = result[0]
+        assert holes == []
+        assert outer_ring.shape[1] == 2
+
+    def test_square_with_hole(self):
+        """Outer square + inner hole → one (outer, [hole]) pair."""
+        from plottter.generators.contour._subpixel import build_contour_hierarchy
+
+        outer = _square_ring(0, 0, 100, 100)
+        hole = _square_ring(20, 20, 80, 80)
+        result = build_contour_hierarchy([outer, hole])
+
+        assert len(result) == 1, f"Expected 1 (outer,[hole]) pair, got {len(result)}"
+        outer_ring, holes = result[0]
+        assert len(holes) == 1, f"Expected 1 hole, got {len(holes)}"
+
+        # The outer ring should have the larger area
+        from shapely.geometry import Polygon
+        outer_area = Polygon(outer_ring).area
+        hole_area = Polygon(holes[0]).area
+        assert outer_area > hole_area
+
+    def test_nested_donut_disc_is_own_outer(self):
+        """Outer square → hole square → disc: disc is its own even-depth outer.
+
+        Containment forest:
+          outer_square (depth 0, outer)
+          └── hole_square (depth 1, hole of outer_square)
+              └── disc (depth 2, outer — its own pair with no holes)
+
+        Result: [(outer_square, [hole_square]), (disc, [])]
+        """
+        from plottter.generators.contour._subpixel import build_contour_hierarchy
+
+        outer = _square_ring(0, 0, 100, 100)
+        hole = _square_ring(20, 20, 80, 80)
+        # disc centred at (50, 50) with radius 10, well inside the hole region
+        disc = _circle_ring(50, 50, 10)
+        result = build_contour_hierarchy([outer, hole, disc])
+
+        assert len(result) == 2, (
+            f"Expected 2 (outer,[holes]) pairs (outer_square and disc), got {len(result)}"
+        )
+
+        # Sort by area so we can identify which is which
+        from shapely.geometry import Polygon
+        by_area = sorted(result, key=lambda t: Polygon(t[0]).area, reverse=True)
+
+        big_outer_ring, big_holes = by_area[0]
+        small_outer_ring, small_holes = by_area[1]
+
+        # The large outer should have exactly one hole
+        assert len(big_holes) == 1, (
+            f"Outer square should have 1 hole, got {len(big_holes)}"
+        )
+        # The nested disc should have no holes
+        assert small_holes == [], (
+            f"Nested disc should have no holes, got {small_holes}"
+        )
+
+        # The disc area should be close to pi * 10^2
+        import math
+        disc_area = Polygon(small_outer_ring).area
+        expected = math.pi * 10 ** 2
+        assert abs(disc_area - expected) / expected < 0.05, (
+            f"Disc area {disc_area:.1f} not close to expected {expected:.1f}"
+        )
+
+    def test_disjoint_shapes_independent_pairs(self):
+        """Two disjoint squares → two independent (outer, []) pairs."""
+        from plottter.generators.contour._subpixel import build_contour_hierarchy
+
+        left = _square_ring(0, 0, 20, 20)
+        right = _square_ring(40, 0, 60, 20)
+        result = build_contour_hierarchy([left, right])
+
+        assert len(result) == 2, f"Expected 2 pairs for disjoint shapes, got {len(result)}"
+        for outer_ring, holes in result:
+            assert holes == [], f"Disjoint shapes should have no holes, got {holes}"
+
+    def test_input_order_independence(self):
+        """Result is the same regardless of input list order (outer and hole)."""
+        from plottter.generators.contour._subpixel import build_contour_hierarchy
+
+        outer = _square_ring(0, 0, 100, 100)
+        hole = _square_ring(20, 20, 80, 80)
+
+        result_fwd = build_contour_hierarchy([outer, hole])
+        result_rev = build_contour_hierarchy([hole, outer])
+
+        assert len(result_fwd) == 1
+        assert len(result_rev) == 1
+        assert len(result_fwd[0][1]) == 1
+        assert len(result_rev[0][1]) == 1
+
+    def test_degenerate_ring_skipped(self):
+        """A collinear (zero-area) ring is silently skipped."""
+        from plottter.generators.contour._subpixel import build_contour_hierarchy
+
+        good = _square_ring(0, 0, 10, 10)
+        degenerate = np.array([[5.0, 5.0], [5.0, 5.0], [5.0, 5.0]], dtype=float)
+        result = build_contour_hierarchy([good, degenerate])
+
+        # Only the good ring should survive
+        assert len(result) == 1
+        _, holes = result[0]
+        assert holes == []

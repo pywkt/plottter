@@ -94,3 +94,103 @@ def extract_subpixel_contours(
         result.append((pts, is_closed))
 
     return result
+
+
+def build_contour_hierarchy(
+    closed_contours: list[np.ndarray],
+) -> list[tuple[np.ndarray, list[np.ndarray]]]:
+    """Group rings into (outer, [holes]) pairs by containment nesting.
+
+    Build a containment forest: ring A is a child of the smallest ring that
+    fully contains a representative point of A.  A ring at even nesting depth
+    (0, 2, …) is a filled region (outer); a ring at odd depth (1, 3, …) is a
+    hole of its immediate parent.  Returns one ``(outer_ring, [hole_ring, …])``
+    pair per even-depth ring, attaching only its *direct* odd-depth children as
+    holes (mirrors and generalises ``cv2.RETR_CCOMP``'s two-level hierarchy to
+    arbitrary nesting).
+
+    Parameters
+    ----------
+    closed_contours:
+        List of ``(N, 2)`` float arrays giving ``(x, y)`` pixel coordinates of
+        closed rings.  Each ring must be closed (first ≈ last vertex), but the
+        closing duplicate vertex need not be present — Shapely ``Polygon``
+        handles both.
+
+    Returns
+    -------
+    list of ``(outer_ring, hole_rings)`` where *outer_ring* is an ``(N, 2)``
+    array and *hole_rings* is a (possibly empty) list of ``(M, 2)`` arrays.
+    Rings are sorted so that larger outers come first.
+
+    Notes
+    -----
+    Degenerate or self-intersecting rings are skipped defensively: a
+    ``buffer(0)`` is applied to the Shapely ``Polygon``; if the result is not
+    a simple ``Polygon``, or has area below ``1e-9``, the ring is dropped.
+    """
+    from shapely.geometry import MultiPolygon, Polygon  # already a dependency
+
+    if not closed_contours:
+        return []
+
+    # Build Shapely polygons; fix / skip degenerate / self-intersecting rings
+    valid_polys: list[Polygon] = []
+    valid_rings: list[np.ndarray] = []
+
+    for ring in closed_contours:
+        try:
+            poly: object = Polygon(ring)
+            if not poly.is_valid:  # type: ignore[union-attr]
+                poly = poly.buffer(0)  # type: ignore[union-attr]
+            # buffer(0) may return MultiPolygon for badly self-intersecting rings
+            if isinstance(poly, MultiPolygon) or poly.is_empty or poly.area < 1e-9:  # type: ignore[union-attr]
+                continue
+            valid_polys.append(poly)  # type: ignore[arg-type]
+            valid_rings.append(ring)
+        except Exception:  # pragma: no cover
+            continue
+
+    if not valid_polys:
+        return []
+
+    # Sort by area descending so a candidate parent is always encountered
+    # before its children when building the forest
+    order = sorted(range(len(valid_polys)), key=lambda i: valid_polys[i].area, reverse=True)
+    sorted_polys = [valid_polys[i] for i in order]
+    sorted_rings = [valid_rings[i] for i in order]
+
+    n = len(sorted_polys)
+
+    # Build parent[] array.
+    # For ring i, scan from j = i-1 down to 0 (smallest → largest area).
+    # The first j whose polygon contains a representative point of ring i is
+    # the immediate parent (smallest containing ring).
+    parent: list[int] = [-1] * n
+
+    for i in range(1, n):
+        rep = sorted_polys[i].representative_point()
+        for j in range(i - 1, -1, -1):
+            if sorted_polys[j].contains(rep):
+                parent[i] = j
+                break
+
+    # Compute nesting depths via the parent[] array
+    depth: list[int] = [0] * n
+    for i in range(n):
+        if parent[i] != -1:
+            depth[i] = depth[parent[i]] + 1
+
+    # Build children adjacency list, then collect (outer, holes) pairs
+    children: list[list[int]] = [[] for _ in range(n)]
+    for i in range(n):
+        if parent[i] != -1:
+            children[parent[i]].append(i)
+
+    result: list[tuple[np.ndarray, list[np.ndarray]]] = []
+    for i in range(n):
+        if depth[i] % 2 == 0:  # even depth → outer (filled region)
+            hole_rings = [sorted_rings[j] for j in children[i] if depth[j] % 2 == 1]
+            result.append((sorted_rings[i], hole_rings))
+
+    return result
