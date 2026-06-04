@@ -1501,6 +1501,66 @@ class TestContourGenerator:
         assert "brightness" in names
         assert "contrast" in names
         assert "blur_radius" in names
+        assert "trace_supersample" in names, "trace_supersample param must be exposed"
+
+    def test_trace_supersample_param_attributes(self):
+        """trace_supersample must be an IntParam visible in Contour Levels and Line Art Trace."""
+        from plottter.generators.base import IntParam
+        params = self.gen.get_parameters()
+        sp = next((p for p in params if p.name == "trace_supersample"), None)
+        assert sp is not None, "trace_supersample param not found"
+        assert isinstance(sp, IntParam)
+        assert sp.min == 1
+        assert sp.max == 4
+        assert sp.default == 1
+        assert sp.visible_when is not None
+        modes = sp.visible_when.get("mode", [])
+        assert "Contour Levels" in modes
+        assert "Line Art Trace" in modes
+
+    def test_trace_supersample_2_contour_levels(self):
+        """trace_supersample=2 run in Contour Levels mode must complete and return paths."""
+        img = make_gradient_image(64, 64)
+        params = {
+            "_source_image": img,
+            "mode": "Contour Levels",
+            "num_levels": 3,
+            "spacing": "linear",
+            "simplify_mm": 0.0,
+            "min_contour_px": 3,
+            "invert": False,
+            "brightness": 0.0,
+            "contrast": 0.0,
+            "blur_radius": 0.0,
+            "trace_supersample": 2,
+        }
+        result = self.gen.generate(params, self.canvas)
+        assert isinstance(result, list)
+        assert len(result) > 0, "trace_supersample=2 Contour Levels run must return paths"
+        for poly in result:
+            assert len(poly) >= 2
+
+    def test_trace_supersample_2_line_art(self):
+        """trace_supersample=2 run in Line Art Trace mode must complete and return paths."""
+        img = make_bw_line_art(64, 64)
+        params = {
+            "_source_image": img,
+            "mode": "Line Art Trace",
+            "trace_threshold": 128,
+            "smooth_iterations": 0,
+            "simplify_mm": 0.0,
+            "min_contour_px": 3,
+            "invert": False,
+            "brightness": 0.0,
+            "contrast": 0.0,
+            "blur_radius": 0.0,
+            "trace_supersample": 2,
+        }
+        result = self.gen.generate(params, self.canvas)
+        assert isinstance(result, list)
+        assert len(result) > 0, "trace_supersample=2 Line Art Trace run must return paths"
+        for poly in result:
+            assert len(poly) >= 2
 
 
 # ---------------------------------------------------------------------------
