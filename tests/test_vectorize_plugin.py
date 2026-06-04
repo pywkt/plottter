@@ -452,6 +452,60 @@ class TestWithPotracer:
             f"Expected 3 layers for num_levels=3, got {len(layers)}"
         )
 
+    def test_multilevel_layers_non_empty_paths_within_rect(
+        self, generator: VectorizeTraceGenerator, canvas: Canvas
+    ) -> None:
+        """Multi-level run: each LayerSpec has non-empty paths inside the fitted rect.
+
+        With num_levels=4 every threshold band of a circle image should produce
+        at least one traceable contour.  All mm coordinates must lie within the
+        drawing area (the fitted image rectangle for 'fill' mode equals the
+        drawing area).
+        """
+        source = _make_circle_image(size=64, radius=24)
+        params = {
+            "_source_image": source,
+            "threshold": 200,
+            "num_levels": 4,
+            "curve_tolerance_mm": 1.0,
+            "turdsize": 0,
+            "alphamax": 1.0,
+            "opttolerance": 0.2,
+            "image_fit_mode": "fill",
+        }
+        layers = generator.generate_layers(params, canvas)
+
+        # One LayerSpec per threshold level.
+        assert isinstance(layers, list)
+        assert len(layers) == 4, (
+            f"Expected 4 layers for num_levels=4, got {len(layers)}"
+        )
+
+        draw_x1, draw_y1, draw_x2, draw_y2 = canvas.drawing_area()
+        tolerance = 0.1  # mm rounding tolerance
+
+        for layer_idx, layer in enumerate(layers):
+            # Every layer must have at least one path with >=3 points.
+            assert hasattr(layer, "paths"), "LayerSpec must have 'paths' attribute"
+            assert len(layer.paths) > 0, (
+                f"Layer {layer_idx} ('{layer.name}') has no paths"
+            )
+            assert any(len(pl) >= 3 for pl in layer.paths), (
+                f"Layer {layer_idx} has no polyline with >=3 points"
+            )
+
+            # All coordinates must lie within the fitted rect.
+            for pl in layer.paths:
+                for x_mm, y_mm in pl:
+                    assert draw_x1 - tolerance <= x_mm <= draw_x2 + tolerance, (
+                        f"Layer {layer_idx}: x={x_mm:.3f} outside"
+                        f" [{draw_x1:.1f}, {draw_x2:.1f}]"
+                    )
+                    assert draw_y1 - tolerance <= y_mm <= draw_y2 + tolerance, (
+                        f"Layer {layer_idx}: y={y_mm:.3f} outside"
+                        f" [{draw_y1:.1f}, {draw_y2:.1f}]"
+                    )
+
     def test_generate_returns_empty_for_no_source(
         self, generator: VectorizeTraceGenerator, canvas: Canvas
     ) -> None:
