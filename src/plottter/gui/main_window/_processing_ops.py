@@ -464,10 +464,10 @@ class _ProcessingOpsMixin:
         def on_finished(new_paths, before, after, before_lifts, after_lifts):
             progress.close()
             self._controller.set_layer_paths(layer.id, new_paths, "Optimize Paths (Remote)")
-            self.statusBar().showMessage(
-                f"Remote optimize: '{layer.name}' travel "
-                f"{before:.1f} → {after:.1f} mm  ·  lifts {before_lifts} → {after_lifts}",
-                6000,
+            # Mirror the local flow's reporting: same dialog, same numbers.
+            self._show_optimize_metrics_dialog(
+                [(layer, new_paths, before, after, before_lifts, after_lifts)],
+                title=f"Remote Optimization Complete ({host})",
             )
             worker.deleteLater()
 
@@ -609,13 +609,26 @@ class _ProcessingOpsMixin:
         if cancelled:
             return
 
-        # Build metrics report
+        self._show_optimize_metrics_dialog(self._opt_results)
+
+    def _show_optimize_metrics_dialog(
+        self,
+        results: list[tuple[Layer, list[Polyline], float, float, int, int]],
+        title: str = "Optimization Complete",
+    ) -> None:
+        """Show the per-layer + total travel / pen-lift summary dialog.
+
+        Reused by the local multi-layer flow (``_finish_optimization``) and
+        the single-layer remote flow (``_run_remote_optimization``), so both
+        paths report metrics the same way instead of one silently writing
+        the status bar.
+        """
         lines = []
         total_before = 0.0
         total_after = 0.0
         total_lifts_before = 0
         total_lifts_after = 0
-        for layer, _, before, after, lifts_before, lifts_after in self._opt_results:
+        for layer, _, before, after, lifts_before, lifts_after in results:
             reduction = ((before - after) / before * 100) if before > 0 else 0.0
             lifts_delta = lifts_before - lifts_after
             lines.append(
@@ -628,7 +641,7 @@ class _ProcessingOpsMixin:
             total_lifts_before += lifts_before
             total_lifts_after += lifts_after
 
-        if len(self._opt_results) > 1:
+        if len(results) > 1:
             total_reduction = (
                 ((total_before - total_after) / total_before * 100)
                 if total_before > 0 else 0.0
@@ -642,6 +655,6 @@ class _ProcessingOpsMixin:
 
         QMessageBox.information(
             self,
-            "Optimization Complete",
+            title,
             "<b>Pen-up travel distance &amp; pen lift count:</b><br><br>" + "<br>".join(lines),
         )
