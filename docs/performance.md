@@ -4,6 +4,10 @@ This page covers the path-processing pipeline performance — how to measure it,
 what to expect on typical workloads, and when the optional `[fast]` (numba JIT)
 extra is worth installing.
 
+If your laptop is just plain slow, see [Remote Optimization](remote-optimization.md)
+for offloading the Optimize pipeline to a faster machine on your network
+(works over Tailscale SSH with no open ports on the remote).
+
 ---
 
 ## The processing pipeline

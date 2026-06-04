@@ -270,6 +270,7 @@ The status bar at the bottom of the window shows:
 | Item | Description |
 |------|-------------|
 | Optimize Current Layer | Full optimization pipeline on the active layer (nearest-neighbor + 2-opt + optional 3-opt + Or-opt) |
+| Optimize Current Layer Remotely… | Same pipeline, offloaded over SSH to a faster machine — see [Remote Optimization](remote-optimization.md) |
 | Optimize All Layers | Full optimization on every unlocked layer |
 | Simplify Paths | RDP simplification only |
 | Merge Nearby Paths | Connect nearby endpoints |

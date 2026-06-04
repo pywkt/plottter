@@ -141,6 +141,15 @@ Cold-start adds ~2–5 s the first run per Python process (the on-disk cache mak
 subsequent runs fast). Recommended if you plot maps or dense generative work
 regularly. See [Performance](performance.md) for benchmark numbers.
 
+### Optional: remote optimization
+
+If your laptop is genuinely slow, **Tools › Optimize Current Layer Remotely…**
+ships the optimize job over SSH to a faster machine on your network — keeps
+the GUI snappy on a low-power laptop while your workstation does the heavy
+work. Works transparently over Tailscale SSH if you'd rather not run `sshd`
+on the remote at all. See [Remote Optimization](remote-optimization.md) for
+setup.
+
 Typical optimization improvement: 30–60% reduction in pen-up travel distance (with
 Join enabled on appropriate inputs, additionally ≥30% on top).
 
