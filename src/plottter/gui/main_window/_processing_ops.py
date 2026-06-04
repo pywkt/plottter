@@ -130,6 +130,59 @@ class _ProcessingOpsMixin:
         bounds = self._controller.current_project.canvas.drawing_area()
         self._run_optimization([layer], bounds, settings=dlg.get_settings())
 
+    def _on_optimize_layer_remote(self) -> None:
+        """Optimize the selected layer by shelling out to a remote SSH host."""
+        from PyQt6.QtCore import QSettings
+        from PyQt6.QtWidgets import QInputDialog
+
+        layer_id = self._controller.active_layer_id
+        layer = self._controller.get_layer(layer_id) if layer_id else None
+        if layer is None:
+            QMessageBox.warning(self, "Optimize Remotely", "No selected layer to optimize.")
+            return
+        if not layer.paths:
+            QMessageBox.information(self, "Optimize Remotely", "Selected layer has no paths.")
+            return
+
+        # Resolve the remote host: Preferences value, or prompt if blank.
+        settings = QSettings("Plottter", "Plottter")
+        host = str(settings.value("optimize/remote_host", "") or "").strip()
+        if not host:
+            host, ok = QInputDialog.getText(
+                self,
+                "Optimize Remotely",
+                "SSH target (e.g. user@fastbox):",
+            )
+            if not ok:
+                return
+            host = host.strip()
+            if not host:
+                QMessageBox.warning(
+                    self, "Optimize Remotely", "A remote host is required."
+                )
+                return
+            # Remember the host so the user doesn't have to retype next time.
+            settings.setValue("optimize/remote_host", host)
+
+        # Remote command override (default "plottter"). Set in Preferences;
+        # used when the remote ssh PATH doesn't include the venv binary, so
+        # the user can paste an absolute path like
+        # /home/USER/path/to/repo/.venv/bin/plottter.
+        remote_command = str(
+            settings.value("optimize/remote_command", "") or ""
+        ).strip() or "plottter"
+
+        from plottter.gui.dialogs.optimize_dialog import OptimizeSettingsDialog
+
+        dlg = OptimizeSettingsDialog(parent=self)
+        if dlg.exec() != OptimizeSettingsDialog.DialogCode.Accepted:
+            return
+
+        bounds = self._controller.current_project.canvas.drawing_area()
+        self._run_remote_optimization(
+            layer, bounds, dlg.get_settings(), host, remote_command
+        )
+
     def _on_optimize_all(self) -> None:
         """Run the full optimization pipeline on all unlocked layers."""
         project = self._controller.current_project
@@ -334,6 +387,101 @@ class _ProcessingOpsMixin:
         dlg.plot_started.connect(lambda: self.statusBar().showMessage("Plotting…"))
         dlg.plot_finished.connect(lambda: self.statusBar().showMessage("Plot complete."))
         dlg.exec()
+
+    def _run_remote_optimization(
+        self,
+        layer: Layer,
+        bounds: tuple[float, float, float, float],
+        settings: dict,
+        host: str,
+        remote_command: str = "plottter",
+    ) -> None:
+        """Run a single layer through the remote-optimize worker.
+
+        Mirrors ``_run_optimization`` for the local path but skips the
+        per-layer queue since the remote action only handles the current
+        layer. The progress dialog wiring, cancel button, and finish
+        message all match the local flavour so users get a consistent
+        experience.
+        """
+        from .workers import _RemoteOptimizeWorker
+
+        progress = QProgressDialog(
+            f"Optimizing '{layer.name}' remotely on {host}…",
+            "Cancel",
+            0,
+            100,
+            self,
+        )
+        progress.setLabelText(
+            f"Optimizing '{layer.name}' remotely on {host}…\n"
+            f"Step: Connecting"
+        )
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.show()
+
+        worker = _RemoteOptimizeWorker(
+            paths=list(layer.paths),
+            host=host,
+            remote_command=remote_command,
+            generator_info=layer.generator_info,
+            run_weld=settings.get("run_weld", False),
+            weld_tolerance=settings.get("weld_tolerance", 0.1),
+            run_simplify=settings.get("run_simplify", True),
+            simplify_tolerance=settings.get("simplify_tolerance", 0.1),
+            run_filter=settings.get("run_filter", True),
+            filter_min_length=settings.get("filter_min_length", 0.5),
+            run_clip=settings.get("run_clip", True),
+            clip_bounds=bounds,
+            run_merge=settings.get("run_merge", True),
+            merge_threshold=settings.get("merge_threshold", 0.5),
+            run_join=settings.get("run_join", False),
+            join_threshold=settings.get("join_threshold", 0.1),
+            run_2opt=settings.get("run_2opt", True),
+            run_3opt=settings.get("run_3opt", False),
+            run_or_opt=settings.get("run_or_opt", True),
+            num_starts=5,
+            parent=self,
+        )
+
+        def on_progress(value: int) -> None:
+            progress.setValue(value)
+            if value < 10:
+                step = "Preprocessing"
+            elif value < 35:
+                step = "Reordering paths"
+            elif value < 55:
+                step = "Running 2-opt"
+            elif value < 75:
+                step = "Running 3-opt"
+            else:
+                step = "Running Or-opt"
+            progress.setLabelText(
+                f"Optimizing '{layer.name}' remotely on {host}…\n"
+                f"Step: {step}"
+            )
+
+        def on_finished(new_paths, before, after, before_lifts, after_lifts):
+            progress.close()
+            self._controller.set_layer_paths(layer.id, new_paths, "Optimize Paths (Remote)")
+            self.statusBar().showMessage(
+                f"Remote optimize: '{layer.name}' travel "
+                f"{before:.1f} → {after:.1f} mm  ·  lifts {before_lifts} → {after_lifts}",
+                6000,
+            )
+            worker.deleteLater()
+
+        def on_error(msg: str) -> None:
+            progress.close()
+            QMessageBox.critical(self, "Remote Optimize Error", msg)
+            worker.deleteLater()
+
+        progress.canceled.connect(worker.request_stop)
+        worker.progress.connect(on_progress)
+        worker.finished.connect(on_finished)
+        worker.error.connect(on_error)
+        self._remote_opt_worker = worker
+        worker.start()
 
     def _run_optimization(
         self,

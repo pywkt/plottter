@@ -240,6 +240,14 @@ class _MenusMixin:
         self._act_optimize_layer.triggered.connect(self._on_optimize_layer)
         tools_menu.addAction(self._act_optimize_layer)
 
+        self._act_optimize_layer_remote = QAction("Optimize Current Layer Remotely…", self)
+        self._act_optimize_layer_remote.setToolTip(
+            "Offload the optimize pipeline over SSH to the host configured in "
+            "Preferences → Remote Optimization."
+        )
+        self._act_optimize_layer_remote.triggered.connect(self._on_optimize_layer_remote)
+        tools_menu.addAction(self._act_optimize_layer_remote)
+
         self._act_optimize_all = QAction("Optimize All Layers", self)
         self._act_optimize_all.triggered.connect(self._on_optimize_all)
         tools_menu.addAction(self._act_optimize_all)

@@ -24,8 +24,14 @@ from plottter.processing.taper import taper_paths
 from plottter.processing.offset import offset_paths
 from plottter.processing.scale import scale_paths_to_canvas
 from plottter.processing.join import join_at_junctions
+from plottter.processing.pipeline import (
+    OptimizationResult,
+    run_optimization_pipeline,
+)
 
 __all__ = [
+    "OptimizationResult",
+    "run_optimization_pipeline",
     "PROCESSING_PLUGINS",
     "ProcessingPlugin",
     "register_processing_plugin",

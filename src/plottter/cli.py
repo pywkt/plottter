@@ -30,6 +30,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="List all available generator names and exit.",
     )
     parser.add_argument(
+        "--optimize",
+        action="store_true",
+        help=(
+            "Read a JSON payload {paths, settings, clip_bounds, generator_info} "
+            "from stdin, run the path-optimization pipeline, and write the result "
+            "as JSON to stdout. Progress (one JSON object per line) goes to stderr. "
+            "Used by 'Optimize Current Layer Remotely' to offload work over SSH."
+        ),
+    )
+    parser.add_argument(
         "--list-presets",
         metavar="GENERATOR",
         help="List all presets for GENERATOR and exit.",
@@ -190,6 +200,86 @@ def _list_generators() -> None:
             print(f"  {name}")
 
 
+def _run_optimize_stdin() -> int:
+    """Read a JSON optimization job from stdin, write the result to stdout.
+
+    Wire protocol — see ``--optimize --help`` for the user-facing summary.
+
+    Input  (stdin, single JSON object)::
+
+        {
+          "paths": [[[x, y], [x, y], ...], ...],
+          "settings": {... optimize-pipeline settings ...},
+          "clip_bounds": [x1, y1, x2, y2] | null,
+          "generator_info": {...} | null
+        }
+
+    Output (stdout, single JSON object on success)::
+
+        {
+          "paths": [...],
+          "before_travel": float,
+          "after_travel": float,
+          "before_lifts": int,
+          "after_lifts": int
+        }
+
+    Progress (stderr, one JSON per line) — caller may consume to drive a
+    progress bar, or ignore safely::
+
+        {"progress": 35}
+    """
+    import json
+    import os
+
+    from plottter.processing import run_optimization_pipeline
+
+    raw = sys.stdin.read()
+    if not raw.strip():
+        print("Error: --optimize expects JSON on stdin.", file=sys.stderr)
+        return 1
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"Error: invalid JSON on stdin: {exc}", file=sys.stderr)
+        return 1
+
+    paths_in = payload.get("paths", [])
+    # Tuplify so the pipeline's downstream consumers see Point = tuple
+    # exactly as they would from in-process callers.
+    paths = [[(float(x), float(y)) for x, y in poly] for poly in paths_in]
+    settings = payload.get("settings") or {}
+    clip = payload.get("clip_bounds")
+    clip_bounds = tuple(clip) if clip is not None else None
+    generator_info = payload.get("generator_info")
+
+    def _emit_progress(value: int) -> None:
+        # Line-buffered JSON on stderr; caller does .readline() in a loop.
+        sys.stderr.write(json.dumps({"progress": int(value)}) + "\n")
+        sys.stderr.flush()
+
+    result = run_optimization_pipeline(
+        paths,
+        settings=settings,
+        clip_bounds=clip_bounds,
+        generator_info=generator_info,
+        progress_callback=_emit_progress,
+        cancelled=None,
+    )
+
+    out = {
+        "paths": [[[x, y] for x, y in poly] for poly in result.paths],
+        "before_travel": result.before_travel,
+        "after_travel": result.after_travel,
+        "before_lifts": result.before_lifts,
+        "after_lifts": result.after_lifts,
+    }
+    json.dump(out, sys.stdout)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    return 0
+
+
 def _list_presets(generator_name: str) -> None:
     """Print all preset names for the given generator."""
     from plottter.generators import GENERATORS  # noqa — triggers registration
@@ -225,6 +315,9 @@ def run_cli(argv: list[str] | None = None) -> int:
     if args.list_presets:
         _list_presets(args.list_presets)
         return 0
+
+    if args.optimize:
+        return _run_optimize_stdin()
 
     # --- Validate required args for generation ---
     if not args.generator:

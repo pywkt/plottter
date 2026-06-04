@@ -12,6 +12,7 @@ _CLI_FLAGS = frozenset({
     "--output", "-o",
     "--preset", "-p",
     "--format", "-f",
+    "--optimize",
 })
 
 

@@ -91,6 +91,7 @@ class PreferencesDialog(QDialog):
         layout.addWidget(self._build_ai_group())
         layout.addWidget(self._build_cache_group())
         layout.addWidget(self._build_map_group())
+        layout.addWidget(self._build_remote_optimize_group())
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
@@ -224,6 +225,43 @@ class PreferencesDialog(QDialog):
 
         return group
 
+    def _build_remote_optimize_group(self) -> QGroupBox:
+        group = QGroupBox("Remote Optimization")
+        form = QFormLayout(group)
+
+        self._remote_optimize_host_edit = QLineEdit()
+        self._remote_optimize_host_edit.setPlaceholderText("user@fastbox")
+        self._remote_optimize_host_edit.setToolTip(
+            "SSH target for the 'Optimize Current Layer Remotely' tool.\n"
+            "Accepts any form ssh understands: 'host', 'user@host', or an\n"
+            "alias defined in ~/.ssh/config. SSH keys / agent auth are\n"
+            "recommended so the call doesn't block on a password prompt."
+        )
+        form.addRow("Remote Host:", self._remote_optimize_host_edit)
+
+        self._remote_optimize_cmd_edit = QLineEdit()
+        self._remote_optimize_cmd_edit.setPlaceholderText("plottter")
+        self._remote_optimize_cmd_edit.setToolTip(
+            "Command to invoke on the remote host. Leave blank to use\n"
+            "'plottter' (works if the binary is on the non-interactive\n"
+            "SSH PATH, e.g. symlinked to /usr/local/bin). Otherwise put\n"
+            "an absolute path, typically the binary in a venv:\n"
+            "  /home/USER/path/to/repo/.venv/bin/plottter"
+        )
+        form.addRow("Remote Command:", self._remote_optimize_cmd_edit)
+
+        note = QLabel(
+            "Leave Host blank to be prompted on each Optimize Remotely call. "
+            "Leave Command blank to default to <tt>plottter</tt>. "
+            "Tip: enable SSH ControlMaster in <tt>~/.ssh/config</tt> for the "
+            "host to skip the connection handshake on repeat calls."
+        )
+        note.setWordWrap(True)
+        note.setTextFormat(Qt.TextFormat.RichText)
+        form.addRow(note)
+
+        return group
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
@@ -236,6 +274,10 @@ class PreferencesDialog(QDialog):
         self._cache_dir_edit.setText(cache_dir)
         endpoint = settings.value("map/overpass_endpoint", "") or ""
         self._overpass_endpoint_edit.setText(endpoint)
+        host = settings.value("optimize/remote_host", "") or ""
+        self._remote_optimize_host_edit.setText(host)
+        cmd = settings.value("optimize/remote_command", "") or ""
+        self._remote_optimize_cmd_edit.setText(cmd)
 
     def _save_settings(self) -> None:
         settings = QSettings("Plottter", "Plottter")
@@ -245,6 +287,12 @@ class PreferencesDialog(QDialog):
         settings.remove("ai/depth_cache_dir")
         endpoint = self._overpass_endpoint_edit.text().strip()
         settings.setValue("map/overpass_endpoint", endpoint)
+        settings.setValue(
+            "optimize/remote_host", self._remote_optimize_host_edit.text().strip()
+        )
+        settings.setValue(
+            "optimize/remote_command", self._remote_optimize_cmd_edit.text().strip()
+        )
 
     # ------------------------------------------------------------------
     # Helpers
