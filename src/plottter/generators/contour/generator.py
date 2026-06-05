@@ -183,9 +183,14 @@ class ContourGenerator(Generator):
                     return []
 
                 result = []
-                # Add outline polylines
+                # Add outline polylines for EVERY boundary — both the outer ring
+                # and its holes. Each region's holes are the boundaries of the
+                # bands nested inside it; without them, alternating bands in
+                # nested line-art would have no smooth outline and would be
+                # bounded only by ragged hatch/fill line-ends.
                 for outer, holes in contour_pairs:
                     result.append(outer)
+                    result.extend(holes)
 
                 if progress_callback:
                     progress_callback(60)
