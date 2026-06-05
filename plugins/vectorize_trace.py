@@ -25,7 +25,8 @@ Pipeline
 1. Load the grayscale source image via ``params["_source_image"]``.
 2. For each threshold level (``num_levels ≥ 1``):
    a. Binarize: pixels darker than ``threshold`` become foreground.
-   b. Trace with ``potracer.Bitmap.trace()``.
+   b. Trace with ``potrace.Bitmap.trace()`` (the ``potracer`` package installs
+      as the importable module ``potrace``).
    c. Flatten each cubic Bezier segment to polyline points at
       ``curve_tolerance_mm`` tolerance via adaptive De Casteljau subdivision.
    d. Map potrace pixel coordinates to mm using ``compute_image_rect`` (honours
@@ -78,9 +79,11 @@ def _require_potracer():
     called at import time so the plugin registers even when potracer is absent.
     """
     try:
-        import potracer  # type: ignore[import]
+        # The `potracer` PyPI package installs as the importable module
+        # `potrace` (it is a drop-in for pypotrace).
+        import potrace  # type: ignore[import]
 
-        return potracer
+        return potrace
     except ImportError:
         raise RuntimeError(
             "The potracer package is required for the Vectorize / Trace Bitmap "
@@ -147,15 +150,15 @@ def _potrace_to_mm(
 ) -> tuple[float, float]:
     """Convert potrace pixel coordinates to mm.
 
-    Potrace uses a coordinate system where *y increases upward* (mathematical
-    convention): (x=0, y=0) is the bottom-left corner of the image and
-    (x=W, y=H) is the top-left.  We map this to our screen-space mm coordinates
-    where (img_x1, img_y1) is the top-left and (img_x2, img_y2) is the
-    bottom-right.
+    The ``potracer`` package traces a numpy array and returns coordinates in
+    **array space**: ``y`` matches the row index, so (x=0, y=0) is the
+    *top-left* corner and ``y`` increases *downward* — the same convention as
+    our screen-space mm rect, where (img_x1, img_y1) is the top-left and
+    (img_x2, img_y2) is the bottom-right.  No vertical flip is applied (an
+    earlier version assumed a y-up convention and produced upside-down output).
     """
     mm_x = img_x1 + px * (img_x2 - img_x1) / img_w
-    # Flip y: potrace y=0 → bottom (img_y2), y=H → top (img_y1)
-    mm_y = img_y2 - py * (img_y2 - img_y1) / img_h
+    mm_y = img_y1 + py * (img_y2 - img_y1) / img_h
     return (mm_x, mm_y)
 
 
@@ -182,7 +185,7 @@ def _trace_level(
 
     Returns a list of closed polylines in mm coordinates.
     """
-    import potracer  # type: ignore[import]
+    import potrace  # the `potracer` PyPI package installs as module `potrace`
 
     # Binarize: dark pixels (< threshold) become foreground (True = black)
     binary = gray < threshold
@@ -194,8 +197,12 @@ def _trace_level(
     tol_sq = tol_px * tol_px
 
     # Trace
-    bm = potracer.Bitmap(binary)
+    bm = potrace.Bitmap(binary)
     path = bm.trace(turdsize=turdsize, alphamax=alphamax, opttolerance=opttolerance)
+
+    def _xy(p) -> tuple[float, float]:
+        # potrace Point exposes .x / .y attributes (it is NOT subscriptable).
+        return (p.x, p.y)
 
     polylines: list[Polyline] = []
     for curve in path:
@@ -203,25 +210,26 @@ def _trace_level(
         if not segments:
             continue
 
-        start = curve.start_point
+        start = _xy(curve.start_point)
         pts: list[tuple[float, float]] = [
             _potrace_to_mm(start[0], start[1], img_w, img_h, img_x1, img_y1, img_x2, img_y2)
         ]
-        prev = start
+        prev = start  # pixel-space tuple
 
         for segment in segments:
-            end = segment.end_point
-            if isinstance(segment, potracer.BezierSegment):
-                flat = _flatten_bezier_segment(
-                    prev, segment.c0, segment.c1, end, tol_sq
-                )
+            end = _xy(segment.end_point)
+            if not segment.is_corner:
+                # BezierSegment: cubic control points are c1, c2.
+                c1 = _xy(segment.c1)
+                c2 = _xy(segment.c2)
+                flat = _flatten_bezier_segment(prev, c1, c2, end, tol_sq)
                 pts.extend(
                     _potrace_to_mm(p[0], p[1], img_w, img_h, img_x1, img_y1, img_x2, img_y2)
                     for p in flat
                 )
             else:
-                # CornerSegment: line to corner, then line to end_point
-                c = segment.c
+                # CornerSegment: line to the corner vertex c, then to end_point.
+                c = _xy(segment.c)
                 pts.append(
                     _potrace_to_mm(c[0], c[1], img_w, img_h, img_x1, img_y1, img_x2, img_y2)
                 )

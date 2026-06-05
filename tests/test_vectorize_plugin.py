@@ -126,7 +126,7 @@ class TestImportAndRegistration:
         absent_name = "plottter_plugin_vectorize_trace_absent_test"
         sys.modules.pop(absent_name, None)  # ensure clean state
 
-        with patch.dict(sys.modules, {"potracer": None}):
+        with patch.dict(sys.modules, {"potrace": None}):
             spec = importlib.util.spec_from_file_location(absent_name, _PLUGIN_PATH)
             assert spec is not None and spec.loader is not None
             mod = importlib.util.module_from_spec(spec)
@@ -155,7 +155,7 @@ class TestPotraceAbsent:
     def _run_generate_without_potracer(
         self, generator: VectorizeTraceGenerator, canvas: Canvas
     ) -> pytest.ExceptionInfo:
-        with patch.dict(sys.modules, {"potracer": None}):
+        with patch.dict(sys.modules, {"potrace": None}):
             with pytest.raises(RuntimeError) as exc_info:
                 generator.generate({}, canvas)
         return exc_info
@@ -201,13 +201,13 @@ class TestPotraceAbsent:
         self, generator: VectorizeTraceGenerator, canvas: Canvas
     ) -> None:
         """generate_layers() raises the same RuntimeError when potracer absent."""
-        with patch.dict(sys.modules, {"potracer": None}):
+        with patch.dict(sys.modules, {"potrace": None}):
             with pytest.raises(RuntimeError, match="pip install potracer"):
                 generator.generate_layers({}, canvas)
 
     def test_require_potracer_raises_runtime_error(self) -> None:
         """_require_potracer() raises RuntimeError (not ImportError) directly."""
-        with patch.dict(sys.modules, {"potracer": None}):
+        with patch.dict(sys.modules, {"potrace": None}):
             with pytest.raises(RuntimeError, match="pip install potracer"):
                 _vt._require_potracer()  # type: ignore[attr-defined]
 
@@ -320,15 +320,15 @@ class TestBezierHelpers:
         img_w, img_h = 100, 50
         img_x1, img_y1, img_x2, img_y2 = 10.0, 20.0, 110.0, 70.0
 
-        # potrace (0, 0) = bottom-left → mm bottom-left = (img_x1, img_y2)
+        # potrace (0, 0) = top-left (array origin) → mm top-left = (img_x1, img_y1)
         mm = to_mm(0, 0, img_w, img_h, img_x1, img_y1, img_x2, img_y2)
         assert abs(mm[0] - img_x1) < 1e-9
-        assert abs(mm[1] - img_y2) < 1e-9
+        assert abs(mm[1] - img_y1) < 1e-9
 
-        # potrace (W, H) = top-right → mm top-right = (img_x2, img_y1)
+        # potrace (W, H) = bottom-right → mm bottom-right = (img_x2, img_y2)
         mm = to_mm(img_w, img_h, img_w, img_h, img_x1, img_y1, img_x2, img_y2)
         assert abs(mm[0] - img_x2) < 1e-9
-        assert abs(mm[1] - img_y1) < 1e-9
+        assert abs(mm[1] - img_y2) < 1e-9
 
     def test_potrace_to_mm_center(self) -> None:
         """Center pixel maps to center of mm rect."""
@@ -354,7 +354,7 @@ class TestWithPotracer:
 
     @pytest.fixture(autouse=True)
     def require_potracer(self) -> None:
-        pytest.importorskip("potracer")
+        pytest.importorskip("potrace")
 
     def test_generate_returns_non_empty_for_circle(
         self, generator: VectorizeTraceGenerator, canvas: Canvas
