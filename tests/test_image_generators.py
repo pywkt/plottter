@@ -1736,11 +1736,16 @@ class TestContourGeneratorLineArtMode:
         assert isinstance(result_high, list)
         assert len(result_low) > 0
         assert len(result_high) > 0
-        # Different thresholds should yield different amounts of enclosed area
-        total_pts_low = sum(len(pl) for pl in result_low)
-        total_pts_high = sum(len(pl) for pl in result_high)
-        assert total_pts_low != total_pts_high, (
-            "Low and high thresholds produced identical point counts; "
+        # Sub-pixel marching squares traces the iso-line between dark/light pixels,
+        # so on a gradient a different threshold moves the contour to a different
+        # position rather than changing its point count. Assert the geometry differs
+        # (the mean x-position of the traced contour shifts with the threshold).
+        def mean_x(result):
+            pts = [x for pl in result for (x, _y) in pl]
+            return sum(pts) / len(pts)
+
+        assert abs(mean_x(result_low) - mean_x(result_high)) > 1.0, (
+            "Low and high thresholds produced contours at the same position; "
             "threshold parameter has no effect"
         )
 

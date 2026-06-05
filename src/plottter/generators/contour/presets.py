@@ -10,6 +10,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="Fine (16 levels)",
             params={
+                "trace_supersample": 1,
                 "mode": "Contour Levels",
                 "num_levels": 16,
                 "spacing": "linear",
@@ -51,6 +52,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="Coarse (6 levels)",
             params={
+                "trace_supersample": 1,
                 "mode": "Contour Levels",
                 "num_levels": 6,
                 "spacing": "linear",
@@ -92,6 +94,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="Logarithmic (shadows detail)",
             params={
+                "trace_supersample": 1,
                 "mode": "Contour Levels",
                 "num_levels": 10,
                 "spacing": "logarithmic",
@@ -133,6 +136,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="Inverted (highlights detail)",
             params={
+                "trace_supersample": 1,
                 "mode": "Contour Levels",
                 "num_levels": 10,
                 "spacing": "logarithmic",
@@ -174,6 +178,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="High Contrast Graphic",
             params={
+                "trace_supersample": 1,
                 # Quadratic level spacing emphasises midtone transitions;
                 # extra contrast boost and heavier blur suit illustrations,
                 # logos, and other graphics with flat colour regions.
@@ -218,6 +223,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="Portrait Photo",
             params={
+                "trace_supersample": 1,
                 # Many closely spaced levels with a gentle blur produce
                 # fine topographic lines that reveal skin texture and
                 # facial contours.  Logarithmic spacing gives more detail
@@ -263,6 +269,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="Line Art / Trace",
             params={
+                "trace_supersample": 1,
                 # Optimised for clean B&W line drawings (icons, logos,
                 # technical illustrations, hand-drawn sketches that have
                 # been scanned and thresholded).
@@ -314,6 +321,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="Line Art / Solid Fill",
             params={
+                "trace_supersample": 1,
                 # Dense parallel lines fill each traced shape, producing a
                 # solid appearance with tight 0.3 mm spacing (suitable for
                 # 0.4–0.5 mm pens).  Outline is traced alongside the fill.
@@ -358,6 +366,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="Line Art / Hatched Fill",
             params={
+                "trace_supersample": 1,
                 # 45° hatching at 0.8 mm spacing gives a hand-drawn
                 # crosshatch appearance inside each traced shape.
                 "mode": "Line Art Trace",
@@ -384,7 +393,7 @@ def build_presets() -> list[Preset]:
                 "fmm_group_intra_spacing_mm": 0.5,
                 "fmm_displacement_variation": 0.0,
                 "fill": "Hatching",
-                "fill_spacing_mm": 0.8,
+                "fill_spacing_mm": 0.4,
                 "fill_angle": 45.0,
                 "simplify_mm": 0.2,
                 "min_contour_px": 5,
@@ -401,6 +410,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="Line Art / Concentric Fill",
             params={
+                "trace_supersample": 1,
                 # Inward concentric rings trace the topology of each shape,
                 # producing a topographic appearance inside traced regions.
                 "mode": "Line Art Trace",
@@ -427,7 +437,7 @@ def build_presets() -> list[Preset]:
                 "fmm_group_intra_spacing_mm": 0.5,
                 "fmm_displacement_variation": 0.0,
                 "fill": "Concentric",
-                "fill_spacing_mm": 1.0,
+                "fill_spacing_mm": 0.4,
                 "fill_angle": 45.0,
                 "simplify_mm": 0.2,
                 "min_contour_px": 5,
@@ -444,6 +454,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="Skeleton / Center-line",
             params={
+                "trace_supersample": 1,
                 # Morphological skeletonization reduces thick strokes to
                 # single-pixel-wide centerlines before tracing, producing
                 # approximately one polyline per original ink line rather
@@ -500,6 +511,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="Scanned Line Art",
             params={
+                "trace_supersample": 1,
                 # Adaptive thresholding handles scanned pages and phone
                 # photos of drawings where global threshold fails due to
                 # uneven lighting or shadow gradients.  Skeleton mode
@@ -553,6 +565,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Portrait",
             params={
+                "trace_supersample": 1,
                 # Portrait-style FMM topographic lines — many closely
                 # spaced contours with linear spacing reveal facial
                 # contours and skin texture.  Invert is off so dark
@@ -607,6 +620,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Detailed",
             params={
+                "trace_supersample": 1,
                 # Dense, engraving-like FMM topographic look: 200 contour
                 # levels with gamma=0.4 lifting the midtones produces tight
                 # line packing that preserves fine image structure across
@@ -662,6 +676,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Landscape",
             params={
+                "trace_supersample": 1,
                 # Landscape / terrain style — fewer, well-separated contour
                 # lines with logarithmic spacing emphasise the valleys
                 # (dark regions) where contours bunch.  A gentle blur
@@ -716,6 +731,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Dense Wave",
             params={
+                "trace_supersample": 1,
                 # Dense concentric wave pattern with many tightly packed
                 # contours.  High gamma (2.0) strongly slows the wave in
                 # dark areas, producing very dense line clusters there
@@ -770,6 +786,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Depth Portrait",
             params={
+                "trace_supersample": 1,
                 # Use this preset with the "AI Depth Map" image source selected
                 # in the image source controls — contour lines wrap around the
                 # 3D structure of the face / subject rather than following
@@ -825,6 +842,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Depth Landscape",
             params={
+                "trace_supersample": 1,
                 # Use this preset with the "AI Depth Map" image source and
                 # "Invert" checked in the depth map source controls — wave
                 # propagates fastest from near objects; distant terrain slows
@@ -881,6 +899,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Displacement Lines",
             params={
+                "trace_supersample": 1,
                 # Parallel lines displaced perpendicularly by the FMM
                 # travel-time field — dark regions cause strong lateral
                 # deflections, creating an engraving / relief effect.
@@ -939,6 +958,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Wave Lines",
             params={
+                "trace_supersample": 1,
                 # Horizontal scan lines with sinusoidal amplitude modulated
                 # by the FMM travel-time gradient magnitude — waves are large
                 # in dark / high-gradient regions and flat in bright areas.
@@ -995,6 +1015,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Radial Lines",
             params={
+                "trace_supersample": 1,
                 # Lines radiate from canvas centre following gradient ascent
                 # of the FMM travel-time field — a starburst that bends
                 # around bright/dark features.
@@ -1055,6 +1076,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Adaptive Wave",
             params={
+                "trace_supersample": 1,
                 # Scan lines with adaptive spacing and gradient-modulated
                 # wave amplitude — lines cluster densely in high-gradient /
                 # dark regions and spread apart in smooth / bright areas,
@@ -1113,6 +1135,7 @@ def build_presets() -> list[Preset]:
         Preset(
             name="FMM Grouped Wave",
             params={
+                "trace_supersample": 1,
                 # Wave scan lines arranged in tight clusters of 4, separated
                 # by large 10 mm gaps — strong inter-group whitespace makes
                 # the grouping clearly visible, with per-line amplitude
