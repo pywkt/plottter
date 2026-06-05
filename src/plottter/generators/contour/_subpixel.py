@@ -14,6 +14,8 @@ def extract_subpixel_contours(
     level: float,
     min_points: int,
     supersample: int = 1,
+    close_border: bool = False,
+    border_value: float = 255.0,
 ) -> list[tuple[np.ndarray, bool]]:
     """Return sub-pixel iso-contours from a grayscale image.
 
@@ -35,6 +37,21 @@ def extract_subpixel_contours(
         extraction to give marching squares more sub-pixel resolution on
         low-resolution sources.  The returned coordinates are always in
         original pixel space (divided back by the factor).
+    close_border:
+        When ``True`` the image is padded by one pixel of ``border_value``
+        before extraction, so regions that run off the image edge are
+        **closed against the image boundary** instead of producing an open,
+        border-touching contour.  This replicates ``cv2.findContours``'s
+        edge-as-wall behaviour and is required for *fill* tracing, where a
+        region must be a closed ring to be filled.  Returned coordinates are
+        shifted back and clamped to the image bounds; every returned contour
+        is reported as closed.  Line-art *outline* tracing leaves this off so
+        strokes crossing the edge stay open (no spurious boundary chord).
+    border_value:
+        The background value to pad with when ``close_border`` is set.  Pad
+        with the side of ``level`` that is *not* the region of interest:
+        ``255`` for a grayscale image where ink is dark (``< level``); ``0``
+        for an inverted binary mask where ink is ``255`` (the adaptive path).
 
     Returns
     -------
@@ -44,7 +61,8 @@ def extract_subpixel_contours(
         pixel coordinates (skimage's ``(row, col)`` ordering is swapped).
     *   ``is_closed`` is ``True`` when the contour forms a closed loop
         (does not touch the image border); detected via
-        ``np.allclose(pts[0], pts[-1])``.
+        ``np.allclose(pts[0], pts[-1])``.  Always ``True`` when
+        ``close_border`` is set.
 
     No RDP simplification, smoothing, or mm-conversion is applied here —
     callers own those steps so per-mode behaviour is preserved.
@@ -52,12 +70,14 @@ def extract_subpixel_contours(
     Notes
     -----
     **Adaptive-threshold callers:** feed the binary mask (values 0 / 255)
-    with ``level=127``.  Marching squares on a 0/255 mask still yields
-    cleaner half-pixel diagonals compared with ``cv2.findContours``.
+    with ``level=127`` (and ``border_value=0`` if also closing the border,
+    since ink is ``255`` in that mask).  Marching squares on a 0/255 mask
+    still yields cleaner half-pixel diagonals compared with ``cv2.findContours``.
     """
     from skimage.measure import find_contours  # type: ignore[import]
 
     factor = max(1, int(supersample))
+    h0, w0 = gray.shape
 
     if factor > 1:
         try:
@@ -67,8 +87,7 @@ def extract_subpixel_contours(
                 "opencv-python is required for supersample > 1 in "
                 "extract_subpixel_contours."
             ) from exc
-        h, w = gray.shape
-        new_w, new_h = w * factor, h * factor
+        new_w, new_h = w0 * factor, h0 * factor
         gray_up = cv2.resize(
             gray, (new_w, new_h), interpolation=cv2.INTER_CUBIC
         )
@@ -77,6 +96,15 @@ def extract_subpixel_contours(
         gray_f = gray.astype(np.float64)
         factor = 1
 
+    pad = 1 if close_border else 0
+    if pad:
+        # Pad the (already upsampled) image with the background value so every
+        # region of interest is fully enclosed; nothing touches the padded
+        # array's outer border, so find_contours returns only closed loops.
+        gray_f = np.pad(
+            gray_f, pad, mode="constant", constant_values=float(border_value)
+        )
+
     raw = find_contours(gray_f, level)
 
     result: list[tuple[np.ndarray, bool]] = []
@@ -84,13 +112,22 @@ def extract_subpixel_contours(
         # contour is (N, 2) array of (row, col); swap to (x, y) = (col, row)
         pts = np.column_stack((contour[:, 1], contour[:, 0]))
 
+        if pad:
+            pts = pts - pad  # undo the pad offset (still in upsampled space)
+
         if factor > 1:
             pts = pts / factor
+
+        if close_border:
+            # Clamp coordinates that ran along the padded edge back onto the
+            # image so the closed ring follows the canvas boundary exactly.
+            pts[:, 0] = np.clip(pts[:, 0], 0.0, w0 - 1)
+            pts[:, 1] = np.clip(pts[:, 1], 0.0, h0 - 1)
 
         if len(pts) < min_points:
             continue
 
-        is_closed = bool(np.allclose(pts[0], pts[-1]))
+        is_closed = True if close_border else bool(np.allclose(pts[0], pts[-1]))
         result.append((pts, is_closed))
 
     return result

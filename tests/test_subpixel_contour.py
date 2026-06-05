@@ -512,6 +512,32 @@ class TestFillsStillWork:
         outer, holes = pairs[0]
         assert len(outer) >= 3, "Outer ring must have at least 3 vertices"
 
+    def test_border_crossing_region_is_kept_and_fillable(self):
+        """A region that runs off the image edge must still be returned as a
+        closed, fillable (outer, holes) pair — close_border closes it against
+        the canvas boundary instead of dropping it (regression: edge content
+        was silently dropped after the cv2->marching-squares rewire)."""
+        from plottter.generators.contour._fills import _fill_polygon_concentric
+
+        size = self.SIZE
+        img = np.full((size, size), 255, dtype=np.uint8)
+        # Dark vertical band touching the top AND bottom edges (crosses border),
+        # plus a fully-interior dark square that does NOT touch any edge.
+        img[:, size // 2 - 8 : size // 2 + 8] = 0
+        img[8:24, 4:20] = 0
+
+        pairs = self._extract(img)
+        # Both regions must survive: the interior square AND the edge band.
+        assert len(pairs) >= 2, (
+            f"Edge-crossing band was dropped: expected >=2 filled regions, got {len(pairs)}"
+        )
+        # The edge band is the widest region; its concentric fill must be non-empty.
+        widest = max(pairs, key=lambda pr: len(pr[0]))
+        outer, holes = widest
+        assert _fill_polygon_concentric(outer, holes, spacing_mm=2.0), (
+            "Edge-crossing region should be fillable once closed against the border"
+        )
+
     def test_hatch_fill_non_empty(self):
         """Hatching fill on a circle produces non-empty output."""
         from plottter.generators.contour._fills import _fill_polygon_hatch

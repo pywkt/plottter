@@ -111,6 +111,10 @@ def _extract_contours_with_hierarchy(
     """
     from ._subpixel import extract_subpixel_contours, build_contour_hierarchy
 
+    # Fills need every ink region as a CLOSED ring. Regions that run off the
+    # image edge are closed against the canvas boundary (close_border=True),
+    # replicating cv2.findContours's old edge-as-wall behaviour so edge content
+    # is filled instead of dropped.
     if adaptive_threshold:
         try:
             import cv2
@@ -119,13 +123,21 @@ def _extract_contours_with_hierarchy(
         binary = _apply_threshold(
             gray, threshold, True, adaptive_c, cv2.THRESH_BINARY_INV
         )
-        raw_contours = extract_subpixel_contours(binary, 127.0, min_length, supersample)
+        # Inverted mask: ink is 255 (>= 127), so pad with 0 (the background side).
+        raw_contours = extract_subpixel_contours(
+            binary, 127.0, min_length, supersample,
+            close_border=True, border_value=0.0,
+        )
     else:
         # Marching squares at iso-level=threshold traces the boundary between
         # dark (< threshold, ink) and light (>= threshold, background) pixels.
-        raw_contours = extract_subpixel_contours(gray, float(threshold), min_length, supersample)
+        # Ink is dark, so pad with 255 (the light background side).
+        raw_contours = extract_subpixel_contours(
+            gray, float(threshold), min_length, supersample,
+            close_border=True, border_value=255.0,
+        )
 
-    # Keep only closed rings — open contours cannot bound a fill region
+    # With close_border, every contour is closed; the filter is a defensive no-op.
     closed_rings = [pts for pts, is_closed in raw_contours if is_closed]
 
     if not closed_rings:
