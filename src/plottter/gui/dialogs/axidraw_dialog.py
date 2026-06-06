@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -235,6 +236,11 @@ class AxiDrawDialog(QDialog):
     _MODEL_SETTINGS_KEY = "axidraw/model_index"
     _DEFAULT_MODEL_INDEX = 1  # AxiDraw V3/A3
 
+    # Remote plotter (network) device settings — persisted across sessions.
+    _REMOTE_ENABLED_KEY = "remote_plotter/enabled"
+    _REMOTE_URL_KEY = "remote_plotter/url"
+    _REMOTE_TOKEN_KEY = "remote_plotter/token"
+
     # Plot-orientation options (index -> (flip_x, flip_y)). Persisted so a
     # machine whose origin differs from the app's top-left only needs setting
     # once.
@@ -281,6 +287,7 @@ class AxiDrawDialog(QDialog):
         self._build_ui()
         self._apply_initial_size()
         self._update_layer_summary()
+        self._resolve_transport()
         self._check_availability()
 
     # ------------------------------------------------------------------
@@ -442,6 +449,46 @@ class AxiDrawDialog(QDialog):
             "Useful for checking settings."
         )
         dev_layout.addRow("", self._preview_check)
+
+        # --- Remote plotter (network) group ---
+        remote_group = QGroupBox("Remote Plotter (network)")
+        remote_layout = QFormLayout(remote_group)
+        form_root.addWidget(remote_group)
+
+        settings = QSettings("Plottter", "Plottter")
+        self._remote_enabled_check = QCheckBox("Send to remote device instead of USB")
+        self._remote_enabled_check.setToolTip(
+            "Offload plotting to a networked plot daemon (e.g. a Raspberry Pi "
+            "connected to the plotter) so this laptop is free during long plots."
+        )
+        self._remote_enabled_check.setChecked(
+            settings.value(self._REMOTE_ENABLED_KEY, False, type=bool)
+        )
+        remote_layout.addRow("", self._remote_enabled_check)
+
+        self._remote_url_edit = QLineEdit(
+            str(settings.value(self._REMOTE_URL_KEY, "") or "")
+        )
+        self._remote_url_edit.setPlaceholderText("http://plotter-pi.local:8080")
+        remote_layout.addRow("Device URL:", self._remote_url_edit)
+
+        self._remote_token_edit = QLineEdit(
+            str(settings.value(self._REMOTE_TOKEN_KEY, "") or "")
+        )
+        self._remote_token_edit.setPlaceholderText("optional — leave blank if the daemon has no token")
+        remote_layout.addRow("Token:", self._remote_token_edit)
+
+        self._remote_refresh_btn = QPushButton("Refresh connection")
+        self._remote_refresh_btn.setToolTip(
+            "Re-check which plotter is connected after changing these settings "
+            "or starting the daemon."
+        )
+        remote_layout.addRow("", self._remote_refresh_btn)
+
+        self._remote_enabled_check.toggled.connect(self._on_remote_settings_changed)
+        self._remote_url_edit.editingFinished.connect(self._on_remote_settings_changed)
+        self._remote_token_edit.editingFinished.connect(self._on_remote_settings_changed)
+        self._remote_refresh_btn.clicked.connect(self._on_remote_settings_changed)
 
         # --- Speed group ---
         speed_group = QGroupBox("Speed")
@@ -767,6 +814,36 @@ class AxiDrawDialog(QDialog):
     # ------------------------------------------------------------------
     # Availability check
     # ------------------------------------------------------------------
+
+    def _resolve_transport(self) -> None:
+        """Pick the active transport from the remote-device settings.
+
+        Remote enabled + a URL → ``NetworkTransport``; otherwise ``LocalUsbTransport``.
+        ``_check_availability`` then reports whether that transport is reachable.
+        """
+        from plottter.export.transport import LocalUsbTransport, NetworkTransport
+
+        use_remote = self._remote_enabled_check.isChecked()
+        url = self._remote_url_edit.text().strip()
+        token = self._remote_token_edit.text().strip() or None
+        if use_remote and url:
+            self._transport = NetworkTransport(url, token)
+        else:
+            self._transport = LocalUsbTransport()
+
+    def _on_remote_settings_changed(self) -> None:
+        """Persist remote-device settings, then re-resolve + re-check.
+
+        No-op while a plot is running so the transport never swaps mid-plot.
+        """
+        if self._worker is not None and self._worker.isRunning():
+            return
+        settings = QSettings("Plottter", "Plottter")
+        settings.setValue(self._REMOTE_ENABLED_KEY, self._remote_enabled_check.isChecked())
+        settings.setValue(self._REMOTE_URL_KEY, self._remote_url_edit.text().strip())
+        settings.setValue(self._REMOTE_TOKEN_KEY, self._remote_token_edit.text().strip())
+        self._resolve_transport()
+        self._check_availability()
 
     def _check_availability(self) -> None:
         status = self._transport.health()
