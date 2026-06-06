@@ -190,6 +190,11 @@ def plot_svg_string(
     ad.options.const_speed = bool(settings.get("const_speed", False))
     ad.options.report_time = bool(settings.get("report_time", False))
     ad.options.model = int(settings.get("model", 2))
+    # Preserve Plottter's path order — never let pyaxidraw re-sort paths.
+    # Plottter already optimizes ordering; reordering must stay off so the USB
+    # and (future) network plot paths are provably identical. See
+    # specs/remote-plotter.md §10.
+    ad.options.reordering = 0
 
     if resume:
         # Continue a previously paused plot embedded in svg_data.

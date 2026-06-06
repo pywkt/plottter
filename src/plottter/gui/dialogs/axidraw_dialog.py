@@ -53,12 +53,14 @@ class _PlotWorker(QThread):
     paused = pyqtSignal(str)              # resume SVG (may be empty)
     error = pyqtSignal(str)
 
-    def __init__(self, svg_data: str, settings: dict, resume: bool = False, parent=None):
+    def __init__(self, svg_data: str, settings: dict, resume: bool = False, parent=None, transport=None):
         super().__init__(parent)
         self._svg_data = svg_data
         self._settings = settings
         self._resume = resume
         self._ad = None  # set by on_ready once plotting is configured
+        from plottter.export.transport import LocalUsbTransport
+        self._transport = transport or LocalUsbTransport()
 
     def pause(self) -> None:
         """Request a pause from the GUI thread (no-op if not yet plotting)."""
@@ -75,8 +77,7 @@ class _PlotWorker(QThread):
 
     def run(self) -> None:
         try:
-            from plottter.export.axidraw import plot_svg_string
-            outcome = plot_svg_string(
+            outcome = self._transport.plot_svg(
                 self._svg_data,
                 self._settings,
                 self.progress.emit,
@@ -105,6 +106,7 @@ class _MultiLayerPlotWorker(QThread):
         layer_jobs: list[tuple[str, str, str]],
         settings: dict,
         parent=None,
+        transport=None,
     ):
         super().__init__(parent)
         self._jobs = layer_jobs  # list of (name, color, svg)
@@ -113,6 +115,8 @@ class _MultiLayerPlotWorker(QThread):
         self._cond = QWaitCondition()
         self._continue = False
         self._cancelled = False
+        from plottter.export.transport import LocalUsbTransport
+        self._transport = transport or LocalUsbTransport()
 
     def continue_plot(self) -> None:
         """Wake the worker after a pen swap."""
@@ -131,8 +135,6 @@ class _MultiLayerPlotWorker(QThread):
 
     def run(self) -> None:
         try:
-            from plottter.export.axidraw import plot_svg_string
-
             n = max(1, len(self._jobs))
             span = 100.0 / n
             for idx, (name, color, svg) in enumerate(self._jobs):
@@ -145,7 +147,7 @@ class _MultiLayerPlotWorker(QThread):
                 def cb(p: float, base=base, span=span) -> None:
                     self.progress.emit(base + p * span / 100.0)
 
-                plot_svg_string(svg, self._settings, cb)
+                self._transport.plot_svg(svg, self._settings, cb)
 
                 # Pause before next layer for pen swap.
                 if idx < len(self._jobs) - 1:
@@ -172,15 +174,16 @@ class _ManualCommandWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, command: str, settings: dict, parent=None):
+    def __init__(self, command: str, settings: dict, parent=None, transport=None):
         super().__init__(parent)
         self._command = command
         self._settings = settings
+        from plottter.export.transport import LocalUsbTransport
+        self._transport = transport or LocalUsbTransport()
 
     def run(self) -> None:
         try:
-            from plottter.export.axidraw import run_manual_command
-            run_manual_command(self._command, self._settings)
+            self._transport.run_manual(self._command, self._settings)
             self.finished.emit()
         except Exception as exc:
             self.error.emit(str(exc))
@@ -269,6 +272,10 @@ class AxiDrawDialog(QDialog):
         self._worker: QThread | None = None
         self._is_multilayer_worker = False
         self._resume_svg: str | None = None
+        # The active plotter transport (USB today; network later). All plot /
+        # manual / availability calls route through this.
+        from plottter.export.transport import LocalUsbTransport
+        self._transport = LocalUsbTransport()
         self.setWindowTitle("Plot with AxiDraw")
         self.setMinimumWidth(480)
         self._build_ui()
@@ -762,19 +769,11 @@ class AxiDrawDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _check_availability(self) -> None:
-        from plottter.export.axidraw import check_axidraw_available
-        if check_axidraw_available():
-            self._status_label.setText(
-                "pyaxidraw is installed. Connect your AxiDraw via USB and click Plot Now."
-            )
+        status = self._transport.health()
+        self._status_label.setText(status.detail)
+        if status.connected:
             self._status_label.setStyleSheet("")
         else:
-            self._status_label.setText(
-                "pyaxidraw is NOT installed.\n"
-                "Install it with:\n"
-                "  pip install https://cdn.evilmadscientist.com/dl/ad/public/AxiDraw_API.zip\n"
-                "You can still use Preview mode to test settings without a device."
-            )
             self._status_label.setStyleSheet("color: #cc4400;")
             self._preview_check.setChecked(True)
 
@@ -831,7 +830,7 @@ class AxiDrawDialog(QDialog):
             # software pause/resume is not offered here.
             from plottter.export.axidraw import project_to_layer_svg_list
             jobs = project_to_layer_svg_list(self._project, layer_ids, settings)
-            worker = _MultiLayerPlotWorker(jobs, settings, parent=None)
+            worker = _MultiLayerPlotWorker(jobs, settings, parent=None, transport=self._transport)
             worker.progress.connect(lambda p: self._progress_bar.setValue(int(p)))
             worker.pen_swap_requested.connect(self._on_pen_swap_requested)
             worker.finished.connect(self._on_plot_finished)
@@ -843,7 +842,7 @@ class AxiDrawDialog(QDialog):
         else:
             from plottter.export.axidraw import project_to_svg_string
             svg_data = project_to_svg_string(self._project, layer_ids, settings)
-            worker = _PlotWorker(svg_data, settings, parent=None)
+            worker = _PlotWorker(svg_data, settings, parent=None, transport=self._transport)
             worker.progress.connect(lambda p: self._progress_bar.setValue(int(p)))
             worker.finished.connect(self._on_plot_finished)
             worker.paused.connect(self._on_plot_paused)
@@ -908,7 +907,7 @@ class AxiDrawDialog(QDialog):
             return
         settings = self._build_settings()
         self._progress_bar.setValue(0)
-        worker = _PlotWorker(self._resume_svg, settings, resume=True, parent=None)
+        worker = _PlotWorker(self._resume_svg, settings, resume=True, parent=None, transport=self._transport)
         worker.progress.connect(lambda p: self._progress_bar.setValue(int(p)))
         worker.finished.connect(self._on_plot_finished)
         worker.paused.connect(self._on_plot_paused)
@@ -965,7 +964,7 @@ class AxiDrawDialog(QDialog):
         self._plot_btn.setEnabled(False)
 
         settings = self._build_settings()
-        self._manual_worker = _ManualCommandWorker(command, settings, parent=None)
+        self._manual_worker = _ManualCommandWorker(command, settings, parent=None, transport=self._transport)
         self._manual_worker.finished.connect(self._on_manual_finished)
         self._manual_worker.error.connect(self._on_manual_error)
         self._manual_worker.start()
