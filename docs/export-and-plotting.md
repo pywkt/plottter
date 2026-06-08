@@ -289,6 +289,16 @@ so you can't queue conflicting commands.
 The AxiDraw dialog always plots all visible layers as a single combined SVG job. To plot
 one layer at a time, hide all other layers before opening the dialog.
 
+### Remote plotting (network)
+
+The **Remote Plotter (network)** group in the same dialog lets you plot **wirelessly** to a
+plotter connected to a networked device (e.g. a Raspberry Pi running the companion
+`plottter-daemon`) instead of cabling it to this machine. Enter the device URL and optional
+token, tick **Send to remote device**, and everything in the dialog — calibration, plotting,
+pause/resume, multi-layer pen-swap — routes to the remote plotter. Because the device owns the
+job, your computer is free during long plots and can disconnect entirely. See the full
+[Remote Plotting guide](remote-plotting.md).
+
 ---
 
 ## Calibration Plots

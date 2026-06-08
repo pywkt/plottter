@@ -303,6 +303,36 @@ connected via USB and powered on."
 
 ---
 
+## Remote Plotting Issues
+
+For wireless plotting to a networked device (the companion `plottter-daemon`). See the
+[Remote Plotting guide](remote-plotting.md) for the full setup.
+
+### Status shows "No plotter daemon reachable at …"
+
+**Fix:**
+1. Confirm the daemon is running on the device (`systemctl status plottter-daemon`, or check
+   its terminal).
+2. Check the URL — it must include `http://` and the port, e.g. `http://plotter.local:8080`.
+   Try the device's IP instead of its hostname.
+3. Make sure this machine can reach the device: `ping <device-ip>` (same network or VPN).
+
+### Connected, but plotting fails with "Plotter not found"
+
+The daemon reached the device but `pyaxidraw` couldn't open the plotter.
+
+**Fix:**
+1. On the device: `ls /dev/ttyUSB*` (and `dmesg | tail` right after plugging in the plotter).
+2. Make sure the daemon's user is in the `dialout` group.
+3. If a port exists but auto-detect fails, start the daemon with `--serial-port /dev/ttyUSB0`.
+
+### "The remote plotter is busy"
+
+The daemon runs one job at a time. Wait for the current plot to finish, or **Stop** it, before
+sending another.
+
+---
+
 ## Memory Usage with Large Images
 
 High-resolution images (> 4000 × 4000 px) can use significant memory during processing.

@@ -19,9 +19,9 @@ A free, open-source desktop application for generating pen-plotter-ready vector 
 
 **Mask painting** with brush, rectangle, ellipse, polygon, and pen tools. AI-powered mask generation via point prompts, box prompts, or text descriptions (Replicate SAM-2). Per-project mask library for saving and reusing masks. Mask refinement with feather and grow/shrink controls.
 
-**Export formats:** SVG (mm coordinates), HPGL (vintage plotters), G-code (CNC/servo), Mural (wall-mounted plotters), and direct AxiDraw USB control.
+**Export formats:** SVG (mm coordinates), HPGL (vintage plotters), G-code (CNC/servo), Mural (wall-mounted plotters), and direct AxiDraw USB control. **Wireless plotting** offloads jobs over the network to a Raspberry Pi running the companion `plottter-daemon` — the device owns the plot, so your computer is free during long runs and the plotter can live in another room.
 
-**Post-processing tools:** Path optimization (nearest-neighbor + 2-opt + 3-opt + Or-opt), simplification, merge, **graph-aware junction joiner** (splits paths at T-junctions and traces Eulerian chains across the connectivity graph — dramatically reduces pen-lift count on dense road networks; auto-enabled for Map layers), Remove Duplicate Segments, clip, Bezier curve fitting, path tapering (fade stroke width at endpoints), path offsetting (parallel curves), and a brush system (stippled, multi-stroke, calligraphic). Optional **numba JIT** acceleration for the optimize / merge / weld inner loops — install with `pip install -e ".[fast]"`. **Remote optimization** offloads the full Optimize pipeline over SSH to a faster machine on your network (or via Tailscale SSH, with zero open ports on the remote) — keeps the GUI snappy on a low-power laptop.
+**Post-processing tools:** Path optimization (nearest-neighbor + 2-opt + 3-opt + Or-opt), simplification, merge, **graph-aware junction joiner** (splits paths at T-junctions and traces Eulerian chains across the connectivity graph — dramatically reduces pen-lift count on dense road networks; auto-enabled for Map layers), Remove Duplicate Segments, clip, Bezier curve fitting, path tapering (fade stroke width at endpoints), path offsetting (parallel curves), and a brush system (stippled, multi-stroke, calligraphic). Optional **numba JIT** acceleration for the optimize / merge / weld inner loops — install with `pip install -e ".[fast]"`. **Remote optimization** offloads the full Optimize pipeline over SSH to a faster machine on your network (or via Tailscale SSH, with zero open ports on the remote) — keeps the GUI snappy on a low-power computer.
 
 **Other features:** Stroke-order animation, pen-up travel visualization, pen jitter simulation, **Ink Preview** canvas mode (subtractive colour mixing where layers overlap, so you can preview how the actual plot will look), configurable preview pen width with a "Marker" preset, AI result caching, auto contrast and unsharp mask preprocessing, CLI batch mode, extensible plugin system (generators, processing, and export format plugins), Google Fonts integration, and AI-powered depth maps and background removal via Replicate.
 
@@ -82,6 +82,7 @@ plottter --list-generators  # Show all available generators
 | [Troubleshooting](docs/troubleshooting.md) | Common issues and fixes |
 | [Performance](docs/performance.md) | Benchmark results for the path-processing pipeline; `[fast]` extra install instructions |
 | [Remote Optimization](docs/remote-optimization.md) | Offload the Optimize pipeline to a fast machine over SSH (or Tailscale SSH with no open ports) |
+| [Remote Plotting](docs/remote-plotting.md) | Plot wirelessly to a networked Raspberry Pi (companion `plottter-daemon`) so your computer is free during long plots |
 
 ## License
 
