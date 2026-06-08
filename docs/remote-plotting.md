@@ -22,7 +22,7 @@ covers using the feature from Plottter.
 ```
 Your computer (Plottter)                Raspberry Pi (plottter-daemon)
   Plot with AxiDraw  ──HTTP (LAN/Wi-Fi/VPN)──▶  receives SVG + settings
-  "Remote Plotter (network)"                    drives the plotter via pyaxidraw
+  (device set in Preferences)                   drives the plotter via pyaxidraw
   polls status, shows progress  ◀───────────    plots autonomously
 ```
 
@@ -63,21 +63,26 @@ connecting from Plottter (below) — handy for testing the network path.
 
 ## 2. Configure Plottter
 
-Open **Plot with AxiDraw** and find the **Remote Plotter (network)** group:
+Open **Edit → Preferences** and find the **Remote Plotter** group:
 
 1. **Device URL** — `http://<pi-host-or-ip>:8080` (e.g. `http://plotter.local:8080`, a LAN
    IP, or a Tailscale name — anything reachable).
 2. **Token** — paste the token the daemon printed (leave blank if you ran it `--no-auth`).
-3. Tick **Send to remote device**, then click **Refresh connection**.
+3. Tick **Enable remote plotting**, then click **Test Connection** to confirm the daemon is
+   reachable. Click **OK** to save.
 
-The status line at the top of the dialog tells you what's connected:
-
-- *Connected: \<device\> (network) — \<url\>* → plotting goes to the Pi.
-- *pyaxidraw is installed…* / *USB* → the network device wasn't selected/reachable, so it
-  falls back to a USB-connected plotter.
-
-These settings are remembered between sessions. Untick **Send to remote device** any time to
+These settings are remembered between sessions. Untick **Enable remote plotting** any time to
 plot locally over USB instead.
+
+Now open **Plot with AxiDraw**. The connection indicator at the top tells you what's
+connected:
+
+- *● Connected via network — \<device\>* → plotting goes to the Pi.
+- *● Connected via USB — \<device\>* → remote plotting is off (or unreachable), so it falls
+  back to a USB-connected plotter.
+
+Hit **Refresh** in the dialog to re-check the connection after starting the daemon or changing
+the Preferences.
 
 > **Set the model.** The job carries your **Model** selection (e.g. *AxiDraw SE/A2* for the
 > iDraw H SE A2), so set it the same as you would for USB — that's what tells the daemon the

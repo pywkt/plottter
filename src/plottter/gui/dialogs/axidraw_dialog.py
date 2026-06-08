@@ -18,7 +18,6 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -297,10 +296,31 @@ class AxiDrawDialog(QDialog):
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
 
-        # Status banner
-        self._status_label = QLabel("Checking for pyaxidraw…")
+        # Connection indicator: shows which transport is active (USB vs the
+        # networked plot daemon configured in Preferences) plus a Refresh button
+        # to re-check after plugging in the AxiDraw or starting the daemon. The
+        # remote *configuration* lives in Preferences → Remote Plotter so this
+        # dialog stays focused on per-plot settings.
+        status_row = QHBoxLayout()
+        self._status_label = QLabel("Checking plotter connection…")
         self._status_label.setWordWrap(True)
-        root.addWidget(self._status_label)
+        status_row.addWidget(self._status_label, 1)
+
+        self._refresh_btn = QPushButton("Refresh")
+        self._refresh_btn.setToolTip(
+            "Re-check the plotter connection. Use after plugging in the AxiDraw "
+            "or after starting / configuring the remote plot daemon in "
+            "Preferences."
+        )
+        self._refresh_btn.clicked.connect(self._on_refresh_clicked)
+        status_row.addWidget(self._refresh_btn, 0, Qt.AlignmentFlag.AlignTop)
+        root.addLayout(status_row)
+
+        self._remote_hint_label = QLabel("")
+        self._remote_hint_label.setWordWrap(True)
+        self._remote_hint_label.setTextFormat(Qt.TextFormat.RichText)
+        self._remote_hint_label.setStyleSheet("color: #888; font-size: 11px;")
+        root.addWidget(self._remote_hint_label)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -449,46 +469,6 @@ class AxiDrawDialog(QDialog):
             "Useful for checking settings."
         )
         dev_layout.addRow("", self._preview_check)
-
-        # --- Remote plotter (network) group ---
-        remote_group = QGroupBox("Remote Plotter (network)")
-        remote_layout = QFormLayout(remote_group)
-        form_root.addWidget(remote_group)
-
-        settings = QSettings("Plottter", "Plottter")
-        self._remote_enabled_check = QCheckBox("Send to remote device instead of USB")
-        self._remote_enabled_check.setToolTip(
-            "Offload plotting to a networked plot daemon (e.g. a Raspberry Pi "
-            "connected to the plotter) so this laptop is free during long plots."
-        )
-        self._remote_enabled_check.setChecked(
-            settings.value(self._REMOTE_ENABLED_KEY, False, type=bool)
-        )
-        remote_layout.addRow("", self._remote_enabled_check)
-
-        self._remote_url_edit = QLineEdit(
-            str(settings.value(self._REMOTE_URL_KEY, "") or "")
-        )
-        self._remote_url_edit.setPlaceholderText("http://plotter-pi.local:8080")
-        remote_layout.addRow("Device URL:", self._remote_url_edit)
-
-        self._remote_token_edit = QLineEdit(
-            str(settings.value(self._REMOTE_TOKEN_KEY, "") or "")
-        )
-        self._remote_token_edit.setPlaceholderText("optional — leave blank if the daemon has no token")
-        remote_layout.addRow("Token:", self._remote_token_edit)
-
-        self._remote_refresh_btn = QPushButton("Refresh connection")
-        self._remote_refresh_btn.setToolTip(
-            "Re-check which plotter is connected after changing these settings "
-            "or starting the daemon."
-        )
-        remote_layout.addRow("", self._remote_refresh_btn)
-
-        self._remote_enabled_check.toggled.connect(self._on_remote_settings_changed)
-        self._remote_url_edit.editingFinished.connect(self._on_remote_settings_changed)
-        self._remote_token_edit.editingFinished.connect(self._on_remote_settings_changed)
-        self._remote_refresh_btn.clicked.connect(self._on_remote_settings_changed)
 
         # --- Speed group ---
         speed_group = QGroupBox("Speed")
@@ -816,43 +796,72 @@ class AxiDrawDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _resolve_transport(self) -> None:
-        """Pick the active transport from the remote-device settings.
+        """Pick the active transport from the saved remote-plotter settings.
 
-        Remote enabled + a URL → ``NetworkTransport``; otherwise ``LocalUsbTransport``.
+        The remote device is configured in Preferences → Remote Plotter, which
+        writes the same QSettings keys this reads. Remote enabled + a URL →
+        ``NetworkTransport``; otherwise ``LocalUsbTransport``.
         ``_check_availability`` then reports whether that transport is reachable.
         """
         from plottter.export.transport import LocalUsbTransport, NetworkTransport
 
-        use_remote = self._remote_enabled_check.isChecked()
-        url = self._remote_url_edit.text().strip()
-        token = self._remote_token_edit.text().strip() or None
+        settings = QSettings("Plottter", "Plottter")
+        use_remote = settings.value(self._REMOTE_ENABLED_KEY, False, type=bool)
+        url = str(settings.value(self._REMOTE_URL_KEY, "") or "").strip()
+        token = str(settings.value(self._REMOTE_TOKEN_KEY, "") or "").strip() or None
         if use_remote and url:
             self._transport = NetworkTransport(url, token)
         else:
             self._transport = LocalUsbTransport()
 
-    def _on_remote_settings_changed(self) -> None:
-        """Persist remote-device settings, then re-resolve + re-check.
+    def _on_refresh_clicked(self) -> None:
+        """Re-read the remote-plotter settings and re-check the connection.
 
-        No-op while a plot is running so the transport never swaps mid-plot.
+        Lets the user pick up changes made in Preferences (or a daemon that has
+        since come online) without reopening the dialog. No-op while a plot is
+        running so the transport never swaps mid-plot.
         """
         if self._worker is not None and self._worker.isRunning():
             return
-        settings = QSettings("Plottter", "Plottter")
-        settings.setValue(self._REMOTE_ENABLED_KEY, self._remote_enabled_check.isChecked())
-        settings.setValue(self._REMOTE_URL_KEY, self._remote_url_edit.text().strip())
-        settings.setValue(self._REMOTE_TOKEN_KEY, self._remote_token_edit.text().strip())
         self._resolve_transport()
         self._check_availability()
 
     def _check_availability(self) -> None:
         status = self._transport.health()
-        self._status_label.setText(status.detail)
+        self._status_label.setText(self._format_status_text(status))
         if status.connected:
-            self._status_label.setStyleSheet("")
+            self._status_label.setStyleSheet("color: #2e7d32;")
         else:
             self._status_label.setStyleSheet("color: #cc4400;")
             self._preview_check.setChecked(True)
+
+        if status.source == "network":
+            self._remote_hint_label.setText(
+                "Plotting wirelessly to the remote device set in "
+                "<b>Preferences → Remote Plotter</b>."
+            )
+        else:
+            self._remote_hint_label.setText(
+                "Plotting via USB. Set up wireless plotting in "
+                "<b>Preferences → Remote Plotter</b>."
+            )
+
+    @staticmethod
+    def _format_status_text(status) -> str:
+        """One-line connection headline for the status label.
+
+        When connected, leads with a coloured dot + the transport (USB vs
+        network). When not, keeps the transport's own detail string, which
+        carries the actionable message (install hint / daemon unreachable).
+        """
+        if not status.connected:
+            return status.detail
+        where = {"usb": "USB", "network": "network"}.get(status.source, "")
+        device = status.device or "plotter"
+        headline = f"● Connected via {where} — {device}" if where else f"● Connected — {device}"
+        if status.busy:
+            headline += " (busy)"
+        return headline
 
     # ------------------------------------------------------------------
     # Plot action

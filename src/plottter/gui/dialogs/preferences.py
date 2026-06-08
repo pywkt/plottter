@@ -1,8 +1,14 @@
 """Preferences dialog — application-wide settings.
 
-Currently contains:
+Laid out as a sidebar of sections (left) over a switching panel (right), so each
+group gets its full width and the dialog never grows past one screen as more
+settings are added. Sections:
+
 - AI Integration: Replicate.com API key entry and connection test.
-- AI Results Cache: unified cache directory for depth maps, background removal, and masks.
+- AI Cache: unified cache directory for depth maps, background removal, and masks.
+- Map: Overpass API endpoint.
+- Remote Optimization: SSH host/command for off-box path optimization.
+- Remote Plotter: networked plot-daemon device (URL + token) for wireless plotting.
 """
 
 from __future__ import annotations
@@ -13,16 +19,21 @@ import pathlib
 
 from PyQt6.QtCore import QSettings, Qt
 from PyQt6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -85,23 +96,73 @@ class PreferencesDialog(QDialog):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Preferences")
-        self.setMinimumWidth(480)
+        self.setMinimumSize(640, 460)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(self._build_ai_group())
-        layout.addWidget(self._build_cache_group())
-        layout.addWidget(self._build_map_group())
-        layout.addWidget(self._build_remote_optimize_group())
+        root = QVBoxLayout(self)
+
+        # Section sidebar (left) + switching panel (right). Each section shows
+        # one group at full width, so the long help text never gets clipped.
+        body = QHBoxLayout()
+        root.addLayout(body, 1)
+
+        self._nav = QListWidget()
+        self._nav.setFixedWidth(180)
+        # Give the section rows vertical breathing room so they don't feel
+        # crammed: a couple of px between rows plus internal padding per item.
+        self._nav.setSpacing(2)
+        self._nav.setStyleSheet("QListWidget::item { padding: 6px 4px; }")
+        self._nav.currentRowChanged.connect(self._on_section_changed)
+        body.addWidget(self._nav)
+
+        self._stack = QStackedWidget()
+        body.addWidget(self._stack, 1)
+
+        self._add_section("AI Integration", self._build_ai_group())
+        self._add_section("AI Cache", self._build_cache_group())
+        self._add_section("Map", self._build_map_group())
+        self._add_section("Remote Optimization", self._build_remote_optimize_group())
+        self._add_section("Remote Plotter", self._build_remote_plotter_group())
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
         )
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
+        root.addWidget(buttons)
+
+        self._nav.setCurrentRow(0)
 
         self._load_settings()
         self._update_cache_size_label()
+
+    # ------------------------------------------------------------------
+    # Section plumbing
+    # ------------------------------------------------------------------
+
+    def _add_section(self, title: str, group: QGroupBox) -> None:
+        """Register one settings section: a sidebar entry + a stacked page.
+
+        The group is wrapped in a scroll area so an individual section that
+        outgrows the dialog scrolls rather than clipping its content.
+        """
+        page = QScrollArea()
+        page.setWidgetResizable(True)
+        page.setFrameShape(QFrame.Shape.NoFrame)
+        page.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(0, 0, 0, 0)
+        inner_layout.addWidget(group)
+        inner_layout.addStretch(1)
+        page.setWidget(inner)
+
+        self._stack.addWidget(page)
+        self._nav.addItem(title)
+
+    def _on_section_changed(self, row: int) -> None:
+        if row >= 0:
+            self._stack.setCurrentIndex(row)
 
     # ------------------------------------------------------------------
     # UI builders
@@ -262,6 +323,61 @@ class PreferencesDialog(QDialog):
 
         return group
 
+    def _build_remote_plotter_group(self) -> QGroupBox:
+        group = QGroupBox("Remote Plotter")
+        form = QFormLayout(group)
+
+        self._remote_plotter_enabled = QCheckBox("Send plots to a remote device instead of USB")
+        self._remote_plotter_enabled.setToolTip(
+            "Offload plotting to a networked plot daemon (e.g. a Raspberry Pi\n"
+            "wired to the plotter) so this machine is free during long plots.\n"
+            "When enabled, the 'Plot with AxiDraw' dialog uses the device below."
+        )
+        form.addRow("", self._remote_plotter_enabled)
+
+        self._remote_plotter_url = QLineEdit()
+        self._remote_plotter_url.setPlaceholderText("http://plotter-pi.local:8080")
+        self._remote_plotter_url.setToolTip(
+            "Base URL of the plot daemon running on the remote device."
+        )
+        form.addRow("Device URL:", self._remote_plotter_url)
+
+        self._remote_plotter_token = QLineEdit()
+        self._remote_plotter_token.setEchoMode(QLineEdit.EchoMode.Password)
+        self._remote_plotter_token.setPlaceholderText("optional — leave blank if the daemon has no token")
+        self._remote_plotter_token.setToolTip(
+            "Bearer token the daemon requires, if any. Leave blank when the "
+            "daemon is unauthenticated (e.g. on a trusted LAN / Tailscale)."
+        )
+        form.addRow("Token:", self._remote_plotter_token)
+
+        test_row = QWidget()
+        test_layout = QHBoxLayout(test_row)
+        test_layout.setContentsMargins(0, 0, 0, 0)
+        self._remote_plotter_test_btn = QPushButton("Test Connection")
+        self._remote_plotter_test_btn.setToolTip(
+            "Ping the daemon's health endpoint and report which plotter it sees."
+        )
+        self._remote_plotter_test_btn.clicked.connect(self._on_test_remote_plotter)
+        test_layout.addWidget(self._remote_plotter_test_btn)
+        test_layout.addStretch()
+        form.addRow("", test_row)
+
+        self._remote_plotter_status = QLabel("")
+        self._remote_plotter_status.setWordWrap(True)
+        form.addRow("", self._remote_plotter_status)
+
+        note = QLabel(
+            "Configure the wireless plotter (a Raspberry Pi running the plot "
+            "daemon) here. The <b>Plot with AxiDraw</b> dialog then shows whether "
+            "it's plotting via USB or over the network."
+        )
+        note.setWordWrap(True)
+        note.setTextFormat(Qt.TextFormat.RichText)
+        form.addRow(note)
+
+        return group
+
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
@@ -278,6 +394,15 @@ class PreferencesDialog(QDialog):
         self._remote_optimize_host_edit.setText(host)
         cmd = settings.value("optimize/remote_command", "") or ""
         self._remote_optimize_cmd_edit.setText(cmd)
+        self._remote_plotter_enabled.setChecked(
+            settings.value("remote_plotter/enabled", False, type=bool)
+        )
+        self._remote_plotter_url.setText(
+            str(settings.value("remote_plotter/url", "") or "")
+        )
+        self._remote_plotter_token.setText(
+            str(settings.value("remote_plotter/token", "") or "")
+        )
 
     def _save_settings(self) -> None:
         settings = QSettings("Plottter", "Plottter")
@@ -292,6 +417,15 @@ class PreferencesDialog(QDialog):
         )
         settings.setValue(
             "optimize/remote_command", self._remote_optimize_cmd_edit.text().strip()
+        )
+        settings.setValue(
+            "remote_plotter/enabled", self._remote_plotter_enabled.isChecked()
+        )
+        settings.setValue(
+            "remote_plotter/url", self._remote_plotter_url.text().strip()
+        )
+        settings.setValue(
+            "remote_plotter/token", self._remote_plotter_token.text().strip()
         )
 
     # ------------------------------------------------------------------
@@ -397,6 +531,41 @@ class PreferencesDialog(QDialog):
             f"Removed {total_removed} cached file(s):\n\n{result_lines}",
         )
         self._update_cache_size_label()
+
+    def _on_test_remote_plotter(self) -> None:
+        """Ping the configured plot daemon and report what it sees.
+
+        Builds a throwaway ``NetworkTransport`` from the current field values
+        (not the saved settings) so the user can verify a URL before clicking
+        OK. ``health()`` never raises — it returns ``connected=False`` on any
+        network error — so a short timeout keeps the UI responsive.
+        """
+        url = self._remote_plotter_url.text().strip()
+        if not url:
+            QMessageBox.warning(
+                self,
+                "Test Connection",
+                "Enter a Device URL before testing.",
+            )
+            return
+
+        from plottter.export.transport import NetworkTransport
+
+        token = self._remote_plotter_token.text().strip() or None
+        transport = NetworkTransport(url, token, timeout=5.0)
+        self._remote_plotter_test_btn.setEnabled(False)
+        self._remote_plotter_status.setText("Testing…")
+        try:
+            status = transport.health()
+        finally:
+            self._remote_plotter_test_btn.setEnabled(True)
+
+        if status.connected:
+            self._remote_plotter_status.setStyleSheet("color: #2e7d32;")
+            self._remote_plotter_status.setText(f"✓ {status.detail}")
+        else:
+            self._remote_plotter_status.setStyleSheet("color: #cc4400;")
+            self._remote_plotter_status.setText(f"✗ {status.detail}")
 
     def _on_test_connection(self) -> None:
         """Test the Replicate API key by calling is_available() and a lightweight check."""

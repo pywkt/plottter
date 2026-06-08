@@ -1,7 +1,9 @@
-"""AxiDrawDialog remote-device wiring (specs/remote-plotter.md §5.2/§5.3).
+"""Remote-plotter wiring (specs/remote-plotter.md §5.2/§5.3).
 
-Verifies the dialog selects the right transport from the remote-device settings
-and persists them. Boots the fake daemon in-process for the "connected" case.
+The remote device is *configured* in Preferences → Remote Plotter and *consumed*
+by the AxiDraw dialog, which selects its transport from the saved settings and
+shows a read-only connection indicator. These tests cover both halves plus the
+fake daemon for the "connected" case.
 """
 
 from __future__ import annotations
@@ -12,10 +14,15 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from PyQt6.QtCore import QSettings
 
 from plottter.models import Canvas, Layer, Project
 
 _FAKE = Path(__file__).resolve().parent / "fakes" / "fake_plot_daemon.py"
+
+_ENABLED_KEY = "remote_plotter/enabled"
+_URL_KEY = "remote_plotter/url"
+_TOKEN_KEY = "remote_plotter/token"
 
 
 def _make_project() -> Project:
@@ -24,6 +31,19 @@ def _make_project() -> Project:
     layer.paths = [[(0.0, 0.0), (10.0, 10.0)]]
     proj.add_layer(layer)
     return proj
+
+
+@pytest.fixture(autouse=True)
+def _clear_remote_settings():
+    """Start each test from no configured remote device (sandbox is session-wide)."""
+    s = QSettings("Plottter", "Plottter")
+    for k in (_ENABLED_KEY, _URL_KEY, _TOKEN_KEY):
+        s.remove(k)
+    s.sync()
+    yield
+    for k in (_ENABLED_KEY, _URL_KEY, _TOKEN_KEY):
+        s.remove(k)
+    s.sync()
 
 
 @pytest.fixture
@@ -43,6 +63,18 @@ def daemon():
         server.server_close()
 
 
+def _set_remote(url: str, token: str) -> None:
+    s = QSettings("Plottter", "Plottter")
+    s.setValue(_ENABLED_KEY, True)
+    s.setValue(_URL_KEY, url)
+    s.setValue(_TOKEN_KEY, token)
+    s.sync()
+
+
+# ---------------------------------------------------------------------------
+# AxiDraw dialog: selects transport from saved settings + shows status
+# ---------------------------------------------------------------------------
+
 def test_defaults_to_usb_transport(qtbot):
     from plottter.export.transport import LocalUsbTransport
     from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
@@ -50,10 +82,27 @@ def test_defaults_to_usb_transport(qtbot):
     dlg = AxiDrawDialog(_make_project())
     qtbot.addWidget(dlg)
     assert isinstance(dlg._transport, LocalUsbTransport)
-    assert dlg._remote_enabled_check.isChecked() is False
 
 
-def test_enabling_remote_selects_network_transport(qtbot, daemon):
+def test_reads_network_transport_from_settings(qtbot, daemon):
+    from plottter.export.transport import NetworkTransport
+    from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+    url, token = daemon
+    _set_remote(url, token)
+
+    dlg = AxiDrawDialog(_make_project())
+    qtbot.addWidget(dlg)
+
+    assert isinstance(dlg._transport, NetworkTransport)
+    assert dlg._transport.base_url == url
+    # Read-only indicator reports the reachable network device.
+    assert "via network" in dlg._status_label.text()
+    assert "Remote Plotter" in dlg._remote_hint_label.text()
+
+
+def test_refresh_picks_up_settings_change(qtbot, daemon):
+    """Editing Preferences then hitting Refresh swaps the transport live."""
     from plottter.export.transport import LocalUsbTransport, NetworkTransport
     from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
 
@@ -62,37 +111,55 @@ def test_enabling_remote_selects_network_transport(qtbot, daemon):
     qtbot.addWidget(dlg)
     assert isinstance(dlg._transport, LocalUsbTransport)
 
-    dlg._remote_url_edit.setText(url)
-    dlg._remote_token_edit.setText(token)
-    dlg._remote_enabled_check.setChecked(True)  # toggled -> _on_remote_settings_changed
-
+    _set_remote(url, token)
+    dlg._on_refresh_clicked()
     assert isinstance(dlg._transport, NetworkTransport)
     assert dlg._transport.base_url == url
-    # status indicator reflects the reachable network device
-    assert "(network)" in dlg._status_label.text()
 
-    # turning it back off returns to USB
-    dlg._remote_enabled_check.setChecked(False)
+    # Disabling again returns to USB on the next refresh.
+    s = QSettings("Plottter", "Plottter")
+    s.setValue(_ENABLED_KEY, False)
+    s.sync()
+    dlg._on_refresh_clicked()
     assert isinstance(dlg._transport, LocalUsbTransport)
 
 
-def test_remote_settings_persisted(qtbot):
-    from PyQt6.QtCore import QSettings
-    from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+# ---------------------------------------------------------------------------
+# Preferences dialog: persists + restores the remote-plotter config
+# ---------------------------------------------------------------------------
 
-    dlg = AxiDrawDialog(_make_project())
+def test_preferences_persists_remote_plotter(qtbot):
+    from plottter.gui.dialogs.preferences import PreferencesDialog
+
+    dlg = PreferencesDialog()
     qtbot.addWidget(dlg)
-    dlg._remote_url_edit.setText("http://example.local:8080")
-    dlg._remote_token_edit.setText("secret")
-    dlg._remote_enabled_check.setChecked(True)
+    dlg._remote_plotter_url.setText("http://example.local:8080")
+    dlg._remote_plotter_token.setText("secret")
+    dlg._remote_plotter_enabled.setChecked(True)
+    dlg._save_settings()
 
     s = QSettings("Plottter", "Plottter")
-    assert s.value(AxiDrawDialog._REMOTE_ENABLED_KEY, type=bool) is True
-    assert s.value(AxiDrawDialog._REMOTE_URL_KEY) == "http://example.local:8080"
-    assert s.value(AxiDrawDialog._REMOTE_TOKEN_KEY) == "secret"
+    assert s.value(_ENABLED_KEY, type=bool) is True
+    assert s.value(_URL_KEY) == "http://example.local:8080"
+    assert s.value(_TOKEN_KEY) == "secret"
 
-    # a freshly-opened dialog restores them
-    dlg2 = AxiDrawDialog(_make_project())
+    # A freshly-opened Preferences dialog restores the saved values.
+    dlg2 = PreferencesDialog()
     qtbot.addWidget(dlg2)
-    assert dlg2._remote_enabled_check.isChecked() is True
-    assert dlg2._remote_url_edit.text() == "http://example.local:8080"
+    assert dlg2._remote_plotter_enabled.isChecked() is True
+    assert dlg2._remote_plotter_url.text() == "http://example.local:8080"
+    assert dlg2._remote_plotter_token.text() == "secret"
+
+
+def test_preferences_test_connection_reports_device(qtbot, daemon):
+    from plottter.gui.dialogs.preferences import PreferencesDialog
+
+    url, token = daemon
+    dlg = PreferencesDialog()
+    qtbot.addWidget(dlg)
+    dlg._remote_plotter_url.setText(url)
+    dlg._remote_plotter_token.setText(token)
+
+    dlg._on_test_remote_plotter()
+    assert dlg._remote_plotter_status.text().startswith("✓")
+    assert "network" in dlg._remote_plotter_status.text()

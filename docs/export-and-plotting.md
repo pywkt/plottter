@@ -291,11 +291,12 @@ one layer at a time, hide all other layers before opening the dialog.
 
 ### Remote plotting (network)
 
-The **Remote Plotter (network)** group in the same dialog lets you plot **wirelessly** to a
-plotter connected to a networked device (e.g. a Raspberry Pi running the companion
-`plottter-daemon`) instead of cabling it to this machine. Enter the device URL and optional
-token, tick **Send to remote device**, and everything in the dialog — calibration, plotting,
-pause/resume, multi-layer pen-swap — routes to the remote plotter. Because the device owns the
+You can plot **wirelessly** to a plotter connected to a networked device (e.g. a Raspberry Pi
+running the companion `plottter-daemon`) instead of cabling it to this machine. Configure the
+device once under **Edit → Preferences → Remote Plotter** (device URL + optional token, then
+tick **Enable remote plotting**). The AxiDraw dialog then shows a connection indicator at the
+top — *Connected via network* vs *via USB* — and everything in it (calibration, plotting,
+pause/resume, multi-layer pen-swap) routes to the remote plotter. Because the device owns the
 job, your computer is free during long plots and can disconnect entirely. See the full
 [Remote Plotting guide](remote-plotting.md).
 
