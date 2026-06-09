@@ -190,6 +190,13 @@ Different from RGB/CMYK in two important ways:
 - Optional **dithering** (Floyd-Steinberg / ordered / Atkinson) scatters intermediate shades
   across nearby pixels so adjacent dots of different pens mix optically at viewing distance
 
+The built-in palettes (also available to the Pointillist / CRT TV separators):
+
+![Built-in pen palettes](images/palette_presets.png)
+
+Pick the closest set to the pens you have, or build your own in the palette editor.
+Brand-named sets (Stabilo, Sakura) are close colour approximations, not exact ink specs.
+
 | Parameter | Description |
 |-----------|-------------|
 | `Palette` | Pen palette: Basic 6, Copic 12, Sakura Metallic 5, Grayscale 5, RYBK 4 (artist primaries), CMYKOG 6 (Hexachrome-style extended gamut), Risograph 6 (Fluorescent Pink / Federal Blue / etc.), Stabilo Point 88 (20) and Sakura Micron 8 (buyable fineliner sets), Earth Tones 6, Pastel 6, Neon 5, Skin Tones 6, or any user-saved palette |
