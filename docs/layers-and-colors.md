@@ -192,7 +192,7 @@ Different from RGB/CMYK in two important ways:
 
 | Parameter | Description |
 |-----------|-------------|
-| `Palette` | Pen palette: Basic 6, Copic 12, Sakura Metallic 5, Grayscale 5, RYBK 4 (artist primaries), CMYKOG 6 (Hexachrome-style extended gamut), Risograph 6 (Fluorescent Pink / Federal Blue / etc.), or any user-saved palette |
+| `Palette` | Pen palette: Basic 6, Copic 12, Sakura Metallic 5, Grayscale 5, RYBK 4 (artist primaries), CMYKOG 6 (Hexachrome-style extended gamut), Risograph 6 (Fluorescent Pink / Federal Blue / etc.), Stabilo Point 88 (20) and Sakura Micron 8 (buyable fineliner sets), Earth Tones 6, Pastel 6, Neon 5, Skin Tones 6, or any user-saved palette |
 | `Dither` | `None`, `Floyd-Steinberg` (default — best for gradient reproduction), `Ordered`, `Atkinson` |
 
 The **Edit / New Palette…** button opens a palette editor where you can create your own

@@ -730,7 +730,7 @@ The generator picks a `PenPalette`, quantises the image to it (with optional Flo
 
 | Parameter | Effect |
 |-----------|--------|
-| `palette` | Pen palette: Basic 6, Copic 12, Sakura Metallic 5, Grayscale 5, RYBK 4, CMYKOG 6, Risograph 6, or any user palette saved via the editor |
+| `palette` | Pen palette: Basic 6, Copic 12, Sakura Metallic 5, Grayscale 5, RYBK 4, CMYKOG 6, Risograph 6, Stabilo Point 88 (20), Sakura Micron 8, Earth Tones 6, Pastel 6, Neon 5, Skin Tones 6, or any user palette saved via the editor |
 | `density_per_cm2` | Target dot density per cm² for a fully-covered pen layer (10–2000) |
 | `dither` | `none`, `floyd-steinberg`, `ordered`, `atkinson` — affects how mid-tones blend optically |
 | `dot_style` | `point` (minimal pen mark), `cross` (two perpendicular strokes), `circle` (12-vertex closed polyline) |

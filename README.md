@@ -25,7 +25,7 @@ A free, open-source desktop application for generating pen-plotter-ready vector 
 
 - Per-layer pen colors and opacity, drag reorder, and visibility/lock controls.
 - Color separation: K-Means, Luminance, RGB, CMYK, AI Layer Separation, and **Custom Palette** (perceptually-correct Lab-space matching with Floyd-Steinberg / ordered / Atkinson dithering).
-- Built-in pen palettes — Basic 6, Copic 12, Sakura Metallic 5, Grayscale 5, RYBK 4 (traditional painter primaries), CMYKOG 6 (Hexachrome-style extended gamut), Risograph 6 — plus a palette editor for saving your own.
+- Built-in pen palettes — Basic 6, Copic 12, Sakura Metallic 5, Grayscale 5, RYBK 4 (traditional painter primaries), CMYKOG 6 (Hexachrome-style extended gamut), Risograph 6, Stabilo Point 88 (20), Sakura Micron 8, Earth Tones 6, Pastel 6, Neon 5, Skin Tones 6 — plus a palette editor for saving your own.
 - "Skip near-white layer" drops the background after AI background removal so K-Means / Luminance / Custom Palette don't leave a stray white-pen layer.
 
 ### Mask painting
