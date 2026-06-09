@@ -91,7 +91,7 @@ pip install -e .
 ### Optional dependencies
 
 ```bash
-pip install -e ".[fmm]"    # Fast Marching Method for topographic contours
+pip install -e ".[fmm]"    # Fast Marching Method — topographic & "Edge Hug" contours
 pip install -e ".[audio]"  # MP3/FLAC/OGG audio import (requires ffmpeg)
 pip install quickjs        # Enables the TurtleToy plugin (run JavaScript sketches)
 pip install https://cdn.evilmadscientist.com/dl/ad/public/AxiDraw_API.zip  # Direct AxiDraw USB control
