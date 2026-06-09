@@ -394,7 +394,9 @@ class TestFlowImageGenerator:
             "seed": 0,
         }
         result = self.gen.generate(params, self.canvas)
-        assert len(result) == 10, "Squiggle should produce one polyline per scan line"
+        # Squiggle line count comes from spacing (not a num_lines param), so just
+        # assert it produced scan lines.
+        assert len(result) > 0, "Squiggle should produce scan lines"
         assert all(len(p) >= 2 for p in result)
 
     def test_output_within_bounds_squiggle(self):
@@ -478,7 +480,7 @@ class TestFlowImageGenerator:
         params = self.gen.get_parameters()
         param_names = [p.name for p in params]
         assert "mode" in param_names
-        assert "num_lines" in param_names
+        assert "seed_spacing_mm" in param_names  # flow seeding (replaced num_lines)
         assert "step_size_mm" in param_names
         assert "amplitude_mm" in param_names
         assert "frequency" in param_names
@@ -494,8 +496,10 @@ class TestFlowImageGenerator:
         assert ws.visible_when == {"mode": ["squiggle"]}
 
     def test_all_presets_include_wave_spread(self):
-        """Every preset must contain the wave_spread key."""
+        """Every squiggle preset must contain the wave_spread key."""
         for preset in self.gen.get_presets():
+            if preset.params.get("mode") != "squiggle":
+                continue  # wave_spread is squiggle-only; flow presets omit it
             assert "wave_spread" in preset.params, (
                 f"Preset '{preset.name}' is missing 'wave_spread'"
             )
@@ -697,7 +701,6 @@ class TestFlowImageGenerator:
 
         positions = _compute_squiggle_y_positions(
             img,
-            num_lines=50,
             draw_y1=draw_y1,
             draw_y2=draw_y2,
             draw_h=draw_h,
@@ -753,7 +756,6 @@ class TestFlowImageGenerator:
 
         positions = _compute_squiggle_y_positions(
             img,
-            num_lines=50,
             draw_y1=draw_y1,
             draw_y2=draw_y2,
             draw_h=draw_h,
@@ -871,15 +873,19 @@ class TestFlowImageGenerator:
             assert name in param_names, f"Parameter '{name}' missing from get_parameters()"
 
     def test_all_presets_include_line_spacing(self):
-        """Every preset must contain the line_spacing key."""
+        """Every squiggle preset must contain the line_spacing key."""
         for preset in self.gen.get_presets():
+            if preset.params.get("mode") != "squiggle":
+                continue  # line_spacing is squiggle-only; flow presets omit it
             assert "line_spacing" in preset.params, (
                 f"Preset '{preset.name}' is missing 'line_spacing'"
             )
 
     def test_all_presets_include_displacement_variation(self):
-        """Every preset must contain the displacement_variation key."""
+        """Every squiggle preset must contain the displacement_variation key."""
         for preset in self.gen.get_presets():
+            if preset.params.get("mode") != "squiggle":
+                continue  # displacement_variation is squiggle-only
             assert "displacement_variation" in preset.params, (
                 f"Preset '{preset.name}' is missing 'displacement_variation'"
             )
@@ -909,7 +915,7 @@ class TestFlowImageGenerator:
         assert "Sketchy Grouped Strokes" in presets
         p = presets["Sketchy Grouped Strokes"]
         assert p.params["line_spacing"] == "Grouped"
-        assert p.params["displacement_variation"] == 0.6
+        assert p.params["displacement_variation"] == 0.85
 
     def test_sketchy_grouped_strokes_preset_generates_output(self):
         """'Sketchy Grouped Strokes' preset should produce valid polylines."""
@@ -944,7 +950,6 @@ class TestFlowImageGenerator:
         p = presets["Wild Lines"]
         assert p.params["line_spacing"] == "Uniform"
         assert p.params["displacement_variation"] == 1.0
-        assert p.params["num_lines"] == 80
 
     def test_wild_lines_preset_generates_output(self):
         """'Wild Lines' preset should produce valid polylines."""
@@ -956,12 +961,12 @@ class TestFlowImageGenerator:
         assert all(len(poly) >= 2 for poly in result)
 
     def test_loose_sketch_preset_exists(self):
-        """'Loose Sketch' preset should exist with Grouped spacing and skip_background=True."""
+        """'Loose Sketch' is now a flow preset with background skipping."""
         presets = {p.name: p for p in self.gen.get_presets()}
         assert "Loose Sketch" in presets
         p = presets["Loose Sketch"]
-        assert p.params["line_spacing"] == "Grouped"
-        assert p.params["group_size"] == 2
+        assert p.params["mode"] == "flow"
+        assert p.params["seed_spacing_mm"] == 3.0
         assert p.params["skip_background"] is True
 
     def test_loose_sketch_preset_generates_output(self):
@@ -4953,10 +4958,10 @@ class TestContourGeneratorFMMRenderModes:
         assert p["mode"] == "FMM Topographic"
         assert p["fmm_render_mode"] == "Wave"
         assert p["fmm_line_spacing"] == "Adaptive"
-        assert p["fmm_min_spacing_mm"] == 0.5
-        assert p["fmm_max_spacing_mm"] == 6.0
-        assert p["fmm_amplitude_mm"] == 5.0
-        assert p["fmm_frequency"] == 6.0
+        assert p["fmm_min_spacing_mm"] == 0.4
+        assert p["fmm_max_spacing_mm"] == 8.0
+        assert p["fmm_amplitude_mm"] == 7.0
+        assert p["fmm_frequency"] == 8.0
 
     def test_fmm_grouped_wave_preset_params(self):
         """'FMM Grouped Wave' preset must use FMM Topographic + Wave + Grouped spacing."""
@@ -4965,12 +4970,12 @@ class TestContourGeneratorFMMRenderModes:
         assert p["mode"] == "FMM Topographic"
         assert p["fmm_render_mode"] == "Wave"
         assert p["fmm_line_spacing"] == "Grouped"
-        assert p["fmm_group_size"] == 3
-        assert p["fmm_group_gap_mm"] == 5.0
-        assert p["fmm_group_intra_spacing_mm"] == 0.6
-        assert p["fmm_amplitude_mm"] == 4.0
+        assert p["fmm_group_size"] == 4
+        assert p["fmm_group_gap_mm"] == 10.0
+        assert p["fmm_group_intra_spacing_mm"] == 0.5
+        assert p["fmm_amplitude_mm"] == 6.0
         assert p["fmm_frequency"] == 8.0
-        assert p["fmm_displacement_variation"] == 0.4
+        assert p["fmm_displacement_variation"] == 0.5
 
     def test_fmm_adaptive_wave_preset_generates_output(self):
         """'FMM Adaptive Wave' preset must produce non-empty polylines on a gradient image."""

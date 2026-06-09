@@ -839,7 +839,8 @@ class TestSafeXmlId:
 
     def test_multiple_spaces_collapsed(self):
         from plottter.export.axidraw import _safe_xml_id
-        assert _safe_xml_id("Layer   A") == "Layer___A"
+        # Runs of underscores are collapsed to a single one.
+        assert _safe_xml_id("Layer   A") == "Layer_A"
 
     def test_xml_special_chars_replaced(self):
         from plottter.export.axidraw import _safe_xml_id
@@ -874,39 +875,48 @@ class TestSafeXmlId:
         assert "*" not in result
 
 
+def _make_axidraw_project() -> Project:
+    """A minimal project for constructing AxiDrawDialog (which now requires one)."""
+    proj = Project(name="T", canvas=Canvas.from_preset("A4"))
+    layer = Layer(name="L", color="#000000")
+    layer.paths = [[(0.0, 0.0), (10.0, 10.0)]]
+    proj.add_layer(layer)
+    return proj
+
+
 class TestAxiDrawDialog:
     """AxiDrawDialog constructs without error and exposes correct UI."""
 
     def test_dialog_can_be_constructed(self, qapp, qtbot):
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
-        dialog = AxiDrawDialog()
+        dialog = AxiDrawDialog(_make_axidraw_project())
         qtbot.addWidget(dialog)
         assert dialog is not None
 
     def test_preview_checkbox_present(self, qapp, qtbot):
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
-        dialog = AxiDrawDialog()
+        dialog = AxiDrawDialog(_make_axidraw_project())
         qtbot.addWidget(dialog)
         assert hasattr(dialog, "_preview_check")
         assert dialog._preview_check is not None
 
     def test_speed_controls_present(self, qapp, qtbot):
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
-        dialog = AxiDrawDialog()
+        dialog = AxiDrawDialog(_make_axidraw_project())
         qtbot.addWidget(dialog)
         assert hasattr(dialog, "_speed_pendown")
         assert hasattr(dialog, "_speed_penup")
 
     def test_pen_position_controls_present(self, qapp, qtbot):
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
-        dialog = AxiDrawDialog()
+        dialog = AxiDrawDialog(_make_axidraw_project())
         qtbot.addWidget(dialog)
         assert hasattr(dialog, "_pen_pos_down")
         assert hasattr(dialog, "_pen_pos_up")
 
     def test_settings_dict_has_required_keys(self, qapp, qtbot):
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
-        dialog = AxiDrawDialog()
+        dialog = AxiDrawDialog(_make_axidraw_project())
         qtbot.addWidget(dialog)
         settings = dialog._build_settings()
         required_keys = {
@@ -923,7 +933,7 @@ class TestAxiDrawDialog:
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
         from plottter.export import axidraw as ax_mod
         with patch.object(ax_mod, "check_axidraw_available", return_value=True):
-            dialog = AxiDrawDialog()
+            dialog = AxiDrawDialog(_make_axidraw_project())
             qtbot.addWidget(dialog)
         # When axidraw IS available, preview should be unchecked by default
         assert dialog._preview_check.isChecked() is False
@@ -933,20 +943,20 @@ class TestAxiDrawDialog:
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
         from plottter.export import axidraw as ax_mod
         with patch.object(ax_mod, "check_axidraw_available", return_value=False):
-            dialog = AxiDrawDialog()
+            dialog = AxiDrawDialog(_make_axidraw_project())
             qtbot.addWidget(dialog)
         assert dialog._preview_check.isChecked() is True
 
     def test_model_combo_has_entries(self, qapp, qtbot):
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
-        dialog = AxiDrawDialog()
+        dialog = AxiDrawDialog(_make_axidraw_project())
         qtbot.addWidget(dialog)
         assert hasattr(dialog, "_model_combo")
         assert dialog._model_combo.count() > 0
 
     def test_window_title(self, qapp, qtbot):
         from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
-        dialog = AxiDrawDialog()
+        dialog = AxiDrawDialog(_make_axidraw_project())
         qtbot.addWidget(dialog)
         assert "AxiDraw" in dialog.windowTitle()
 

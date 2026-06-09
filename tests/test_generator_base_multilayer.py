@@ -151,6 +151,11 @@ class TestMultilayerGenerationFinished:
         obj._controller = mock_controller
         obj._worker = None
         obj._generator = None
+        # The finish handler runs paths through _maybe_clip_to_canvas, which reads
+        # this checkbox; stub it as off so paths pass through unchanged.
+        clip_check = MagicMock()
+        clip_check.isChecked.return_value = False
+        obj._clip_to_canvas_check = clip_check
         return obj, mock_controller, added_layers
 
     def test_calls_add_layer_for_each_spec(self):
