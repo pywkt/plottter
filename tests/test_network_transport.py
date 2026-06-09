@@ -139,3 +139,104 @@ def test_pause_then_resume_round_trip(daemon):
     resumed = t.plot_svg(outcome.resume_svg, {}, resume=True)
     assert resumed.paused is False
     assert resumed.resume_svg is None
+
+
+def _pause_a_job(t):
+    """Start a plot on *t* and pause it; return its job-id resume token."""
+    box: dict = {}
+
+    def grab(handle):
+        box["h"] = handle
+
+    def pause_soon():
+        for _ in range(100):
+            if "h" in box:
+                time.sleep(0.15)
+                box["h"].transmit_pause_request()
+                return
+            time.sleep(0.02)
+
+    th = threading.Thread(target=pause_soon)
+    th.start()
+    outcome = t.plot_svg(SVG1, {}, on_ready=grab)
+    th.join(timeout=5)
+    assert outcome.paused and outcome.resume_svg
+    return outcome.resume_svg
+
+
+def test_active_job_and_cancel_free_the_device(daemon):
+    """A paused job is reported by active_job() and cleared by cancel_job()."""
+    url, token = daemon
+    t = NetworkTransport(url, token, poll_interval=0.1)
+    job_id = _pause_a_job(t)
+
+    active = t.active_job()
+    assert active is not None
+    assert active.state == "paused"
+    assert active.job_id == job_id
+
+    # Cancelling stops the job on the device so it's no longer busy.
+    t.cancel_job(job_id)
+    for _ in range(50):
+        if t.active_job() is None:
+            break
+        time.sleep(0.05)
+    assert t.active_job() is None
+    assert t.health().busy is False
+
+    # A fresh plot is accepted now instead of 409'ing.
+    assert t.plot_svg(SVG1, {}).paused is False
+
+
+def test_active_job_none_when_idle(daemon):
+    url, token = daemon
+    assert NetworkTransport(url, token).active_job() is None
+
+
+def test_cancel_job_is_best_effort_on_bad_token(daemon):
+    """cancel_job never raises, even if the control call is rejected."""
+    url, _ = daemon
+    NetworkTransport(url, token="wrong").cancel_job("job_0001")  # no exception
+    NetworkTransport(url, token=None).cancel_job(None)           # no-op, no exception
+
+
+def test_poll_tolerates_outage_then_returns_recoverable_pause():
+    """A sustained polling outage surfaces as a pause carrying the job token.
+
+    The daemon owns the plot and keeps going, so the client must not dead-end —
+    it returns a paused outcome so the dialog can Resume (re-attach) or Stop.
+    """
+    t = NetworkTransport("http://daemon.invalid", token=None, poll_interval=0.01, reconnect_grace=0.0)
+
+    def fake_request(method, path, body=None, auth=True):
+        if method == "POST" and path == "/jobs":
+            return 200, {"job_id": "job_0001"}
+        if method == "GET" and path.startswith("/jobs/"):
+            raise RemotePlotterError("connection lost")
+        return 200, {}
+
+    t._request = fake_request  # type: ignore[assignment]
+    outcome = t.plot_svg(SVG1, {})
+    assert outcome.paused is True
+    assert outcome.resume_svg == "job_0001"
+
+
+def test_poll_recovers_from_brief_blip():
+    """A short blip within the grace window is invisible — the plot completes."""
+    t = NetworkTransport("http://daemon.invalid", token=None, poll_interval=0.01, reconnect_grace=5.0)
+    calls = {"n": 0}
+
+    def fake_request(method, path, body=None, auth=True):
+        if method == "POST" and path == "/jobs":
+            return 200, {"job_id": "job_0001"}
+        if method == "GET" and path.startswith("/jobs/"):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise RemotePlotterError("brief blip")  # tolerated
+            return 200, {"state": "done", "percent": 100.0}
+        return 200, {}
+
+    t._request = fake_request  # type: ignore[assignment]
+    outcome = t.plot_svg(SVG1, {})
+    assert outcome.paused is False
+    assert outcome.resume_svg is None

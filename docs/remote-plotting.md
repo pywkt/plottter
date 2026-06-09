@@ -98,10 +98,23 @@ Everything in the dialog now talks to the remote plotter:
   plotter, so set your pen-up/down positions just as you would over USB.
 - **Plot Now** sends the job. Progress updates as it plots; you can then **disconnect or step
   away** — the Pi finishes the plot on its own.
-- **Pause / Resume** and **Stop** work mid-plot.
+- **Pause / Resume** and **Stop** work mid-plot. **Stop** also clears the job on the device, so
+  use it (rather than just closing) when you don't intend to resume.
 - **Multi-color (pen swap):** with "Pause between layers" enabled, each layer is sent as its
   own job and you're prompted to swap the pen between them — you'll need to be present for the
   swaps, as with USB.
+
+### Reconnecting after a dropped connection
+
+Because the device owns the job, a brief Wi-Fi blip is invisible — Plottter keeps following the
+plot once the connection returns. If the connection drops for longer, the plot keeps running on
+the device and the dialog treats it as paused so you can pick it back up.
+
+To reconnect, just **reopen Plot with AxiDraw** (or hit **Refresh**). If the device still has a
+job, the dialog detects it and offers to **Resume** (if it paused) or **Stop** it — so a plot
+left paused after a disconnect never strands the plotter as "busy." You should no longer need to
+restart the daemon to get unstuck. If you ever do see a *busy* message starting a new plot,
+Plottter will offer to stop the leftover job for you.
 
 ---
 

@@ -45,6 +45,19 @@ class ConnectionStatus:
     busy: bool = False         # a plot is currently running (network only for now)
 
 
+@dataclass
+class ActiveJob:
+    """A job already in progress on the device, for reconnect / reconcile.
+
+    Surfaced by :meth:`PlotterTransport.active_job` so the dialog can adopt a
+    plot that's already running (or left paused) on a networked device instead
+    of starting a fresh one that would be rejected as busy.
+    """
+
+    job_id: str
+    state: str  # "plotting" | "paused"
+
+
 class PlotterTransport(ABC):
     """Where the plotter lives + how to drive it. Implemented by USB and network."""
 
@@ -75,6 +88,23 @@ class PlotterTransport(ABC):
     @abstractmethod
     def run_manual(self, command: str, settings: dict) -> None:
         """Run a one-off manual command (raise_pen / lower_pen / disable_xy / …)."""
+
+    def cancel_job(self, job_token: Optional[str]) -> None:
+        """Abandon a paused / in-flight job so the device frees up.
+
+        No-op for USB (a paused USB plot is just a local resume SVG that the
+        caller drops). The network transport tells the daemon to stop the job so
+        it doesn't stay busy until a restart.
+        """
+        return None
+
+    def active_job(self) -> "Optional[ActiveJob]":
+        """Return a job already running on the device, or ``None``.
+
+        Only meaningful for the network transport; USB has no out-of-band job
+        the dialog could reconnect to, so it always returns ``None``.
+        """
+        return None
 
 
 class LocalUsbTransport(PlotterTransport):
@@ -182,11 +212,15 @@ class NetworkTransport(PlotterTransport):
         token: Optional[str] = None,
         poll_interval: float = 0.5,
         timeout: float = 10.0,
+        reconnect_grace: float = 15.0,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token or None
         self.poll_interval = poll_interval
         self.timeout = timeout
+        # How long to tolerate an unreachable daemon mid-plot before treating the
+        # outage as a recoverable pause (the daemon keeps plotting on its own).
+        self.reconnect_grace = reconnect_grace
 
     # -- low-level HTTP --
 
@@ -258,6 +292,30 @@ class NetworkTransport(PlotterTransport):
         if status != 200:
             raise RemotePlotterError(data.get("error", f"manual command failed ({status})"))
 
+    def cancel_job(self, job_token: Optional[str]) -> None:
+        """Stop a job on the daemon so the device is freed (best-effort)."""
+        if not job_token:
+            return
+        try:
+            self._control(job_token, "stop")
+        except Exception:
+            # Cancelling is best-effort: if the daemon is unreachable or the job
+            # is already gone there's nothing left to free.
+            pass
+
+    def active_job(self) -> Optional[ActiveJob]:
+        """Report a plot already running / paused on the device, via /health."""
+        try:
+            status, data = self._request("GET", "/health", auth=False)
+        except Exception:
+            return None
+        if status == 200 and data.get("ok"):
+            state = data.get("state")
+            job_id = data.get("current_job")
+            if state in ("plotting", "paused") and job_id:
+                return ActiveJob(job_id=str(job_id), state=str(state))
+        return None
+
     def plot_svg(
         self,
         svg_data: str,
@@ -287,9 +345,28 @@ class NetworkTransport(PlotterTransport):
         # "paused" state until we've seen the job actually running again.
         saw_active = not resume
         grace_deadline = time.monotonic() + 3.0 if resume else 0.0
+        # The daemon owns the job and keeps plotting even if this client briefly
+        # loses the network (the whole point of remote plotting). So a failed
+        # status poll is tolerated for ``reconnect_grace`` seconds rather than
+        # aborting the plot view; only a sustained outage gives up.
+        unreachable_since: Optional[float] = None
 
         while True:
-            status, data = self._request("GET", f"/jobs/{job_id}")
+            try:
+                status, data = self._request("GET", f"/jobs/{job_id}")
+            except RemotePlotterError:
+                now = time.monotonic()
+                if unreachable_since is None:
+                    unreachable_since = now
+                if now - unreachable_since >= self.reconnect_grace:
+                    # Surface the outage as a recoverable pause carrying the job
+                    # token, so the dialog offers Resume (re-attach) / Stop
+                    # instead of dead-ending and stranding the job.
+                    return PlotOutcome(paused=True, resume_svg=job_id)
+                time.sleep(self.poll_interval)
+                continue
+            unreachable_since = None
+
             if status != 200:
                 raise RemotePlotterError(data.get("error", f"status query failed ({status})"))
 

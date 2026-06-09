@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import threading
+import time
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -163,3 +164,63 @@ def test_preferences_test_connection_reports_device(qtbot, daemon):
     dlg._on_test_remote_plotter()
     assert dlg._remote_plotter_status.text().startswith("✓")
     assert "network" in dlg._remote_plotter_status.text()
+
+
+# ---------------------------------------------------------------------------
+# Reconnect / recovery: a paused job on the device must be adoptable + stoppable
+# ---------------------------------------------------------------------------
+
+def _pause_a_remote_job(url, token):
+    """Submit a job to the daemon and pause it; return its resume token (job id)."""
+    from plottter.export.transport import NetworkTransport
+
+    t = NetworkTransport(url, token, poll_interval=0.1)
+    box = {}
+
+    def grab(handle):
+        box["h"] = handle
+
+    def pause_soon():
+        for _ in range(100):
+            if "h" in box:
+                time.sleep(0.15)
+                box["h"].transmit_pause_request()
+                return
+            time.sleep(0.02)
+
+    th = threading.Thread(target=pause_soon)
+    th.start()
+    outcome = t.plot_svg('<svg xmlns="http://www.w3.org/2000/svg"></svg>', {}, on_ready=grab)
+    th.join(timeout=5)
+    assert outcome.paused and outcome.resume_svg
+    return outcome.resume_svg
+
+
+def test_dialog_adopts_and_stops_paused_remote_job(qtbot, daemon):
+    """Opening the dialog with a paused job on the device adopts it; Stop frees it.
+
+    This is the fix for the 'plotter busy' lockup: a job left paused (e.g. after
+    a dropped Wi-Fi connection) is discovered on open and can be cancelled
+    without restarting the daemon.
+    """
+    from plottter.gui.dialogs.axidraw_dialog import AxiDrawDialog
+
+    url, token = daemon
+    job_id = _pause_a_remote_job(url, token)
+    _set_remote(url, token)
+
+    dlg = AxiDrawDialog(_make_project())
+    qtbot.addWidget(dlg)
+    # Reconcile on open adopted the paused job.
+    assert dlg._resume_svg == job_id
+    assert dlg._stop_btn.isEnabled() is True
+
+    # Stop it -> daemon clears the job, dialog returns to idle.
+    dlg._on_stop()
+    for _ in range(60):
+        if dlg._transport.active_job() is None:
+            break
+        time.sleep(0.05)
+    assert dlg._transport.active_job() is None
+    assert dlg._resume_svg is None
+    assert dlg._plot_btn.isEnabled() is True

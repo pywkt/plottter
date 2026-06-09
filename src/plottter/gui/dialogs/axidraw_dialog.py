@@ -277,6 +277,9 @@ class AxiDrawDialog(QDialog):
         self._worker: QThread | None = None
         self._is_multilayer_worker = False
         self._resume_svg: str | None = None
+        # True between a Stop request and the plot actually halting, so the
+        # paused-callback frees the device instead of offering Resume.
+        self._stopping = False
         # The active plotter transport (USB today; network later). All plot /
         # manual / availability calls route through this.
         from plottter.export.transport import LocalUsbTransport
@@ -657,6 +660,16 @@ class AxiDrawDialog(QDialog):
         self._resume_btn.clicked.connect(self._on_resume)
         btn_row.addWidget(self._resume_btn)
 
+        self._stop_btn = QPushButton("Stop")
+        self._stop_btn.setToolTip(
+            "Stop the plot and free the plotter. For a remote (network) plot this "
+            "also clears the job on the device so it doesn't stay busy — use this "
+            "instead of just closing if you don't intend to resume."
+        )
+        self._stop_btn.setVisible(False)
+        self._stop_btn.clicked.connect(self._on_stop)
+        btn_row.addWidget(self._stop_btn)
+
         self._cancel_btn = QPushButton("Close")
         self._cancel_btn.clicked.connect(self.reject)
         btn_row.addWidget(self._cancel_btn)
@@ -827,6 +840,11 @@ class AxiDrawDialog(QDialog):
         self._check_availability()
 
     def _check_availability(self) -> None:
+        self._refresh_status_label()
+        self._maybe_reconcile_active_job()
+
+    def _refresh_status_label(self) -> None:
+        """Update the connection headline + hint from the transport's health."""
         status = self._transport.health()
         self._status_label.setText(self._format_status_text(status))
         if status.connected:
@@ -845,6 +863,37 @@ class AxiDrawDialog(QDialog):
                 "Plotting via USB. Set up wireless plotting in "
                 "<b>Preferences → Remote Plotter</b>."
             )
+
+    def _maybe_reconcile_active_job(self) -> None:
+        """Adopt a plot already running / paused on the device.
+
+        After a dropped connection (or a pause we walked away from) the daemon
+        keeps the job, which would make every new Plot Now / manual command come
+        back 'busy'. On open and on Refresh we detect that job and switch the
+        dialog into the matching state so the user can Resume or Stop it —
+        instead of being stuck until the daemon restarts.
+        """
+        if self._worker is not None and self._worker.isRunning():
+            return
+        try:
+            active = self._transport.active_job()
+        except Exception:
+            active = None
+        if active is None:
+            return
+        self._resume_svg = active.job_id
+        if active.state == "paused":
+            self._set_plot_ui_state("paused")
+            self._status_label.setText(
+                "● A paused plot is on the device — Resume to continue, or Stop to cancel it."
+            )
+        else:  # plotting
+            self._set_plot_ui_state("adopted")
+            self._status_label.setText(
+                "● A plot is running on the device. Stop it to cancel, or just "
+                "close this dialog — the device finishes on its own."
+            )
+        self._status_label.setStyleSheet("color: #b26a00;")
 
     @staticmethod
     def _format_status_text(status) -> str:
@@ -908,6 +957,7 @@ class AxiDrawDialog(QDialog):
         pen_swap = self._pause_check.isChecked() and len(layers) >= 2
 
         self._resume_svg = None
+        self._stopping = False
         self._progress_bar.setValue(0)
         self.plot_started.emit()
 
@@ -923,7 +973,9 @@ class AxiDrawDialog(QDialog):
             worker.error.connect(self._on_plot_error)
             self._worker = worker
             self._is_multilayer_worker = True
-            self._set_plot_ui_state("plotting", allow_pause=False)
+            # Pen-swap mode does its own between-layer pausing; no software
+            # pause/resume/stop offered here.
+            self._set_plot_ui_state("plotting", allow_pause=False, allow_stop=False)
             worker.start()
         else:
             from plottter.export.axidraw import project_to_svg_string
@@ -942,20 +994,33 @@ class AxiDrawDialog(QDialog):
     # Pause / resume
     # ------------------------------------------------------------------
 
-    def _set_plot_ui_state(self, state: str, allow_pause: bool = True) -> None:
-        """Toggle button visibility/enabled for 'idle', 'plotting', 'paused'."""
+    def _set_plot_ui_state(
+        self, state: str, allow_pause: bool = True, allow_stop: bool = True
+    ) -> None:
+        """Toggle button visibility/enabled for the plot lifecycle states.
+
+        States: 'idle', 'plotting', 'paused', and 'adopted' — the last meaning a
+        plot is running on a networked device that this dialog didn't start (we
+        can Stop it but can't pause/resume without the live handle).
+        """
         plotting = state == "plotting"
         paused = state == "paused"
         idle = state == "idle"
+        adopted = state == "adopted"
         self._plot_btn.setEnabled(idle)
-        # Manual controls are usable while idle or paused, not while plotting.
-        self._set_manual_buttons_enabled(not plotting)
+        # Manual controls are usable while idle or paused; not while a plot is
+        # running (ours or the device's — it would be rejected as busy).
+        self._set_manual_buttons_enabled(idle or paused)
         self._progress_bar.setVisible(plotting or paused)
         self._pause_btn.setVisible(plotting and allow_pause)
         self._pause_btn.setEnabled(plotting and allow_pause)
         self._pause_btn.setText("Pause")
         self._resume_btn.setVisible(paused)
         self._resume_btn.setEnabled(paused)
+        show_stop = (plotting or paused or adopted) and allow_stop
+        self._stop_btn.setVisible(show_stop)
+        self._stop_btn.setEnabled(show_stop)
+        self._stop_btn.setText("Stop")
 
     def _on_pause(self) -> None:
         """Ask the running plot worker to pause."""
@@ -965,9 +1030,49 @@ class AxiDrawDialog(QDialog):
             self._pause_btn.setEnabled(False)
             self._pause_btn.setText("Pausing…")
 
+    def _on_stop(self) -> None:
+        """Stop the plot and free the plotter.
+
+        If a plot is actively running we ask it to halt at the next safe point
+        (like Pause); ``_on_plot_paused`` then sees ``_stopping`` and frees the
+        device rather than offering Resume. If the job is already paused (or was
+        adopted on reconnect), we cancel it on the device directly.
+        """
+        worker = self._worker
+        if isinstance(worker, _PlotWorker) and worker.isRunning():
+            self._stopping = True
+            worker.pause()
+            self._pause_btn.setEnabled(False)
+            self._stop_btn.setEnabled(False)
+            self._stop_btn.setText("Stopping…")
+            return
+        self._finish_stop()
+
+    def _finish_stop(self) -> None:
+        """Cancel the job on the device (if any) and reset to idle."""
+        token = self._resume_svg
+        self._resume_svg = None
+        self._stopping = False
+        if token:
+            try:
+                self._transport.cancel_job(token)
+            except Exception:
+                pass
+        self._set_plot_ui_state("idle")
+        self.plot_finished.emit()
+        # Refresh the connection headline but do NOT reconcile here: a job we
+        # just stopped may still report "plotting" for a beat while it halts,
+        # and re-adopting it would undo the Stop the user just asked for.
+        self._refresh_status_label()
+
     def _on_plot_paused(self, resume_svg: str) -> None:
         """Plot stopped early (software pause or physical button)."""
         self._resume_svg = resume_svg or None
+        if self._stopping:
+            # The user asked to Stop; the plot has now halted — free the device
+            # and reset instead of offering Resume.
+            self._finish_stop()
+            return
         if not self._resume_svg:
             # Stopped with no resume data — can't continue; reset to idle.
             self._set_plot_ui_state("idle")
@@ -1093,14 +1198,53 @@ class AxiDrawDialog(QDialog):
         )
 
     def _on_plot_error(self, msg: str) -> None:
-        self._resume_svg = None
         self._set_plot_ui_state("idle")
         self.plot_finished.emit()
         # User-cancelled plots are not really errors — use an info dialog.
         if msg == "Plot cancelled.":
+            self._resume_svg = None
             QMessageBox.information(self, "Plot Cancelled", msg)
+        elif "busy" in msg.lower():
+            # The device already has a job (e.g. one left paused after a dropped
+            # connection). Don't dead-end — offer to stop it so a new plot can
+            # start, rather than forcing a daemon restart.
+            self._resume_svg = None
+            self._offer_stop_existing()
         else:
+            self._resume_svg = None
             QMessageBox.critical(self, "Plot Error", msg)
+
+    def _offer_stop_existing(self) -> None:
+        """On a 'busy' rejection, offer to stop the job already on the device."""
+        active = None
+        try:
+            active = self._transport.active_job()
+        except Exception:
+            active = None
+        if active is None:
+            QMessageBox.warning(
+                self,
+                "Device Busy",
+                "The remote plotter is busy, but no job could be found to stop. "
+                "Click Refresh, or restart the daemon if it persists.",
+            )
+            return
+        reply = QMessageBox.question(
+            self,
+            "Device Busy",
+            f"The device is busy with an existing {active.state} job.\n\n"
+            "Stop it so you can start a new plot?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                self._transport.cancel_job(active.job_id)
+            except Exception:
+                pass
+            self._resume_svg = None
+            self._set_plot_ui_state("idle")
+            self._check_availability()
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         worker = self._worker
