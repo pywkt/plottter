@@ -13,6 +13,41 @@ from plottter.models import Polyline
 from ._smoothing import _chaikin_smooth
 
 
+# Edge source names — seed the front from a whole image edge so the contours
+# enter parallel to it and warp around dark regions, instead of radiating from
+# a point. See ``_fmm_seed_indices``.
+_FMM_EDGE_SOURCES = ("Top Edge", "Bottom Edge", "Left Edge", "Right Edge")
+
+
+def _fmm_seed_indices(
+    source_point: str,
+    h: int,
+    w: int,
+    source_x_pct: float = 50.0,
+    source_y_pct: float = 50.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return the (rows, cols) pixel indices of the FMM source seed.
+
+    "Center"/"Custom" seed a single pixel; the four edge sources seed an entire
+    row or column so the marching front enters as a straight line. The first
+    index pair doubles as the representative source point for the Radial mode.
+    """
+    if source_point == "Top Edge":
+        return np.zeros(w, dtype=int), np.arange(w)
+    if source_point == "Bottom Edge":
+        return np.full(w, h - 1, dtype=int), np.arange(w)
+    if source_point == "Left Edge":
+        return np.arange(h), np.zeros(h, dtype=int)
+    if source_point == "Right Edge":
+        return np.arange(h), np.full(h, w - 1, dtype=int)
+    if source_point == "Center":
+        return np.array([h // 2]), np.array([w // 2])
+    # Custom: a single (possibly clamped) pixel from the percentage controls.
+    sx = int(np.clip(source_x_pct / 100.0 * (w - 1), 0, w - 1))
+    sy = int(np.clip(source_y_pct / 100.0 * (h - 1), 0, h - 1))
+    return np.array([sy]), np.array([sx])
+
+
 def _compute_fmm_field(
     gray: np.ndarray,
     source_point: str,
@@ -47,19 +82,20 @@ def _compute_fmm_field(
         speed = normalized.copy()
     speed = np.maximum(speed, speed_floor)
 
-    # Determine source pixel
-    if source_point == "Center":
-        sy, sx = h // 2, w // 2
-    else:
-        sx = int(np.clip(source_x_pct / 100.0 * (w - 1), 0, w - 1))
-        sy = int(np.clip(source_y_pct / 100.0 * (h - 1), 0, h - 1))
+    # Determine the source seed. "Center"/"Custom" seed from a single pixel;
+    # the edge sources seed the whole edge, so the front enters as a straight
+    # line and the isolines bunch / wrap around dark regions ("hug" them) as
+    # they advance — rather than radiating from a point.
+    seed_rows, seed_cols = _fmm_seed_indices(source_point, h, w, source_x_pct, source_y_pct)
+    # Representative source pixel (only consumed by the Radial render mode).
+    sy, sx = int(seed_rows[0]), int(seed_cols[0])
 
     # Compute T via skfmm or scipy fallback
     T: np.ndarray | None = None
     try:
         import skfmm  # type: ignore[import]
         phi = np.ones((h, w), dtype=np.float64)
-        phi[sy, sx] = -1.0
+        phi[seed_rows, seed_cols] = -1.0
         T = np.asarray(skfmm.travel_time(phi, speed, dx=1.0), dtype=np.float64)
     except ImportError:
         pass
@@ -67,7 +103,7 @@ def _compute_fmm_field(
     if T is None:
         from scipy.ndimage import distance_transform_edt
         source_mask = np.zeros((h, w), dtype=bool)
-        source_mask[sy, sx] = True
+        source_mask[seed_rows, seed_cols] = True
         dist = distance_transform_edt(~source_mask).astype(np.float64)
         T = dist * (1.0 - normalized + speed_floor)
 

@@ -123,13 +123,17 @@ def build_parameters() -> list[Parameter]:
         ChoiceParam(
             name="fmm_source_point",
             label="Source Point",
-            choices=["Center", "Custom"],
+            choices=["Center", "Custom", "Top Edge", "Bottom Edge", "Left Edge", "Right Edge"],
             default="Center",
             visible_when={"mode": ["FMM Topographic"]},
-            description="Origin of the FMM wave propagation — Center starts from the image center; Custom uses a point-click interaction to set a user-defined origin",
+            description="Origin of the FMM wave. Center/Custom radiate from a point; the Edge sources seed the whole edge so the wave enters as straight lines that bunch and 'hug' dark regions as they advance",
             choice_descriptions={
                 "Center": "Wave propagates from the center of the image",
                 "Custom": "Wave propagates from a user-defined source point (set via point-click on the image)",
+                "Top Edge": "Wave enters from the top as horizontal lines; they crowd and wrap around dark areas going down",
+                "Bottom Edge": "Wave enters from the bottom as horizontal lines, crowding around dark areas going up",
+                "Left Edge": "Wave enters from the left as vertical lines that hug dark areas",
+                "Right Edge": "Wave enters from the right as vertical lines that hug dark areas",
             },
         ),
         FloatParam(

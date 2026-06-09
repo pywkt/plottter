@@ -202,6 +202,46 @@ image features — like a topographic map of the image's tonal landscape.
 
 ---
 
+### FMM Topographic (travel-time contours)
+
+**Algorithm:** Contour Lines → **Mode: FMM Topographic**
+
+Instead of thresholding brightness, this mode runs a Fast Marching Method wave through
+the image, treating it as a speed map (dark = slow, light = fast). It then draws isolines
+of the wave's arrival time. Because the wave slows over dark pixels, the lines **bunch
+together and wrap around dark shapes** — a flowing, engraving-like look rather than flat
+tonal bands.
+
+| Parameter | Description |
+|-----------|-------------|
+| `Source Point` | Where the wave starts — see below |
+| `Speed Gamma` | >1 concentrates lines in dark regions; <1 in light regions |
+| `Number of Contours` | How many isolines to draw |
+| `Contour Spacing` | `Linear`, `Logarithmic`, or `Quadratic` distribution |
+| `Speed Floor` | Minimum wave speed, prevents runaway density in pure black |
+
+**Source Point** controls where the wave originates, which changes the whole character:
+
+- **Center / Custom** — the wave radiates from a point, giving concentric contours that
+  warp around features (topographic / fingerprint look). *Custom* is set by clicking on
+  the canvas.
+- **Top / Bottom / Left / Right Edge** — the wave enters from an entire edge, so the
+  contours start as straight lines **parallel to that edge** and then crowd together and
+  hug the dark parts as they cross the image. *Top Edge* gives horizontal lines that rule
+  evenly across light areas and bunch around shadows.
+
+**Preset:**
+- **Edge Hug (horizontal lines)** — Top-edge source with gamma 2.0: horizontal lines that
+  enter from the top and tightly wrap the dark regions. Try raising **Number of Contours**
+  (e.g. 60–100) for denser shading, or **Speed Gamma** for a stronger hug.
+
+> **Requires `scikit-fmm`.** Install the optional extra with `pip install -e ".[fmm]"`
+> (or `pip install scikit-fmm`). Without it the generator falls back to a crude
+> distance-based approximation that only rules lines *inside* dark shapes — the edge-entry
+> "hug" effect needs the real solver.
+
+---
+
 ### XDoG (Extended Difference of Gaussians)
 
 **Algorithm:** XDoG
