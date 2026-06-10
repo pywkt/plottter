@@ -18,12 +18,45 @@ from plottter.io.image_import import (
     apply_sharpen,
     apply_threshold,
     crop_to_aspect,
+    downscale_to_max_pixels,
     invert_image,
     load_image,
     preprocess,
     remove_background,
     to_grayscale,
 )
+
+
+class TestDownscaleToMaxPixels:
+    def test_downscales_when_over_cap(self):
+        img = np.zeros((3000, 2000, 3), dtype=np.uint8)
+        out = downscale_to_max_pixels(img, 2_000_000)
+        assert out.shape[0] * out.shape[1] <= 2_000_000
+        # aspect ratio preserved (within 1px rounding)
+        assert abs(out.shape[1] / out.shape[0] - 2000 / 3000) < 0.01
+
+    def test_passthrough_when_under_cap(self):
+        img = np.zeros((100, 100, 3), dtype=np.uint8)
+        out = downscale_to_max_pixels(img, 2_000_000)
+        assert out is img  # unchanged, not copied
+
+    def test_zero_disables_cap(self):
+        img = np.zeros((3000, 2000, 3), dtype=np.uint8)
+        out = downscale_to_max_pixels(img, 0)
+        assert out.shape == img.shape
+
+    def test_deterministic_on_dimensions(self):
+        # Two same-size images must reduce to identical dimensions so a
+        # cluster mask and its companion preprocessed image stay aligned.
+        a = downscale_to_max_pixels(np.zeros((3000, 2000, 3), np.uint8), 2_000_000)
+        b = downscale_to_max_pixels(np.zeros((3000, 2000, 3), np.uint8), 2_000_000)
+        assert a.shape == b.shape
+
+    def test_grayscale_2d_supported(self):
+        img = np.zeros((3000, 2000), dtype=np.uint8)
+        out = downscale_to_max_pixels(img, 2_000_000)
+        assert out.ndim == 2
+        assert out.shape[0] * out.shape[1] <= 2_000_000
 
 
 # ---------------------------------------------------------------------------

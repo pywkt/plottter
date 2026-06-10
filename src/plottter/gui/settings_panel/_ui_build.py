@@ -457,6 +457,30 @@ class _UIBuildMixin:
 
         color_sep_layout.addLayout(method_form)
 
+        # Luminance custom band thresholds (Luminance mode only).
+        # ``luminance_separate`` accepts explicit band boundaries; expose them
+        # so users can tune where shadows / midtones / highlights split instead
+        # of only evenly-spaced bands.  Off by default (preserves even spacing).
+        self._lum_custom_check = QCheckBox("Custom band thresholds")
+        self._lum_custom_check.setToolTip(
+            "Set the brightness boundaries between bands manually (0-255).  "
+            "When off, the 0-255 range is split into equal bands."
+        )
+        from PyQt6.QtCore import QSettings as _QS
+        _saved_lum_custom = _QS("Plottter", "Plottter").value(
+            "colorsep/lum_custom", "false"
+        )
+        self._lum_custom_check.setChecked(str(_saved_lum_custom).lower() == "true")
+        self._lum_custom_check.setVisible(False)
+        color_sep_layout.addWidget(self._lum_custom_check)
+
+        self._lum_threshold_widget = QWidget()
+        self._lum_threshold_layout = QFormLayout(self._lum_threshold_widget)
+        self._lum_threshold_layout.setContentsMargins(0, 0, 0, 0)
+        self._lum_threshold_spins: list = []
+        color_sep_layout.addWidget(self._lum_threshold_widget)
+        self._lum_threshold_widget.setVisible(False)
+
         # Channel checkboxes (RGB / CMYK mode)
         self._channel_check_widget = QWidget()
         channel_layout = QVBoxLayout(self._channel_check_widget)
@@ -568,6 +592,25 @@ class _UIBuildMixin:
         )
         color_sep_layout.addWidget(self._skip_white_layer_check)
 
+        # "Downsample large images" — caps the resolution used for separation
+        # (and therefore the masks fed to the line generators).  Separation
+        # masks don't need full photographic resolution and the line
+        # generators resample to plot density anyway, so this is a large speed
+        # win on big photos with negligible quality impact.  On by default.
+        self._downsample_check = QCheckBox("Downsample large images (faster)")
+        self._downsample_check.setToolTip(
+            "Cap the image resolution used for separation at ~2 megapixels.  "
+            "Greatly speeds up separation and Generate Lines on large photos "
+            "with negligible quality loss (masks are resampled to plot "
+            "density regardless).  Uncheck to separate at full resolution."
+        )
+        _saved_downsample = _QS("Plottter", "Plottter").value(
+            "colorsep/downsample", "true"
+        )
+        self._downsample_check.setChecked(str(_saved_downsample).lower() == "true")
+        self._downsample_check.toggled.connect(self._on_downsample_toggled)
+        color_sep_layout.addWidget(self._downsample_check)
+
         # Separate and Generate Lines buttons
         self._separate_btn = QPushButton("Separate into Layers")
         self._separate_btn.clicked.connect(self._on_separate)
@@ -599,6 +642,10 @@ class _UIBuildMixin:
         # user to re-click Separate Into Layers.
         self._cmyk_k_amount_spin.valueChanged.connect(self._on_cmyk_k_amount_changed)
         self._palette_edit_btn.clicked.connect(self._on_edit_palette)
+        # Luminance custom thresholds: toggle reveals the boundary spinboxes;
+        # changing the band count rebuilds them.
+        self._lum_custom_check.toggled.connect(self._on_lum_custom_toggled)
+        self._color_sep_num_colors_spin.valueChanged.connect(self._on_lum_bands_changed)
         # Initialise label/range for the current (default) method
         self._on_color_sep_method_changed(self._color_sep_method_combo.currentText())
 

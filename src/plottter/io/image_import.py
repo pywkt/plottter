@@ -210,6 +210,37 @@ def crop_to_aspect(image: np.ndarray, width: float, height: float) -> np.ndarray
     return cropped
 
 
+def downscale_to_max_pixels(image: np.ndarray, max_pixels: int) -> np.ndarray:
+    """Downscale *image* so it has at most *max_pixels* pixels, preserving aspect.
+
+    Returns the input unchanged when it already fits (or when ``max_pixels``
+    is <= 0, which disables the cap).  The output dimensions depend only on
+    the input dimensions and *max_pixels*, so two images of the same size are
+    always reduced to the same size — color-separation relies on this so a
+    cluster mask and its companion preprocessed image stay aligned.
+
+    Used to bound the cost of color separation and the line generators that
+    run on each separated mask: separation masks don't need full photographic
+    resolution, and the line generators resample to plot density anyway.
+    """
+    h, w = image.shape[:2]
+    if max_pixels <= 0 or h * w <= max_pixels:
+        return image
+
+    import math
+
+    # Floor (not round) so the result never exceeds max_pixels.
+    scale = math.sqrt(max_pixels / float(h * w))
+    new_w = max(1, int(w * scale))
+    new_h = max(1, int(h * scale))
+
+    from PIL import Image as PILImage
+
+    pil = PILImage.fromarray(image)
+    pil = pil.resize((new_w, new_h), PILImage.LANCZOS)
+    return np.array(pil, dtype=image.dtype)
+
+
 # ---------------------------------------------------------------------------
 # Combined pipeline
 # ---------------------------------------------------------------------------

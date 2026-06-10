@@ -292,26 +292,37 @@ class TestPalettePickerPopulation:
 
 
 class TestDispatch:
+    # The separation work now runs in a worker thread via the pure
+    # _compute_separation() helper, so these "called with" tests exercise that
+    # function directly (synchronous, no event loop needed).  The no-palette
+    # guard still lives in _on_separate, so that test drives the panel.
+
     def test_palette_separate_called_with_pen_palette(self):
-        """_on_separate must call palette_separate with the selected PenPalette."""
+        """_compute_separation must call palette_separate with the selected PenPalette."""
+        from plottter.gui.settings_panel._colorsep import _compute_separation
+
         basic6 = get_preset("Basic 6")
         raw_rgb = np.full((4, 4, 3), 128, dtype=np.uint8)
-        panel = _DispatchPanel(raw_rgb, basic6)
 
-        # Build fake results shaped like palette_separate output
         fake_mask = np.zeros((4, 4), dtype=np.uint8)
         fake_results = [(fake_mask, color) for color in basic6.colors]
 
         with patch(
-            "plottter.color.palette_separator.palette_separate",
+            "plottter.color.palette_separate",
             return_value=fake_results,
         ) as mock_sep:
-            # Also patch the import inside _colorsep so the mock is used
-            with patch(
-                "plottter.color.palette_separate",
-                mock_sep,
-            ):
-                panel._on_separate()
+            _compute_separation(
+                "Custom Palette",
+                source=raw_rgb,
+                params={},
+                max_px=0,
+                num=3,
+                thresholds=None,
+                enabled_channels={},
+                k_amount=0.3,
+                dither="floyd-steinberg",
+                palette=basic6,
+            )
 
         assert mock_sep.called, "palette_separate was not called"
         args, kwargs = mock_sep.call_args
@@ -321,12 +332,11 @@ class TestDispatch:
         )
 
     def test_dither_combo_value_passed_to_palette_separate(self):
-        """dither kwarg must come from _palette_dither_combo (phase 159.7)."""
+        """dither value must be forwarded to palette_separate (phase 159.7)."""
+        from plottter.gui.settings_panel._colorsep import _compute_separation
+
         basic6 = get_preset("Basic 6")
         raw_rgb = np.full((4, 4, 3), 128, dtype=np.uint8)
-        panel = _DispatchPanel(raw_rgb, basic6)
-        # Set combo to a known value so we can assert it is forwarded.
-        panel._palette_dither_combo = _StubCombo("Ordered")
 
         fake_mask = np.zeros((4, 4), dtype=np.uint8)
         fake_results = [(fake_mask, color) for color in basic6.colors]
@@ -335,7 +345,18 @@ class TestDispatch:
             "plottter.color.palette_separate",
             return_value=fake_results,
         ) as mock_sep:
-            panel._on_separate()
+            _compute_separation(
+                "Custom Palette",
+                source=raw_rgb,
+                params={},
+                max_px=0,
+                num=3,
+                thresholds=None,
+                enabled_channels={},
+                k_amount=0.3,
+                dither="ordered",
+                palette=basic6,
+            )
 
         _, kwargs = mock_sep.call_args
         assert kwargs.get("dither") == "ordered"

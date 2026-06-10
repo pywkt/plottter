@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import numpy as np
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QCursor
 from PyQt6.QtWidgets import (
-    QApplication,
     QCheckBox,
     QComboBox,
+    QLabel,
     QMessageBox,
+    QSpinBox,
 )
 
-from .workers import _AiBgWorker, _AiSegmentWorker
+from .workers import _AiBgWorker, _AiSegmentWorker, _SeparationWorker
+
+# Resolution cap (in pixels) applied to the image fed to color separation when
+# "Downsample large images" is enabled.  ~2 MP keeps masks sharp enough for any
+# plot density while cutting separation + line-generation time on big photos.
+_SEPARATION_MAX_PIXELS = 2_000_000
 
 
 def _separation_mask_to_luminance(mask: np.ndarray, src_img: np.ndarray) -> np.ndarray:
@@ -42,6 +47,121 @@ def _separation_mask_to_luminance(mask: np.ndarray, src_img: np.ndarray) -> np.n
         return masked_gray
     # RGB / CMYK: flip ink-coverage → luminance.
     return (255 - mask).astype(np.uint8)
+
+
+def _ensure_rgb(img: np.ndarray) -> np.ndarray:
+    """Normalise an image to 3-channel RGB (grayscale -> stacked, RGBA -> RGB)."""
+    if img.ndim == 2:
+        return np.stack([img] * 3, axis=-1)
+    if img.ndim == 3 and img.shape[2] == 4:
+        return img[:, :, :3]
+    return img
+
+
+def _filter_channels(
+    results: list,
+    layer_names: list,
+    channel_names: list,
+    enabled: dict,
+) -> tuple[list, list]:
+    """Keep only the (mask, color) entries whose channel checkbox is enabled.
+
+    ``enabled`` maps channel name -> bool (captured from the checkboxes on the
+    main thread).  A channel missing from the map is treated as enabled, which
+    mirrors the original ``ch not in self._channel_checks`` fallback.
+    """
+    out: list = []
+    out_names: list = []
+    for i, (mask, color) in enumerate(results):
+        ch = channel_names[i]
+        if ch not in enabled or enabled[ch]:
+            out.append((mask, color))
+            out_names.append(layer_names[i])
+    return out, out_names
+
+
+def _compute_separation(
+    method: str,
+    *,
+    source: np.ndarray,
+    params: dict,
+    max_px: int,
+    num: int,
+    thresholds: "list[float] | None",
+    enabled_channels: dict,
+    k_amount: float,
+    dither: str,
+    palette,
+) -> dict:
+    """Run one color-separation method and return a result payload.
+
+    Pure NumPy work with no Qt access, so it is safe to run in a worker thread
+    (see :meth:`_ColorSepMixin._on_separate`) and is directly unit-testable.
+    All widget-derived values are passed in by the caller.  Returns a dict with
+    ``results`` (list of (mask, hex)), ``layer_names``, ``preprocessed`` (the
+    image cached as each layer's src_img), and ``cmyk_raw_rgb`` (the RGB input
+    for CMYK so the panel can refresh K Amount later, else None).
+    """
+    from plottter.io.image_import import downscale_to_max_pixels, preprocess
+
+    payload: dict = {"cmyk_raw_rgb": None}
+    # The fully preprocessed image is cached as every layer's src_img and is the
+    # input for the luminance path.  Computing it here keeps this heavy step
+    # (preprocess + LANCZOS downscale) off the GUI thread.
+    preprocessed = downscale_to_max_pixels(preprocess(source, params), max_px)
+    payload["preprocessed"] = preprocessed
+    if method == "K-Means":
+        from plottter.color import kmeans_separate
+        # K-Means requires an RGB image; apply only spatial transforms
+        # (crop/resize), not grayscale conversion or threshold — those would
+        # destroy the color information.
+        spatial_params = {
+            k: v for k, v in params.items() if k in ("crop_width", "crop_height")
+        }
+        raw_rgb = _ensure_rgb(
+            downscale_to_max_pixels(preprocess(source, spatial_params), max_px)
+        )
+        results = kmeans_separate(raw_rgb, num_colors=num)
+        layer_names = [f"Cluster {i + 1}" for i in range(len(results))]
+    elif method == "Luminance":
+        from plottter.color import luminance_separate
+        results = luminance_separate(preprocessed, num_bands=num, thresholds=thresholds)
+        band_names = ["Shadows", "Midtones", "Highlights", "Highlights 2", "Highlights 3"]
+        layer_names = [
+            band_names[i] if i < len(band_names) else f"Band {i + 1}"
+            for i in range(len(results))
+        ]
+    elif method == "RGB":
+        from plottter.color import rgb_separate
+        raw_rgb = _ensure_rgb(downscale_to_max_pixels(source, max_px))
+        results = rgb_separate(raw_rgb)
+        results, layer_names = _filter_channels(
+            results,
+            ["Red Channel", "Green Channel", "Blue Channel"],
+            ["Red", "Green", "Blue"],
+            enabled_channels,
+        )
+    elif method == "CMYK":
+        from plottter.color import cmyk_separate
+        raw_rgb = _ensure_rgb(downscale_to_max_pixels(source, max_px))
+        payload["cmyk_raw_rgb"] = raw_rgb
+        results = cmyk_separate(raw_rgb, k_amount=k_amount)
+        results, layer_names = _filter_channels(
+            results,
+            ["Cyan Channel", "Magenta Channel", "Yellow Channel", "Key (Black) Channel"],
+            ["Cyan", "Magenta", "Yellow", "Key (Black)"],
+            enabled_channels,
+        )
+    elif method == "Custom Palette":
+        from plottter.color import palette_separate
+        raw_rgb = _ensure_rgb(downscale_to_max_pixels(source, max_px))
+        results = palette_separate(raw_rgb, palette, dither=dither)
+        layer_names = [f"Pen: {color}" for _, color in results]
+    else:
+        results, layer_names = [], []
+    payload["results"] = results
+    payload["layer_names"] = layer_names
+    return payload
 
 
 def _is_near_white_hex(hex_color: str, threshold: int = 240) -> bool:
@@ -122,6 +242,10 @@ class _ColorSepMixin:
 
         if is_palette:
             self._populate_palette_picker()
+
+        # Luminance custom-threshold controls follow the method.
+        if hasattr(self, "_lum_custom_check"):
+            self._update_lum_threshold_visibility()
 
         layout = self._channel_check_widget.layout()
         # Clear existing checkboxes
@@ -271,6 +395,85 @@ class _ColorSepMixin:
         QSettings("Plottter", "Plottter").setValue(
             "colorsep/skip_white_layer", "true" if checked else "false"
         )
+
+    def _on_downsample_toggled(self, checked: bool) -> None:
+        """Persist the 'Downsample large images' checkbox state to QSettings."""
+        from PyQt6.QtCore import QSettings
+        QSettings("Plottter", "Plottter").setValue(
+            "colorsep/downsample", "true" if checked else "false"
+        )
+
+    def _separation_max_pixels(self) -> int:
+        """Pixel cap for separation inputs, or 0 (no cap) when downsampling off."""
+        check = getattr(self, "_downsample_check", None)
+        if check is not None and not check.isChecked():
+            return 0
+        return _SEPARATION_MAX_PIXELS
+
+    # -- Luminance custom thresholds -----------------------------------------
+
+    def _on_lum_custom_toggled(self, checked: bool) -> None:
+        """Reveal/hide the manual band-boundary spinboxes (Luminance mode)."""
+        from PyQt6.QtCore import QSettings
+        QSettings("Plottter", "Plottter").setValue(
+            "colorsep/lum_custom", "true" if checked else "false"
+        )
+        self._update_lum_threshold_visibility()
+
+    def _on_lum_bands_changed(self, _value: int | None = None) -> None:
+        """Rebuild the boundary spinboxes when the band count changes."""
+        if self._color_sep_method_combo.currentText() != "Luminance":
+            return
+        if self._lum_custom_check.isChecked():
+            self._rebuild_lum_thresholds()
+
+    def _update_lum_threshold_visibility(self) -> None:
+        """Show the custom-threshold controls only for Luminance mode."""
+        is_lum = self._color_sep_method_combo.currentText() == "Luminance"
+        self._lum_custom_check.setVisible(is_lum)
+        show_spins = is_lum and self._lum_custom_check.isChecked()
+        self._lum_threshold_widget.setVisible(show_spins)
+        # Rebuild when the spinbox count is stale (band count changed while the
+        # controls were hidden) so it always matches num_bands - 1.
+        expected = self._color_sep_num_colors_spin.value() - 1
+        if show_spins and len(self._lum_threshold_spins) != expected:
+            self._rebuild_lum_thresholds()
+
+    def _rebuild_lum_thresholds(self) -> None:
+        """Recreate one spinbox per band boundary (num_bands - 1), seeded with
+        the current evenly-spaced defaults so toggling custom on is a no-op
+        until the user edits a value."""
+        layout = self._lum_threshold_layout
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self._lum_threshold_spins = []
+
+        num_bands = self._color_sep_num_colors_spin.value()
+        step = 256.0 / num_bands
+        for i in range(1, num_bands):
+            spin = QSpinBox()
+            spin.setRange(1, 254)
+            spin.setValue(min(254, max(1, int(round(step * i)))))
+            self._lum_threshold_layout.addRow(QLabel(f"Boundary {i}"), spin)
+            self._lum_threshold_spins.append(spin)
+
+    def _gather_lum_thresholds(self) -> list[float] | None:
+        """Return ascending custom thresholds, or None for even spacing.
+
+        Values are sorted so the boundaries are always valid for
+        ``luminance_separate`` even if the user enters them out of order.
+        """
+        check = getattr(self, "_lum_custom_check", None)
+        spins = getattr(self, "_lum_threshold_spins", None)
+        if check is None or not check.isChecked() or not spins:
+            return None
+        # Defensive: if the count is somehow stale, fall back to even spacing
+        # rather than handing luminance_separate a wrong-length list.
+        if len(spins) != self._color_sep_num_colors_spin.value() - 1:
+            return None
+        return sorted(float(s.value()) for s in spins)
 
     def _rebuild_color_sep_preset_combo(self) -> None:
         """Rebuild the color separation preset combo based on the selected generator."""
@@ -432,7 +635,7 @@ class _ColorSepMixin:
             return
 
         try:
-            from plottter.io.image_import import preprocess
+            from plottter.io.image_import import downscale_to_max_pixels, preprocess
             params = self._get_preprocessing_params()
             # If AI BG removal is active, composite onto white before
             # preprocessing — same logic as _update_image_preview().
@@ -446,7 +649,10 @@ class _ColorSepMixin:
                 rgb = rgba[:, :, :3].astype(np.float32)
                 white = np.full_like(rgb, 255.0)
                 source = (rgb * alpha + white * (1.0 - alpha)).astype(np.uint8)
-            preprocessed = preprocess(source, params)
+            # Resolution cap for separation, applied when downsampling is on.
+            # Deterministic on input dimensions, so a cluster mask and its
+            # companion preprocessed image (same pre-cap size) stay aligned.
+            max_px = self._separation_max_pixels()
         except Exception as exc:
             QMessageBox.critical(self, "Preprocessing Error", str(exc))
             return
@@ -471,14 +677,20 @@ class _ColorSepMixin:
                 )
                 return
 
-            source_img = source
+            # Cap to match the (capped) preprocessed image so returned masks
+            # stay aligned with it during mask->luminance conversion.
+            source_img = downscale_to_max_pixels(source, max_px)
             if source_img.ndim == 2:
                 source_img = np.stack([source_img] * 3, axis=-1)
             elif source_img.ndim == 3 and source_img.shape[2] == 4:
                 source_img = source_img[:, :, :3]
 
-            # Store preprocessed so the finished callback can use it for mask association
-            self._ai_sep_preprocessed = preprocessed
+            # Store preprocessed so the finished callback can use it for mask
+            # association.  AI is network-bound, so this local preprocess on the
+            # main thread is negligible.
+            self._ai_sep_preprocessed = downscale_to_max_pixels(
+                preprocess(source, params), max_px
+            )
 
             self._separate_btn.setEnabled(False)
             self._color_sep_progress.setMaximum(0)  # indeterminate while waiting for AI
@@ -498,115 +710,71 @@ class _ColorSepMixin:
             return  # layer creation happens asynchronously in _on_ai_segment_finished
 
         # The synchronous separators (K-Means, Luminance, RGB, CMYK, Custom
-        # Palette) can take several seconds on large images and block the GUI
-        # thread.  Show a busy cursor + indeterminate progress bar + disable
-        # the Separate button so the user sees the app is working.  AI gets
-        # its own progress already (see the return above).
+        # Palette) can take several seconds on large images.  Capture every
+        # widget value here on the main thread, then do the NumPy work in a
+        # worker (via the pure _compute_separation) so the GUI stays responsive.
+        palette = self._palette_picker_combo.currentData()
+        if method == "Custom Palette" and palette is None:
+            QMessageBox.warning(self, "No Palette", "Please select a palette.")
+            return
+        thresholds = self._gather_lum_thresholds()
+        enabled_channels = {
+            name: cb.isChecked() for name, cb in self._channel_checks.items()
+        }
+        k_amount = float(self._cmyk_k_amount_spin.value())
+        dither = self._palette_dither_combo.currentText().lower()
+
+        def _compute() -> dict:
+            return _compute_separation(
+                method,
+                source=source,
+                params=params,
+                max_px=max_px,
+                num=num,
+                thresholds=thresholds,
+                enabled_channels=enabled_channels,
+                k_amount=k_amount,
+                dither=dither,
+                palette=palette,
+            )
+
         self._separate_btn.setEnabled(False)
         self._color_sep_progress.setMaximum(0)  # indeterminate
         self._color_sep_progress.setVisible(True)
-        QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
-        QApplication.processEvents()  # flush so the user sees the busy state
 
-        try:
-            if method == "K-Means":
-                from plottter.color import kmeans_separate
-                # K-Means requires an RGB image; apply only spatial transforms
-                # (crop/resize) to the raw image, not grayscale conversion or
-                # threshold — those would destroy the color information.
-                spatial_params = {
-                    k: v for k, v in params.items()
-                    if k in ("crop_width", "crop_height")
-                }
-                raw_rgb = preprocess(source, spatial_params)
-                if raw_rgb.ndim == 2:
-                    raw_rgb = np.stack([raw_rgb] * 3, axis=-1)
-                elif raw_rgb.ndim == 3 and raw_rgb.shape[2] == 4:
-                    raw_rgb = raw_rgb[:, :, :3]
-                results = kmeans_separate(raw_rgb, num_colors=num)
-                layer_names = [f"Cluster {i + 1}" for i in range(len(results))]
-            elif method == "Luminance":
-                from plottter.color import luminance_separate
-                results = luminance_separate(preprocessed, num_bands=num)
-                band_names = ["Shadows", "Midtones", "Highlights", "Highlights 2", "Highlights 3"]
-                layer_names = [band_names[i] if i < len(band_names) else f"Band {i + 1}" for i in range(len(results))]
-            elif method == "RGB":
-                from plottter.color import rgb_separate
-                # RGB/CMYK separation requires an RGB image, not the
-                # grayscale-preprocessed one.  Use source (with BG removal applied).
-                raw_rgb = source
-                if raw_rgb.ndim == 2:
-                    raw_rgb = np.stack([raw_rgb] * 3, axis=-1)
-                elif raw_rgb.ndim == 3 and raw_rgb.shape[2] == 4:
-                    raw_rgb = raw_rgb[:, :, :3]
-                results = rgb_separate(raw_rgb)
-                layer_names = ["Red Channel", "Green Channel", "Blue Channel"]
-                channel_names = ["Red", "Green", "Blue"]
-                filtered = []
-                filtered_names = []
-                for i, (mask, color) in enumerate(results):
-                    ch = channel_names[i]
-                    if ch not in self._channel_checks or self._channel_checks[ch].isChecked():
-                        filtered.append((mask, color))
-                        filtered_names.append(layer_names[i])
-                results = filtered
-                layer_names = filtered_names
-            elif method == "CMYK":
-                from plottter.color import cmyk_separate
-                # CMYK separation requires an RGB image.
-                raw_rgb = source
-                if raw_rgb.ndim == 2:
-                    raw_rgb = np.stack([raw_rgb] * 3, axis=-1)
-                elif raw_rgb.ndim == 3 and raw_rgb.shape[2] == 4:
-                    raw_rgb = raw_rgb[:, :, :3]
-                # Stash the RGB input so changing K Amount can refresh the
-                # cached masks in-place without forcing a full re-separate.
-                self._cmyk_raw_rgb = raw_rgb
-                self._last_sep_method = "CMYK"
-                results = cmyk_separate(
-                    raw_rgb,
-                    k_amount=float(self._cmyk_k_amount_spin.value()),
-                )
-                layer_names = ["Cyan Channel", "Magenta Channel", "Yellow Channel", "Key (Black) Channel"]
-                channel_names_list = ["Cyan", "Magenta", "Yellow", "Key (Black)"]
-                filtered = []
-                filtered_names = []
-                for i, (mask, color) in enumerate(results):
-                    ch = channel_names_list[i]
-                    if ch not in self._channel_checks or self._channel_checks[ch].isChecked():
-                        filtered.append((mask, color))
-                        filtered_names.append(layer_names[i])
-                results = filtered
-                layer_names = filtered_names
-            elif method == "Custom Palette":
-                from plottter.color import palette_separate
-                raw_rgb = source
-                if raw_rgb.ndim == 2:
-                    raw_rgb = np.stack([raw_rgb] * 3, axis=-1)
-                elif raw_rgb.ndim == 3 and raw_rgb.shape[2] == 4:
-                    raw_rgb = raw_rgb[:, :, :3]
-                palette = self._palette_picker_combo.currentData()
-                if palette is None:
-                    QMessageBox.warning(self, "No Palette", "Please select a palette.")
-                    return
-                results = palette_separate(
-                    raw_rgb,
-                    palette,
-                    dither=self._palette_dither_combo.currentText().lower(),
-                )
-                layer_names = [f"Pen: {color}" for _, color in results]
-            else:
-                return
-        except Exception as exc:
-            QMessageBox.critical(self, "Separation Error", str(exc))
-            return
-        finally:
-            QApplication.restoreOverrideCursor()
-            self._color_sep_progress.setMaximum(100)
-            self._color_sep_progress.setVisible(False)
-            self._separate_btn.setEnabled(True)
+        worker = _SeparationWorker(_compute)
+        worker.finished.connect(
+            lambda payload: self._on_separation_finished(payload, method)
+        )
+        worker.error.connect(self._on_separation_error)
+        self._separation_worker = worker
+        worker.start()
 
-        self._apply_separation_results(results, layer_names, method, preprocessed)
+    def _on_separation_finished(self, payload: dict, method: str) -> None:
+        """Apply worker results on the main thread (creates layers, undo-safe)."""
+        self._separate_btn.setEnabled(True)
+        self._color_sep_progress.setMaximum(100)
+        self._color_sep_progress.setVisible(False)
+        if payload.get("cmyk_raw_rgb") is not None:
+            self._cmyk_raw_rgb = payload["cmyk_raw_rgb"]
+            self._last_sep_method = "CMYK"
+        worker = self._separation_worker
+        self._separation_worker = None
+        if worker is not None:
+            worker.wait()  # join before dropping the ref (avoid GC mid-run)
+        self._apply_separation_results(
+            payload["results"], payload["layer_names"], method, payload["preprocessed"]
+        )
+
+    def _on_separation_error(self, msg: str) -> None:
+        self._separate_btn.setEnabled(True)
+        self._color_sep_progress.setMaximum(100)
+        self._color_sep_progress.setVisible(False)
+        worker = self._separation_worker
+        self._separation_worker = None
+        if worker is not None:
+            worker.wait()
+        QMessageBox.critical(self, "Separation Error", str(msg))
 
     def _on_ai_segment_finished(
         self, results: list, method: str
@@ -704,21 +872,9 @@ class _ColorSepMixin:
         if not layers_to_process:
             return
 
-        from plottter.gui.generator_worker import GeneratorWorker
-
-        self._gen_lines_btn.setEnabled(False)
-        self._gen_lines_selected_btn.setEnabled(False)
-        self._color_sep_progress.setMaximum(len(layers_to_process))
-        self._color_sep_progress.setValue(0)
-        self._color_sep_progress.setVisible(True)
-
-        self._lines_queue = list(layers_to_process)
-        self._lines_done = 0
         self._lines_canvas = canvas
         self._lines_gen_cls = gen_cls
-        self._lines_worker: object = None
-        self._controller.undo_stack.beginMacro("Generate Lines")
-        self._process_next_lines_layer()
+        self._start_line_generation(layers_to_process, "Generate Lines")
 
     def _on_generate_lines_selected(self) -> None:
         """Generate line art for only the currently selected layer."""
@@ -748,30 +904,66 @@ class _ColorSepMixin:
         canvas = self._controller.current_project.canvas
         mask, src_img = self._layer_masks[active_id]
 
+        self._lines_canvas = canvas
+        self._lines_gen_cls = gen_cls
+        self._start_line_generation(
+            [(active_id, mask, src_img)], "Generate Lines (Selected)"
+        )
+
+    def _line_worker_cap(self) -> int:
+        """Max concurrent line-generation workers.
+
+        Generators are CPU-bound, so cap at a few threads to gain parallelism
+        on multi-core machines without oversubscribing.
+        """
+        import os
+
+        return max(1, min(4, (os.cpu_count() or 1)))
+
+    def _start_line_generation(self, queue: list, macro_name: str) -> None:
+        """Begin generating lines for every layer in *queue*, running several
+        workers concurrently to shrink wall-clock time."""
+        self._lines_queue = list(queue)
+        self._lines_total = len(self._lines_queue)
+        self._lines_done = 0
+        self._lines_active: dict = {}
+
         self._gen_lines_btn.setEnabled(False)
         self._gen_lines_selected_btn.setEnabled(False)
-        self._color_sep_progress.setMaximum(1)
+        self._color_sep_progress.setMaximum(self._lines_total)
         self._color_sep_progress.setValue(0)
         self._color_sep_progress.setVisible(True)
 
-        self._lines_queue = [(active_id, mask, src_img)]
-        self._lines_done = 0
-        self._lines_canvas = canvas
-        self._lines_gen_cls = gen_cls
-        self._lines_worker = None
-        self._controller.undo_stack.beginMacro("Generate Lines (Selected)")
-        self._process_next_lines_layer()
+        self._controller.undo_stack.beginMacro(macro_name)
+        self._pump_line_workers()
+
+    def _pump_line_workers(self) -> None:
+        """Launch queued layers until the concurrency cap is reached."""
+        cap = self._line_worker_cap()
+        active = getattr(self, "_lines_active", None)
+        if active is None:
+            active = self._lines_active = {}
+        while self._lines_queue and len(active) < cap:
+            self._process_next_lines_layer()
+        # Empty queue with nothing running means there was no work — finalize.
+        if not self._lines_queue and not active:
+            self._finish_line_generation()
 
     def _process_next_lines_layer(self) -> None:
+        """Launch a single line-generation worker for the next queued layer.
+
+        Builds the generator params on the main thread (reading the preset and
+        image-placement widgets) and starts a GeneratorWorker.  Completion is
+        handled by :meth:`_on_line_worker_done`, which pumps the next layer.
+        """
         if not self._lines_queue:
-            self._color_sep_progress.setVisible(False)
-            self._gen_lines_btn.setEnabled(True)
-            self._gen_lines_selected_btn.setEnabled(True)
-            self._controller.undo_stack.endMacro()
             return
 
+        active = getattr(self, "_lines_active", None)
+        if active is None:
+            active = self._lines_active = {}
+
         layer_id, mask, src_img = self._lines_queue.pop(0)
-        import numpy as np
 
         masked_gray = _separation_mask_to_luminance(mask, src_img)
 
@@ -802,20 +994,37 @@ class _ColorSepMixin:
 
         from plottter.gui.generator_worker import GeneratorWorker
         worker = GeneratorWorker(gen, gen_params, self._lines_canvas)
+        key = id(worker)
 
-        def on_finished(paths, lid=layer_id):
+        def on_finished(paths, lid=layer_id, k=key):
             self._controller.set_layer_paths(lid, paths, "Generate Lines")
-            self._lines_done += 1
-            self._color_sep_progress.setValue(self._lines_done)
-            self._process_next_lines_layer()
+            self._on_line_worker_done(k)
 
-        def on_error(msg):
+        def on_error(msg, k=key):
             QMessageBox.warning(self, "Generate Lines Error", msg)
-            self._lines_done += 1
-            self._color_sep_progress.setValue(self._lines_done)
-            self._process_next_lines_layer()
+            self._on_line_worker_done(k)
 
         worker.finished.connect(on_finished)
         worker.error.connect(on_error)
-        self._lines_worker = worker
+        active[key] = worker
         worker.start()
+
+    def _on_line_worker_done(self, key: int) -> None:
+        """One layer finished: update progress, launch the next, finalize at end."""
+        active = getattr(self, "_lines_active", {}) or {}
+        worker = active.pop(key, None)
+        if worker is not None and hasattr(worker, "wait"):
+            worker.wait()  # join before dropping the ref (avoid GC mid-run)
+        self._lines_done += 1
+        self._color_sep_progress.setValue(self._lines_done)
+        if self._lines_queue:
+            self._pump_line_workers()
+        elif not active:
+            self._finish_line_generation()
+
+    def _finish_line_generation(self) -> None:
+        """Re-enable controls and close the undo macro once all layers are done."""
+        self._color_sep_progress.setVisible(False)
+        self._gen_lines_btn.setEnabled(True)
+        self._gen_lines_selected_btn.setEnabled(True)
+        self._controller.undo_stack.endMacro()

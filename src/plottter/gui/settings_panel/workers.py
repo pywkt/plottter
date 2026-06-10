@@ -67,6 +67,30 @@ class _AiSegmentWorker(QThread):
             self.error.emit(str(exc))
 
 
+class _SeparationWorker(QThread):
+    """Runs a synchronous color-separation computation off the main GUI thread.
+
+    The panel captures every widget value on the main thread and hands this
+    worker a zero-argument callable that does only NumPy work (preprocess +
+    downscale + separate) and returns a payload. Keeping all Qt access out of
+    ``run()`` is essential — widgets must not be touched from a worker thread.
+    """
+
+    finished = _pyqtSignal(object)  # emits whatever the callable returns
+    error = _pyqtSignal(str)
+
+    def __init__(self, fn: Any) -> None:
+        super().__init__()  # no parent — prevent Qt parent-child destruction
+        self.setObjectName("SeparationWorker")
+        self._fn = fn
+
+    def run(self) -> None:
+        try:
+            self.finished.emit(self._fn())
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))
+
+
 class _AiMaskWorker(QThread):
     """Runs AI point/box/text mask generation off the main GUI thread.
 
