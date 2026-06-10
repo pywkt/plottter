@@ -104,6 +104,51 @@ def rgb_to_lab(rgb: RGB) -> Lab:
     return xyz_to_lab(xyz)
 
 
+def rgb_to_lab_array(rgb: np.ndarray) -> np.ndarray:
+    """Vectorized RGB -> CIE L*a*b* conversion.
+
+    Numerically equivalent to applying :func:`rgb_to_lab` to each pixel, but
+    operates on the whole array at once. The scalar path is a pure-Python
+    per-pixel loop that dominates the cost of LAB-space palette matching on
+    large images (millions of function calls); this replaces it with NumPy
+    elementwise ops.
+
+    Args:
+        rgb: array of shape (..., 3) holding RGB values in 0-255 (any dtype).
+
+    Returns:
+        float32 array of shape (..., 3) holding (L, a, b).
+    """
+    arr = np.asarray(rgb, dtype=np.float64) / 255.0
+
+    # sRGB linearization (matches rgb_to_xyz.linearize).
+    lin = np.where(arr > 0.04045, ((arr + 0.055) / 1.055) ** 2.4, arr / 12.92)
+    r_lin = lin[..., 0]
+    g_lin = lin[..., 1]
+    b_lin = lin[..., 2]
+
+    # sRGB -> XYZ (D65); constants scaled identically to rgb_to_xyz.
+    x = (r_lin * 41.24564 + g_lin * 35.75761 + b_lin * 18.04375) / D65_XN
+    y = (r_lin * 21.26729 + g_lin * 71.51522 + b_lin * 7.21750) / D65_YN
+    z = (r_lin * 1.93339 + g_lin * 11.91920 + b_lin * 95.03041) / D65_ZN
+
+    # XYZ -> Lab (matches xyz_to_lab.f).
+    delta = 6.0 / 29.0
+
+    def f(t: np.ndarray) -> np.ndarray:
+        return np.where(t > delta**3, t ** (1.0 / 3.0), t / (3.0 * delta**2) + 4.0 / 29.0)
+
+    fx = f(x)
+    fy = f(y)
+    fz = f(z)
+
+    lab = np.stack(
+        [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)],
+        axis=-1,
+    )
+    return lab.astype(np.float32)
+
+
 def lab_to_xyz(lab: Lab) -> Tuple[float, float, float]:
     """Convert CIE L*a*b* to CIE XYZ color space.
 

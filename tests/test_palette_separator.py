@@ -262,3 +262,40 @@ class TestInputValidation:
         img = _solid_image(0, 0, 0)
         with pytest.raises(ValueError, match="dither"):
             palette_separate(img, BASIC_PALETTE, dither="bad-dither")
+
+
+class TestVectorizedLabEquivalence:
+    """The LAB palette path was sped up ~5-6x by replacing a per-pixel Python
+    loop (rgb_to_lab) with a vectorized conversion (rgb_to_lab_array). That is
+    only safe if the two produce identical values — identical LAB => identical
+    nearest-neighbour argmin => identical masks. Guard that invariant here so
+    the slow loop can't quietly creep back."""
+
+    def test_vectorized_lab_matches_scalar(self):
+        from plottter.pixel_art.color_utils import rgb_to_lab, rgb_to_lab_array
+
+        rng = np.random.default_rng(7)
+        colors = np.vstack([
+            rng.integers(0, 256, size=(5000, 3), dtype=np.uint8),
+            # boundary / pure colours that exercise both linearization branches
+            np.array(
+                [[0, 0, 0], [255, 255, 255], [255, 0, 0], [0, 255, 0],
+                 [0, 0, 255], [10, 10, 10], [11, 11, 11], [128, 64, 200]],
+                dtype=np.uint8,
+            ),
+        ])
+        vec = rgb_to_lab_array(colors)
+        scalar = np.array(
+            [rgb_to_lab(tuple(int(c) for c in p)) for p in colors],
+            dtype=np.float32,
+        )
+        assert vec.shape == scalar.shape
+        np.testing.assert_array_equal(vec, scalar)
+
+    def test_vectorized_lab_preserves_array_shape(self):
+        from plottter.pixel_art.color_utils import rgb_to_lab_array
+
+        img = np.zeros((4, 5, 3), dtype=np.uint8)
+        out = rgb_to_lab_array(img)
+        assert out.shape == (4, 5, 3)
+        assert out.dtype == np.float32

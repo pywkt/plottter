@@ -21,6 +21,7 @@ from PIL import Image
 from plottter.pixel_art.color_utils import (
     ciede2000,
     rgb_to_lab,
+    rgb_to_lab_array,
 )
 from plottter.pixel_art.exceptions import InvalidImageError, InvalidPaletteError
 
@@ -219,7 +220,7 @@ def _nearest_quantize(
     n_pixels = flat_pixels.shape[0]
 
     if color_space == ColorSpace.LAB:
-        palette_lab = np.array([rgb_to_lab(tuple(c)) for c in palette_colors], dtype=np.float32)
+        palette_lab = rgb_to_lab_array(palette_colors)
 
         if use_ciede2000:
             batch_size = 1000
@@ -240,7 +241,7 @@ def _nearest_quantize(
                             best_idx = j
                     best_indices[start + i] = best_idx
         else:
-            pixels_lab = np.array([rgb_to_lab(tuple(p)) for p in flat_pixels], dtype=np.float32)
+            pixels_lab = rgb_to_lab_array(flat_pixels)
 
             diff = pixels_lab[:, np.newaxis, :] - palette_lab[np.newaxis, :, :]
             distances = np.sum(diff**2, axis=2)
@@ -268,8 +269,8 @@ def _kmeans_quantize(
     n_pixels = flat_pixels.shape[0]
 
     if options.color_space == ColorSpace.LAB:
-        data = np.array([rgb_to_lab(tuple(p)) for p in flat_pixels], dtype=np.float32)
-        centers = np.array([rgb_to_lab(tuple(c)) for c in palette_colors], dtype=np.float32)
+        data = rgb_to_lab_array(flat_pixels)
+        centers = rgb_to_lab_array(palette_colors)
     else:
         centers = palette_colors.astype(np.float32)
         data = flat_pixels
