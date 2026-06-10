@@ -154,11 +154,18 @@ def image_to_canvas_mm(
 # Number of circle vertices (12 per spec, plus closing duplicate = 13 pts).
 _CIRCLE_SIDES = 12
 
+# Angular resolution of the disc-fill spiral (points per full turn).
+_SPIRAL_PTS_PER_TURN = 24
+# Default radial gap between successive spiral arms, in mm — roughly a
+# fineliner's stroke width, so the disc reads as solid.
+_DEFAULT_FILL_SPACING_MM = 0.35
+
 
 def render_dots(
     coords_mm: np.ndarray,
     style: str,
     size_mm: float,
+    fill_spacing_mm: float = _DEFAULT_FILL_SPACING_MM,
 ) -> list[Polyline]:
     """Turn an array of dot centres into plotter-ready polylines.
 
@@ -167,10 +174,14 @@ def render_dots(
     coords_mm:
         ``(n, 2)`` float array of ``(x_mm, y_mm)`` dot centres.
     style:
-        One of ``"point"``, ``"cross"``, ``"circle"``.
+        One of ``"point"``, ``"cross"``, ``"circle"``, ``"disc"``.
     size_mm:
-        Dot size in mm.  Used by ``"cross"`` (arm half-length = size_mm*0.5)
-        and ``"circle"`` (radius = size_mm*0.5).  Ignored by ``"point"``.
+        Dot size in mm.  Used by ``"cross"`` (arm half-length = size_mm*0.5),
+        ``"circle"`` and ``"disc"`` (radius = size_mm*0.5).  Ignored by
+        ``"point"``.
+    fill_spacing_mm:
+        Radial gap between spiral arms for the ``"disc"`` style (smaller =
+        denser fill).  Ignored by the other styles.
 
     Returns
     -------
@@ -180,7 +191,10 @@ def render_dots(
 
         - ``point``  → 1 polyline per dot, length 2.
         - ``cross``  → 2 polylines per dot, length 2 each.
-        - ``circle`` → 1 polyline per dot, 12 points (12 vertices).
+        - ``circle`` → 1 closed polyline per dot, 12 vertices.
+        - ``disc``   → 1 continuous polyline per dot: an Archimedean spiral
+          from centre to the rim (single pen stroke, no lifts) finished with a
+          full perimeter circle for a crisp edge.
     """
     if style == "point":
         return _render_points(coords_mm)
@@ -188,8 +202,13 @@ def render_dots(
         return _render_crosses(coords_mm, size_mm)
     elif style == "circle":
         return _render_circles(coords_mm, size_mm)
+    elif style == "disc":
+        return _render_discs(coords_mm, size_mm, fill_spacing_mm)
     else:
-        raise ValueError(f"Unknown dot style: {style!r}. Expected 'point', 'cross', or 'circle'.")
+        raise ValueError(
+            f"Unknown dot style: {style!r}. "
+            "Expected 'point', 'cross', 'circle', or 'disc'."
+        )
 
 
 # -- private helpers ---------------------------------------------------------
@@ -226,4 +245,50 @@ def _render_circles(coords_mm: np.ndarray, size_mm: float) -> list[Polyline]:
         pts: Polyline = [(x + r * cos_a[k], y + r * sin_a[k]) for k in range(_CIRCLE_SIDES)]
         pts.append(pts[0])  # close the loop so the pen returns to start
         result.append(pts)
+    return result
+
+
+def _disc_template(r: float, spacing_mm: float) -> list[tuple[float, float]]:
+    """Build the centre-relative point list for one spiral-filled disc.
+
+    An Archimedean spiral ``rad = a*theta`` grows from the centre out to radius
+    *r*, with one full turn per *spacing_mm* of radius so adjacent arms sit a
+    pen-width apart.  A full perimeter circle is appended (starting at the
+    spiral's end angle, so it joins seamlessly) to give a crisp outer edge.
+    The same template is reused for every dot of this size, just translated.
+    """
+    spacing = max(1e-3, spacing_mm)
+    turns = max(1.0, r / spacing)
+    theta_max = 2.0 * math.pi * turns
+    steps = max(2, int(round(turns * _SPIRAL_PTS_PER_TURN)))
+    a = r / theta_max  # rad(theta_max) == r
+
+    template: list[tuple[float, float]] = []
+    for i in range(steps + 1):
+        theta = theta_max * i / steps
+        rad = a * theta
+        template.append((rad * math.cos(theta), rad * math.sin(theta)))
+
+    # Crisp rim: a full circle beginning at the spiral's final angle so the
+    # first rim point coincides with the spiral's last point (one continuous
+    # stroke, no pen lift).
+    for k in range(_CIRCLE_SIDES + 1):
+        ang = theta_max + 2.0 * math.pi * k / _CIRCLE_SIDES
+        template.append((r * math.cos(ang), r * math.sin(ang)))
+    return template
+
+
+def _render_discs(
+    coords_mm: np.ndarray, size_mm: float, spacing_mm: float
+) -> list[Polyline]:
+    """1 continuous polyline per dot: spiral fill from centre to rim + edge."""
+    r = size_mm * 0.5
+    if r <= 0.0:
+        # Degenerate radius — fall back to a minimal mark per dot.
+        return _render_points(coords_mm)
+    template = _disc_template(r, spacing_mm)
+    result: list[Polyline] = []
+    for row in coords_mm:
+        x, y = float(row[0]), float(row[1])
+        result.append([(x + dx, y + dy) for dx, dy in template])
     return result

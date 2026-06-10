@@ -226,17 +226,69 @@ class TestRenderDots:
             dist = math.sqrt((x - cx) ** 2 + (y - cy) ** 2)
             assert abs(dist - r) < 1e-9, f"Vertex ({x},{y}) not on circle (dist={dist:.6f}, r={r})"
 
+    # --- disc style (spiral fill) ---
+
+    def test_disc_count(self):
+        coords = self._make_coords(4)
+        polys = render_dots(coords, style="disc", size_mm=1.0)
+        assert len(polys) == 4  # 1 continuous polyline per dot
+
+    def test_disc_is_single_continuous_path(self):
+        """A disc is one polyline (single pen stroke, no lifts)."""
+        coords = np.array([[0.0, 0.0]])
+        polys = render_dots(coords, style="disc", size_mm=2.0)
+        assert len(polys) == 1
+        assert len(polys[0]) > 13  # spiral samples + a full rim circle
+
+    def test_disc_starts_at_centre(self):
+        """The spiral begins at (≈) the dot centre so the interior fills."""
+        cx, cy = 3.0, 4.0
+        poly = render_dots(np.array([[cx, cy]]), style="disc", size_mm=2.0)[0]
+        assert math.hypot(poly[0][0] - cx, poly[0][1] - cy) < 1e-6
+
+    def test_disc_stays_within_radius(self):
+        """No fill point escapes the dot radius (+ tiny float tolerance)."""
+        cx, cy = 1.0, -2.0
+        size_mm = 2.4
+        r = size_mm * 0.5
+        poly = render_dots(np.array([[cx, cy]]), style="disc", size_mm=size_mm)[0]
+        for x, y in poly:
+            assert math.hypot(x - cx, y - cy) <= r + 1e-6
+
+    def test_disc_reaches_rim(self):
+        """The outermost point sits on the rim radius (crisp edge)."""
+        cx, cy = 0.0, 0.0
+        size_mm = 2.0
+        r = size_mm * 0.5
+        poly = render_dots(np.array([[cx, cy]]), style="disc", size_mm=size_mm)[0]
+        assert max(math.hypot(x - cx, y - cy) for x, y in poly) == pytest.approx(r, abs=1e-6)
+
+    def test_disc_denser_spacing_more_points(self):
+        """Smaller fill spacing => more spiral arms => more points."""
+        coords = np.array([[0.0, 0.0]])
+        dense = render_dots(coords, style="disc", size_mm=3.0, fill_spacing_mm=0.2)[0]
+        sparse = render_dots(coords, style="disc", size_mm=3.0, fill_spacing_mm=0.8)[0]
+        assert len(dense) > len(sparse)
+
+    def test_disc_degenerate_radius_falls_back(self):
+        """Zero size can't form a spiral — produce a valid minimal mark."""
+        coords = self._make_coords(3)
+        polys = render_dots(coords, style="disc", size_mm=0.0)
+        assert len(polys) == 3
+        for poly in polys:
+            assert len(poly) >= 2
+
     # --- general contract ---
 
     def test_all_polylines_len_ge_2(self):
         coords = self._make_coords(10)
-        for style in ("point", "cross", "circle"):
+        for style in ("point", "cross", "circle", "disc"):
             for poly in render_dots(coords, style=style, size_mm=0.5):
                 assert len(poly) >= 2, f"Style={style!r}: polyline len {len(poly)} < 2"
 
     def test_empty_coords_returns_empty(self):
         coords = np.empty((0, 2))
-        for style in ("point", "cross", "circle"):
+        for style in ("point", "cross", "circle", "disc"):
             polys = render_dots(coords, style=style, size_mm=0.5)
             assert polys == [], f"Style={style!r}: expected [] for empty coords"
 

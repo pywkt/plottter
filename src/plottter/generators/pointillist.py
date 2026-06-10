@@ -82,14 +82,16 @@ class PointillistGenerator(Generator):
             ChoiceParam(
                 name="dot_style",
                 label="Dot Style",
-                choices=["point", "cross", "circle"],
+                choices=["point", "cross", "circle", "disc"],
                 default="point",
                 randomizable=False,
                 description=(
                     "Shape rendered at each dot position. "
                     "'point' draws a minimal pen-down mark; "
                     "'cross' draws two perpendicular strokes; "
-                    "'circle' draws a closed circular outline."
+                    "'circle' draws a hollow circular outline; "
+                    "'disc' draws a solid filled circle (a spiral from centre "
+                    "to rim — one continuous stroke, no hatching needed)."
                 ),
             ),
             FloatParam(
@@ -100,10 +102,26 @@ class PointillistGenerator(Generator):
                 step=0.1,
                 default=0.5,
                 randomizable=False,
-                visible_when={"dot_style": ["cross", "circle"]},
+                visible_when={"dot_style": ["cross", "circle", "disc"]},
                 description=(
-                    "Dot size in mm. Used by 'cross' and 'circle' styles; "
-                    "ignored by 'point'."
+                    "Dot size in mm. Used by 'cross', 'circle' and 'disc' "
+                    "styles; ignored by 'point'."
+                ),
+            ),
+            FloatParam(
+                name="dot_fill_spacing_mm",
+                label="Disc Fill Spacing (mm)",
+                min=0.1,
+                max=1.0,
+                step=0.05,
+                default=0.35,
+                randomizable=False,
+                visible_when={"dot_style": ["disc"]},
+                description=(
+                    "Gap between the spiral arms when filling a 'disc'. "
+                    "Set this to roughly your pen's line width: smaller values "
+                    "give a denser fill (more strokes), larger values are "
+                    "faster but may show gaps."
                 ),
             ),
             IntParam(
@@ -181,6 +199,19 @@ class PointillistGenerator(Generator):
                     "skip_paper_white": True,
                 },
             ),
+            Preset(
+                name="Solid Dots",
+                params={
+                    "palette": "Basic 6",
+                    "density_per_cm2": 20.0,
+                    "dither": "floyd-steinberg",
+                    "dot_style": "disc",
+                    "dot_size_mm": 2.0,
+                    "dot_fill_spacing_mm": 0.35,
+                    "seed": 0,
+                    "skip_paper_white": True,
+                },
+            ),
         ]
 
     def generate_layers(
@@ -227,6 +258,7 @@ class PointillistGenerator(Generator):
         seed = int(params.get("seed", 0))
         style = str(params.get("dot_style", "point"))
         size_mm = float(params.get("dot_size_mm", 0.5))
+        fill_spacing_mm = float(params.get("dot_fill_spacing_mm", 0.35))
         density = float(params.get("density_per_cm2", 200.0))
         skip_white = bool(params.get("skip_paper_white", True))
 
@@ -243,7 +275,9 @@ class PointillistGenerator(Generator):
 
             dots_image = mitchell_sample(mask, n, seed=seed + i, candidates=10)
             dots_mm = image_to_canvas_mm(dots_image, mask.shape[:2], img_rect)
-            paths = render_dots(dots_mm, style=style, size_mm=size_mm)
+            paths = render_dots(
+                dots_mm, style=style, size_mm=size_mm, fill_spacing_mm=fill_spacing_mm
+            )
 
             layer_specs.append(
                 LayerSpec(

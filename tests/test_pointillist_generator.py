@@ -132,13 +132,21 @@ class TestParameters:
 
         p = self.by_name["dot_style"]
         assert isinstance(p, ChoiceParam)
-        assert p.choices == ["point", "cross", "circle"]
+        assert p.choices == ["point", "cross", "circle", "disc"]
         assert p.default == "point"
         assert p.randomizable is False
 
     def test_dot_size_mm_visible_when(self):
         p = self.by_name["dot_size_mm"]
-        assert p.visible_when == {"dot_style": ["cross", "circle"]}
+        assert p.visible_when == {"dot_style": ["cross", "circle", "disc"]}
+
+    def test_dot_fill_spacing_mm_param(self):
+        from plottter.generators.base import FloatParam
+
+        p = self.by_name["dot_fill_spacing_mm"]
+        assert isinstance(p, FloatParam)
+        assert p.default == 0.35
+        assert p.visible_when == {"dot_style": ["disc"]}
 
     def test_dot_size_mm_float_param(self):
         from plottter.generators.base import FloatParam
