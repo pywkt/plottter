@@ -7,8 +7,12 @@ from PIL import Image
 from plottter.color.palette import PenPalette
 
 
-def _as_pixelart_palette(pp: PenPalette):
-    """Wrap a PenPalette so pixel_art's quantize_to_palette accepts it."""
+def as_pixelart_palette(pp: PenPalette):
+    """Wrap a PenPalette so pixel_art's quantize_to_palette accepts it.
+
+    Shared by the Custom Palette separator and the Pixel Art generator (whose
+    "Pen Palettes" group reuses the same color.palettes presets).
+    """
     from plottter.pixel_art.palette import Palette, PaletteMetadata
 
     rgb_tuples = [
@@ -92,7 +96,7 @@ def palette_separate(
         )
 
     pil_img = Image.fromarray(image, "RGB")
-    adapter = _as_pixelart_palette(palette)
+    adapter = as_pixelart_palette(palette)
 
     if dither != "none":
         options = DitherOptions(method=dither_map[dither], strength=1.0)

@@ -94,6 +94,88 @@ class TestParameters:
         assert "solid_hatch" in fill_param.choices
 
 
+class TestPaletteGroups:
+    """Pixel Art can use either the retro-console palettes or the shared pen
+    palettes (Color Separation / Pointillist set), toggled by 'palette_group'."""
+
+    def setup_method(self):
+        from plottter.generators.pixel_art import PixelArtGenerator
+
+        self.gen = PixelArtGenerator()
+
+    def test_palette_group_defaults_to_retro(self):
+        params = self.gen.get_parameters()
+        grp = next(p for p in params if p.name == "palette_group")
+        assert grp.default == "Retro Consoles"
+        assert set(grp.choices) == {"Retro Consoles", "Pen Palettes"}
+
+    def test_retro_and_pen_dropdowns_are_mutually_exclusive(self):
+        params = {p.name: p for p in self.gen.get_parameters()}
+        assert params["palette"].visible_when == {"palette_group": ["Retro Consoles"]}
+        assert params["palette_pen"].visible_when == {"palette_group": ["Pen Palettes"]}
+
+    def test_pen_dropdown_lists_builtin_pen_palettes(self):
+        from plottter.color import list_presets
+
+        params = {p.name: p for p in self.gen.get_parameters()}
+        pen_choices = set(params["palette_pen"].choices)
+        for p in list_presets():
+            assert p.name in pen_choices
+
+    def test_resolver_pen_group_uses_pen_palette(self):
+        from plottter.generators.pixel_art import _resolve_pixel_palette
+
+        pal = _resolve_pixel_palette("Pen Palettes", "grayscale_4", "Basic 6")
+        from plottter.color import get_preset
+
+        assert pal.to_hex_list() == [c.upper() for c in get_preset("Basic 6").colors]
+
+    def test_resolver_retro_group_uses_retro_palette(self):
+        from plottter.generators.pixel_art import _resolve_pixel_palette
+        from plottter.pixel_art import get_palette
+
+        pal = _resolve_pixel_palette("Retro Consoles", "gameboy", "Basic 6")
+        assert pal.to_hex_list() == get_palette("gameboy").to_hex_list()
+
+    def test_pen_palette_generates_one_layer_per_used_color(self):
+        import numpy as np
+
+        from plottter.models import Canvas
+
+        rng = np.random.default_rng(0)
+        img = rng.integers(0, 256, size=(40, 40, 3), dtype=np.uint8)
+        specs = self.gen.generate_layers(
+            {
+                "_source_image": img,
+                "grid_width": 16,
+                "palette_group": "Pen Palettes",
+                "palette_pen": "PaperMate InkJoy 30",
+                "image_fit_mode": "fit",
+            },
+            Canvas.from_preset("A4"),
+        )
+        assert len(specs) > 0
+        from plottter.color import get_preset
+
+        valid = {c.upper() for c in get_preset("PaperMate InkJoy 30").colors}
+        for s in specs:
+            assert s.color.upper() in valid
+
+    def test_legacy_params_without_group_still_use_retro(self):
+        """Saved projects/presets predating the toggle (no palette_group key)
+        must keep resolving to the retro 'palette' value."""
+        import numpy as np
+
+        from plottter.models import Canvas
+
+        img = np.full((16, 16, 3), 128, dtype=np.uint8)
+        specs = self.gen.generate_layers(
+            {"_source_image": img, "grid_width": 8, "palette": "nes", "image_fit_mode": "fit"},
+            Canvas.from_preset("A4"),
+        )
+        assert len(specs) > 0
+
+
 # ---------------------------------------------------------------------------
 # generate_layers — core behaviour
 # ---------------------------------------------------------------------------

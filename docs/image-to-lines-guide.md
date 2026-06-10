@@ -668,7 +668,7 @@ Places single-stroke Hershey font characters on a grid, with character selection
 
 **Generator:** Pixel Art
 
-Renders a raster image as a grid of discrete cells in a fixed retro palette — Game Boy, NES, SNES, PICO-8, C64, EGA/CGA, Endesga32, grayscale, and others. Each palette color is emitted on its own layer, so a multi-pen plotter can produce a full-color pixel-art print in one job.
+Renders a raster image as a grid of discrete cells in a fixed palette. Choose between two palette families with the **Palette Group** toggle: *Retro Consoles* (Game Boy, NES, SNES, PICO-8, C64, EGA/CGA, Endesga32, grayscale, and others) or *Pen Palettes* (the same pen sets used by Color Separation and Pointillist — Basic 6, Copic 12, PaperMate InkJoy 30, …, including any you've saved). Each palette color is emitted on its own layer, so a multi-pen plotter can produce a full-color pixel-art print in one job.
 
 Unlike the other image-to-lines algorithms, Pixel Art's output is *structured*: the canvas is divided into an NxM grid, every cell of one color contains the same fill strokes, and the cells themselves can be drawn as squares, diamonds, circles, rounded squares, octagons, or a staggered hex grid.
 
@@ -677,7 +677,9 @@ Unlike the other image-to-lines algorithms, Pixel Art's output is *structured*: 
 | Parameter | Effect |
 |-----------|--------|
 | `grid_width` | Number of pixels across (8–256). Smaller = chunkier, more abstract |
-| `palette` | Color palette: `grayscale_4`, `gameboy`, `nes`, `snes`, `pico8`, `c64`, `ega`, `endesga32`, `sweetie16`, and more |
+| `palette_group` | `Retro Consoles` (classic game-system palettes, best for pixel art) or `Pen Palettes` (the Color Separation / Pointillist pen sets) |
+| `palette` | Retro-console palette (shown when group is *Retro Consoles*): `grayscale_4`, `gameboy`, `nes`, `snes`, `pico8`, `c64`, `ega`, `endesga32`, `sweetie16`, and more |
+| `palette_pen` | Pen palette (shown when group is *Pen Palettes*): Basic 6, Copic 12, PaperMate InkJoy 30, and any user-saved palette |
 | `quantization` | How pixel colors are mapped to the palette: `nearest`, `kmeans`, `median_cut`, `octree` |
 | `color_space` | `rgb` (fast) or `lab` (perceptually uniform — better for portraits) |
 | `dithering` | `none`, `floyd_steinberg`, `ordered`, `atkinson` — adds patterned tone variation |

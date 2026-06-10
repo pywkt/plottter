@@ -27,9 +27,9 @@ from plottter.generators.base import (
 )
 from plottter.models.canvas import Canvas
 
-# Curated palette list — covers the most useful presets for plotter pixel art.
-# Uses underscore-form keys so they round-trip cleanly through get_palette().
-_PALETTE_CHOICES: list[str] = [
+# Curated retro-console palette list — the natural fit for pixel art. Uses
+# underscore-form keys so they round-trip cleanly through get_palette().
+_RETRO_PALETTE_CHOICES: list[str] = [
     "grayscale_4",
     "grayscale_2",
     "grayscale_8",
@@ -49,6 +49,31 @@ _PALETTE_CHOICES: list[str] = [
     "endesga64",
     "resurrect64",
 ]
+
+
+def _pen_palette_choices() -> list[str]:
+    """Pen-palette preset names (the same set as Color Separation / Pointillist),
+    resolved at call time so newly added built-ins appear automatically."""
+    from plottter.color import list_presets
+
+    return [p.name for p in list_presets()]
+
+
+def _resolve_pixel_palette(palette_group: str, retro_name: str, pen_name: str):
+    """Resolve the selected palette to a pixel_art Palette object.
+
+    The "Pen Palettes" group reuses the shared color.palettes presets (Basic 6,
+    Copic 12, PaperMate InkJoy 30, …) wrapped via the same adapter the Custom
+    Palette separator uses; otherwise the vendored retro-console palettes.
+    """
+    from plottter.pixel_art import get_palette
+
+    if palette_group == "Pen Palettes":
+        from plottter.color.palette_separator import as_pixelart_palette
+        from plottter.color.palettes import get_preset
+
+        return as_pixelart_palette(get_preset(pen_name))
+    return get_palette(retro_name)
 
 
 @register_generator
@@ -77,11 +102,33 @@ class PixelArtGenerator(Generator):
                 description="Number of cells across the drawing area width.",
             ),
             ChoiceParam(
+                name="palette_group",
+                label="Palette Group",
+                choices=["Retro Consoles", "Pen Palettes"],
+                default="Retro Consoles",
+                description=(
+                    "Which family of palettes to choose from. 'Retro Consoles' "
+                    "are the classic game-system palettes (best suited to pixel "
+                    "art); 'Pen Palettes' are the same pen sets used by Color "
+                    "Separation and Pointillist (Basic 6, Copic 12, PaperMate "
+                    "InkJoy 30, …)."
+                ),
+            ),
+            ChoiceParam(
                 name="palette",
                 label="Palette",
-                choices=_PALETTE_CHOICES,
+                choices=_RETRO_PALETTE_CHOICES,
                 default="grayscale_4",
-                description="Colour palette used to quantise the source image.",
+                visible_when={"palette_group": ["Retro Consoles"]},
+                description="Retro-console colour palette used to quantise the source image.",
+            ),
+            ChoiceParam(
+                name="palette_pen",
+                label="Pen Palette",
+                choices=_pen_palette_choices(),
+                default="Basic 6",
+                visible_when={"palette_group": ["Pen Palettes"]},
+                description="Pen palette used to quantise the source image — one layer per pen colour.",
             ),
             ChoiceParam(
                 name="quantization",
@@ -443,14 +490,16 @@ class PixelArtGenerator(Generator):
         cancelled_callback: Any = None,
     ) -> list[LayerSpec]:
         """Return one LayerSpec per palette colour that appears in the grid."""
-        from plottter.pixel_art import get_palette, image_to_palette_grid
+        from plottter.pixel_art import image_to_palette_grid
 
         source: np.ndarray | None = params.get("_source_image")
         if source is None:
             return []
 
         grid_width = int(params.get("grid_width", 32))
+        palette_group = str(params.get("palette_group", "Retro Consoles"))
         palette_name = str(params.get("palette", "grayscale_4"))
+        pen_palette_name = str(params.get("palette_pen", "Basic 6"))
         quantization = str(params.get("quantization", "nearest"))
         color_space = str(params.get("color_space", "rgb"))
         dithering = str(params.get("dithering", "none"))
@@ -468,7 +517,7 @@ class PixelArtGenerator(Generator):
             gray = to_grayscale(source)
             source = np.repeat(gray[:, :, None], 3, axis=2)
 
-        palette = get_palette(palette_name)
+        palette = _resolve_pixel_palette(palette_group, palette_name, pen_palette_name)
 
         if cell_shape == "hex":
             return self._generate_hex_layers(
