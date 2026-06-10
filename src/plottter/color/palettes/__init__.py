@@ -30,6 +30,7 @@ from plottter.color.palettes.earth_tones_6 import PALETTE as _EARTH_TONES_6
 from plottter.color.palettes.pastel_6 import PALETTE as _PASTEL_6
 from plottter.color.palettes.neon_5 import PALETTE as _NEON_5
 from plottter.color.palettes.skin_tones_6 import PALETTE as _SKIN_TONES_6
+from plottter.color.palettes.papermate_inkjoy_30 import PALETTE as _PAPERMATE_INKJOY_30
 
 #: Ordered dict of built-in presets, keyed by their canonical ``PenPalette.name``.
 PALETTE_PRESETS: dict[str, PenPalette] = {
@@ -46,6 +47,7 @@ PALETTE_PRESETS: dict[str, PenPalette] = {
     _PASTEL_6.name: _PASTEL_6,
     _NEON_5.name: _NEON_5,
     _SKIN_TONES_6.name: _SKIN_TONES_6,
+    _PAPERMATE_INKJOY_30.name: _PAPERMATE_INKJOY_30,
 }
 
 
