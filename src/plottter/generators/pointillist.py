@@ -102,10 +102,13 @@ class PointillistGenerator(Generator):
                 step=0.1,
                 default=0.5,
                 randomizable=False,
-                visible_when={"dot_style": ["cross", "circle", "disc"]},
                 description=(
-                    "Dot size in mm. Used by 'cross', 'circle' and 'disc' "
-                    "styles; ignored by 'point'."
+                    "Dot size in mm. For 'cross'/'circle'/'disc' it is the "
+                    "drawn mark size. For 'point' it is your pen/marker tip "
+                    "diameter: the dot stays a single pen tap (its real size on "
+                    "the plotter is the pen tip), and this value is used to show "
+                    "the true dot size in the preview/SVG and to space dots at "
+                    "least one tip-width apart so they don't overlap."
                 ),
             ),
             FloatParam(
@@ -262,6 +265,15 @@ class PointillistGenerator(Generator):
         density = float(params.get("density_per_cm2", 200.0))
         skip_white = bool(params.get("skip_paper_white", True))
 
+        # For 'point' dots the mark is a single pen tap whose real size is the
+        # pen tip (``size_mm``).  Cap the dot count so the average centre-to-
+        # centre spacing is at least one tip-width — otherwise a fat marker's
+        # taps overlap into mush.  ``area / size_mm**2`` points over an area give
+        # an average spacing of ~``size_mm`` (square-packing limit).
+        spacing_cap_per_cm2: float | None = None
+        if style == "point" and size_mm > 0.0:
+            spacing_cap_per_cm2 = 100.0 / (size_mm * size_mm)  # 1 cm² = 100 mm²
+
         layer_specs: list[LayerSpec] = []
         for i, (mask, hex_color) in enumerate(masks):
             if skip_white and hex_color.upper() == "#FFFFFF":
@@ -269,7 +281,11 @@ class PointillistGenerator(Generator):
             if not (mask == 255).any():
                 continue
 
-            n = int(round(density * rect_area_cm2 * float((mask == 255).mean())))
+            coverage = float((mask == 255).mean())
+            eff_density = density
+            if spacing_cap_per_cm2 is not None:
+                eff_density = min(density, spacing_cap_per_cm2)
+            n = int(round(eff_density * rect_area_cm2 * coverage))
             if n <= 0:
                 continue
 
@@ -279,11 +295,19 @@ class PointillistGenerator(Generator):
                 dots_mm, style=style, size_mm=size_mm, fill_spacing_mm=fill_spacing_mm
             )
 
+            # Single-tap 'point' dots carry no size in their geometry, so attach
+            # the pen tip diameter as a render hint: the canvas preview and SVG
+            # export use it (round caps) to show the dot at its true size.
+            spec_info: dict[str, Any] | None = None
+            if style == "point":
+                spec_info = {"dot_diameter_mm": size_mm}
+
             layer_specs.append(
                 LayerSpec(
                     name=f"Pen {i + 1} ({hex_color})",
                     color=hex_color,
                     paths=paths,
+                    generator_info=spec_info,
                 )
             )
 

@@ -85,11 +85,21 @@ def _layer_group(
     stroke_width: float = 0.3,
 ) -> svgwrite.container.Group:
     """Build a <g> element with all polylines from *layer*."""
+    group_attrs = {"stroke-width": f"{stroke_width:.3f}mm"}
+    # Single-tap dot layers (e.g. Pointillist 'point' style) carry the pen tip
+    # diameter as a render hint: stroke them at that true width with round caps
+    # so each near-zero-length tap renders as a real dot at its physical size.
+    gen_info = getattr(layer, "generator_info", None)
+    if isinstance(gen_info, dict):
+        dot_dia = gen_info.get("dot_diameter_mm")
+        if isinstance(dot_dia, (int, float)) and dot_dia > 0.0:
+            group_attrs["stroke-width"] = f"{float(dot_dia):.3f}mm"
+            group_attrs["stroke-linecap"] = "round"
     g = dwg.g(
         id=f"layer_{_safe_xml_id(layer.name)}",
         stroke=layer.color,
         fill="none",
-        **{"stroke-width": f"{stroke_width:.3f}mm"},
+        **group_attrs,
     )
     for path in layer.paths:
         if len(path) < 2:
@@ -275,13 +285,23 @@ def export_layer_specs_svg(
         safe_id = _safe_xml_id(spec.name)
         # Escape XML attribute special characters in the label.
         label = spec.name.replace("&", "&amp;").replace('"', "&quot;")
+        # Single-tap dot layers carry a pen tip diameter hint: stroke them at
+        # that true width with round caps so each tap renders as a real dot.
+        sw_mm = stroke_width
+        linecap_attr = ""
+        gen_info = getattr(spec, "generator_info", None)
+        if isinstance(gen_info, dict):
+            dot_dia = gen_info.get("dot_diameter_mm")
+            if isinstance(dot_dia, (int, float)) and dot_dia > 0.0:
+                sw_mm = float(dot_dia)
+                linecap_attr = ' stroke-linecap="round"'
         lines.append(
             f'  <g id="layer_{safe_id}"'
             f' inkscape:groupmode="layer"'
             f' inkscape:label="{label}"'
             f' stroke="{spec.color}"'
             f' fill="none"'
-            f' stroke-width="{stroke_width:.3f}mm">'
+            f' stroke-width="{sw_mm:.3f}mm"{linecap_attr}>'
         )
         for path in spec.paths:
             if len(path) < 2:

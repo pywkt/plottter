@@ -322,6 +322,13 @@ class _GenerateMixin:
                 }
                 if run_settings is not None:
                     gen_info["_generator_settings"] = run_settings
+                # Merge any per-layer render hints the generator attached to the
+                # spec (e.g. point-dot true-size diameter). Generator hints must
+                # not clobber the run bookkeeping keys above.
+                spec_info = getattr(spec, "generator_info", None)
+                if isinstance(spec_info, dict):
+                    for key, value in spec_info.items():
+                        gen_info.setdefault(key, value)
                 layer = Layer(
                     name=spec.name,
                     color=spec.color,

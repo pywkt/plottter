@@ -137,8 +137,11 @@ class TestParameters:
         assert p.randomizable is False
 
     def test_dot_size_mm_visible_when(self):
+        # dot_size_mm now applies to every dot style, including 'point' (where
+        # it is the pen tip diameter used for true-size preview + spacing), so
+        # it is always visible — no visible_when gating.
         p = self.by_name["dot_size_mm"]
-        assert p.visible_when == {"dot_style": ["cross", "circle", "disc"]}
+        assert p.visible_when is None
 
     def test_dot_fill_spacing_mm_param(self):
         from plottter.generators.base import FloatParam
@@ -352,6 +355,112 @@ class TestDotStyles:
         assert large_r > small_r * 3, (
             f"larger dot_size_mm should produce proportionally larger circle radius: "
             f"small_r={small_r:.4f}, large_r={large_r:.4f}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# point dot sizing: true-size render hint + spacing clamp
+# ---------------------------------------------------------------------------
+
+class TestPointDotSizing:
+    """'point' dots stay single taps but carry a pen-tip-diameter hint and are
+    spaced at least one tip-width apart so fat markers don't overlap."""
+
+    def setup_method(self):
+        from plottter.generators.pointillist import PointillistGenerator
+        from plottter.models.canvas import Canvas
+
+        self.gen = PointillistGenerator()
+        self.canvas = _make_canvas()
+        self.image = _make_basic6_image()
+        # A small canvas (20x20 mm drawing area = 4 cm^2) plus a denser image so
+        # the requested density — not the mask's white-pixel count — is the
+        # binding constraint. This lets the spacing clamp actually reduce dots.
+        self.small_canvas = Canvas(width_mm=30.0, height_mm=30.0, margin_mm=5.0)
+        self.dense_image = _make_basic6_image(width=48, height=48)
+
+    def _specs(self, **overrides):
+        params = _base_params(self.image, **overrides)
+        return self.gen.generate_layers(params, self.canvas)
+
+    def _specs_small(self, **overrides):
+        params = _base_params(self.dense_image, **overrides)
+        return self.gen.generate_layers(params, self.small_canvas)
+
+    def test_point_layers_carry_dot_diameter_hint(self):
+        specs = self._specs(dot_style="point", dot_size_mm=0.7)
+        assert len(specs) > 0
+        for spec in specs:
+            assert spec.generator_info == {"dot_diameter_mm": 0.7}
+
+    def test_non_point_styles_have_no_hint(self):
+        for style in ("cross", "circle", "disc"):
+            specs = self._specs(dot_style=style)
+            assert len(specs) > 0
+            for spec in specs:
+                assert spec.generator_info is None, (
+                    f"{style} layers should not carry a dot_diameter_mm hint"
+                )
+
+    def test_point_dots_stay_single_taps(self):
+        # Each point is still a minimal 2-point pen-down/up stub — the size lives
+        # in the render hint, not the geometry.
+        specs = self._specs(dot_style="point", dot_size_mm=1.5)
+        for spec in specs:
+            for path in spec.paths:
+                assert len(path) == 2
+
+    def test_larger_tip_yields_fewer_dots(self):
+        # Spacing clamp: a wider pen tip caps the dot count so dots stay >= one
+        # tip-width apart. 0.5 mm leaves the default 200/cm^2 untouched; 2.0 mm
+        # caps it well below that, so fewer dots are placed.
+        small = self._specs_small(dot_style="point", dot_size_mm=0.5)
+        large = self._specs_small(dot_style="point", dot_size_mm=2.0)
+        small_total = sum(len(s.paths) for s in small)
+        large_total = sum(len(s.paths) for s in large)
+        assert large_total < small_total, (
+            f"wider tip should place fewer dots: 0.5mm={small_total}, "
+            f"2.0mm={large_total}"
+        )
+
+    def test_fine_tip_keeps_requested_density(self):
+        # A fine tip (0.5 mm) caps density at 100/0.25 = 400/cm^2, above the
+        # requested 200/cm^2, so the requested density is used unchanged. The
+        # point dot count then matches an equivalent cross run (which is not
+        # spacing-clamped) — cross emits 2 polylines per dot.
+        point_specs = self._specs_small(dot_style="point", dot_size_mm=0.5)
+        cross_specs = self._specs_small(dot_style="cross", dot_size_mm=0.5)
+        point_dots = sum(len(s.paths) for s in point_specs)
+        cross_dots = sum(len(s.paths) for s in cross_specs) // 2
+        assert point_dots == cross_dots
+
+    def test_average_spacing_at_least_tip_width(self):
+        import math
+
+        specs = self._specs_small(dot_style="point", dot_size_mm=2.0)
+        # Gather all dot centres across point layers.
+        centres = []
+        for spec in specs:
+            for path in spec.paths:
+                x, y = path[0]
+                centres.append((x, y))
+        assert len(centres) > 1
+        # Nearest-neighbour mean should be on the order of the tip width, not a
+        # small fraction of it (which would indicate overlap).
+        best = []
+        for i, (xi, yi) in enumerate(centres):
+            dmin = float("inf")
+            for j, (xj, yj) in enumerate(centres):
+                if i == j:
+                    continue
+                d = math.hypot(xi - xj, yi - yj)
+                if d < dmin:
+                    dmin = d
+            best.append(dmin)
+        mean_nn = sum(best) / len(best)
+        assert mean_nn > 1.0, (
+            f"mean nearest-neighbour spacing {mean_nn:.3f}mm should be on the "
+            f"order of the 2.0mm tip width, not packed tight"
         )
 
 

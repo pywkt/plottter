@@ -131,6 +131,12 @@ class LayerSpec:
     name: str
     color: str
     paths: list[Polyline]
+    #: Optional per-layer render/metadata hints merged into the created
+    #: ``Layer.generator_info`` by the GUI multi-layer handler.  Generators use
+    #: this to carry display hints that the canvas/exporters read back — e.g.
+    #: ``{"dot_diameter_mm": 0.5}`` so single-tap dots preview/export at their
+    #: true physical size.  ``None`` for generators that need no hints.
+    generator_info: dict[str, Any] | None = None
 
 
 class Generator(ABC):

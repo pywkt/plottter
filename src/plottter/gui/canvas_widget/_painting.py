@@ -420,7 +420,19 @@ class _PaintingMixin:
         color.setAlphaF(1.0 if self._ink_preview else layer.opacity)
         # Pen width tracks the configured preview pen width (mm) scaled by
         # zoom (px/mm); never below 0.5 px so hairlines stay visible.
-        pen = QPen(color, max(0.5, self._zoom * self._preview_pen_width_mm))
+        width_mm = self._preview_pen_width_mm
+        cap = Qt.PenCapStyle.SquareCap
+        # Single-tap dot layers (e.g. Pointillist 'point' style) carry the pen
+        # tip diameter as a render hint: draw them at that true width with round
+        # caps so each tap shows as a real dot at its physical size.
+        gen_info = getattr(layer, "generator_info", None)
+        if isinstance(gen_info, dict):
+            dot_dia = gen_info.get("dot_diameter_mm")
+            if isinstance(dot_dia, (int, float)) and dot_dia > 0.0:
+                width_mm = float(dot_dia)
+                cap = Qt.PenCapStyle.RoundCap
+        pen = QPen(color, max(0.5, self._zoom * width_mm))
+        pen.setCapStyle(cap)
         painter.setPen(pen)
 
         # Compute viewport bounds in mm for culling — paths whose bounding box
