@@ -160,3 +160,40 @@ class TestPerfHud:
         # pixels, exact diff-ratio 0.
         real2 = _render_widget(qapp, project, 3.0, (50.0, 50.0), SIZE)
         assert pixel_diff_ratio(real, real2) == 0.0
+
+
+class TestBenchCanvasCli:
+    """Smoke test for the offscreen bench CLI (spec §5.2).
+
+    Runs ``tools/bench_canvas.py`` programmatically at a tiny scale (200×8,
+    1 frame) and asserts the JSON-stats shape — keeps the bench harness
+    importable and runnable in CI without measuring absolute ms.
+    """
+
+    def test_run_bench_returns_expected_shape(self, qapp):
+        import tools.bench_canvas as bench
+
+        stats = bench.run_bench(n_paths=200, n_pts=8, frames=1)
+
+        assert stats["paths"] == 200
+        assert stats["pts"] == 8
+        assert stats["frames"] == 1
+        assert stats["cache_enabled"] is True
+        assert len(stats["times_ms"]) == 1
+        assert stats["min_ms"] > 0.0
+        assert stats["mean_ms"] > 0.0
+        # min/mean are derived from the same single sample here.
+        assert stats["min_ms"] == stats["times_ms"][0]
+        assert stats["mean_ms"] == stats["times_ms"][0]
+
+    def test_build_scene_path_count_and_shape(self, qapp):
+        import tools.bench_canvas as bench
+
+        project = bench.build_scene(n_paths=200, n_pts=8)
+        layer = project.layers[0]
+        assert len(layer.paths) == 200
+        # Every polyline has the requested point count; points are (x, y) mm.
+        assert all(len(p) == 8 for p in layer.paths)
+        x, y = layer.paths[0][0]
+        assert 0.0 <= x <= bench.A2_W_MM
+        assert 0.0 <= y <= bench.A2_H_MM

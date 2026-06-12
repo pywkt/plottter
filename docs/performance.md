@@ -159,3 +159,40 @@ The benchmark was run with:
 - `pip install -e ".[fast,dev]"`
 - No other significant processes running
 - Workload seed fixed at 42 for reproducibility
+
+---
+
+## Canvas rendering
+
+This section tracks the cost of a single canvas repaint — the work behind pan,
+zoom, drag, and animation frames. The driver is `tools/bench_canvas.py`: it
+builds a real `ProjectController` + `CanvasWidget` (1400×900), fills the project
+with a seeded random-walk scene over an A2 sheet (`--paths N --pts M`, RNG seed
+42), and times `widget.render(QImage)` over `--frames` frames (default 5),
+reporting min/mean ms per frame.
+
+```bash
+# Defaults to QT_QPA_PLATFORM=offscreen; --json for machine-readable output.
+python tools/bench_canvas.py --paths 10000 --pts 12
+python tools/bench_canvas.py --paths 38000 --pts 12 --json
+python tools/bench_canvas.py --paths 38000 --pts 12 --no-cache   # uncached path
+```
+
+### Baseline — pre-cache (Phase 164)
+
+These are the **legacy per-segment `drawLine` numbers** captured before the
+layer path cache and scene pixmap cache land (spec `canvas-performance.md`
+§3–§7). They are the targets later phases must beat — a representative frame at
+the project's real working scale costs hundreds of ms to over a second:
+
+| Scene          | min (ms) | mean (ms) |
+| -------------- | -------: | --------: |
+| 10000 × 12     |      332 |       343 |
+| 38000 × 12     |     1323 |      1344 |
+
+> Absolute ms are hardware-dependent (these were measured offscreen on the dev
+> loop machine); reproduce within ±20 % on comparable hardware. The shape — a
+> roughly linear ~3.9× jump from 10k to 38k paths, all of it in the per-point
+> Python loops of `_draw_layer` — is the part that matters. Target after the
+> rewrite: gesture frames under ~5 ms (cached blit), crisp re-render under
+> ~60 ms at 38k paths.
