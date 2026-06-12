@@ -936,6 +936,14 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         y_mm = (point.y() - self._pan_offset.y()) / self._zoom
         return (x_mm, y_mm)
 
+    def view_zoom(self) -> float:
+        """Current zoom factor in pixels per mm (read-only accessor for rulers)."""
+        return self._zoom
+
+    def view_pan_offset(self) -> QPointF:
+        """Current pan offset in widget pixels (read-only accessor for rulers)."""
+        return QPointF(self._pan_offset)
+
     # ------------------------------------------------------------------
     # Event handlers (controller signals)
     # ------------------------------------------------------------------
