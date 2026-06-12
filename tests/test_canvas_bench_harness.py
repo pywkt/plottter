@@ -101,3 +101,62 @@ class TestWidgetEquivalence:
         real = _render_widget(qapp, project, zoom, pan, SIZE)
         ratio = pixel_diff_ratio(real, ref)
         assert ratio <= 0.02, f"pixel diff ratio {ratio:.4f} exceeds 0.02"
+
+
+class TestPerfHud:
+    """Env-gated paint-time HUD (spec §5.1).
+
+    The HUD is built only when ``PLOTTTER_PERF_HUD=1`` at widget construction;
+    when disabled the ``section()`` wrappers in ``paintEvent`` are no-ops and
+    must not perturb a single rendered pixel.
+    """
+
+    def _make_widget(self, project):
+        from plottter.gui.canvas_widget import CanvasWidget
+        from plottter.gui.project_controller import ProjectController
+
+        return CanvasWidget(ProjectController(project))
+
+    def test_hud_absent_without_env_var(self, qapp, monkeypatch):
+        monkeypatch.delenv("PLOTTTER_PERF_HUD", raising=False)
+        widget = self._make_widget(make_fixture_project())
+        assert widget._perf_hud is None
+
+    def test_hud_absent_when_env_var_not_one(self, qapp, monkeypatch):
+        # Only the exact value "1" enables the HUD.
+        monkeypatch.setenv("PLOTTTER_PERF_HUD", "0")
+        widget = self._make_widget(make_fixture_project())
+        assert widget._perf_hud is None
+
+    def test_hud_constructed_and_renders_with_env_var(self, qapp, monkeypatch):
+        monkeypatch.setenv("PLOTTTER_PERF_HUD", "1")
+        widget = self._make_widget(make_fixture_project())
+        assert widget._perf_hud is not None
+
+        widget.resize(*SIZE)
+        widget._fitted = True
+        widget._zoom = 3.0
+        widget._pan_offset = QPointF(50.0, 50.0)
+
+        img = QImage(*SIZE, QImage.Format.Format_ARGB32)
+        img.fill(0)
+        # Render twice so the rolling deque accumulates frame samples; both
+        # calls must complete without raising.
+        widget.render(img)
+        widget.render(img)
+        assert len(widget._perf_hud._frame_times) == 2
+
+    def test_hud_disabled_render_matches_pre_hud(self, qapp, monkeypatch):
+        # "Pre-HUD behavior" == the legacy reference oracle, which has no HUD
+        # and no section() wrappers. With the HUD disabled the widget's paint
+        # path must stay pixel-equivalent to it (diff-ratio 0 within §5.3
+        # tolerance) — the no-op sections add nothing to the output.
+        monkeypatch.delenv("PLOTTTER_PERF_HUD", raising=False)
+        project = make_fixture_project()
+        real = _render_widget(qapp, project, 3.0, (50.0, 50.0), SIZE)
+        ref = render_reference(project, 3.0, (50.0, 50.0), SIZE)
+        assert pixel_diff_ratio(real, ref) <= 0.02
+        # The disabled path is also deterministic frame-to-frame: identical
+        # pixels, exact diff-ratio 0.
+        real2 = _render_widget(qapp, project, 3.0, (50.0, 50.0), SIZE)
+        assert pixel_diff_ratio(real, real2) == 0.0

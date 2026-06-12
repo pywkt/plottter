@@ -1,6 +1,7 @@
 """CanvasWidget — zoomable, pannable vector canvas rendered with QPainter."""
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -16,6 +17,7 @@ from ._animation import _AnimationMixin
 from ._events import _EventsMixin
 from ._mask_ops import _MaskOpsMixin
 from ._painting import _PaintingMixin
+from ._perf_hud import PerfHud
 from .enums import MaskTool, ShapeDrawTool, _MASK_PX_PER_MM
 
 
@@ -280,6 +282,13 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # Space+drag hand-pan state
         self._space_held: bool = False
         self._hand_pan_active: bool = False
+
+        # Env-gated paint-time performance HUD (spec §5.1). Constructed only
+        # when PLOTTTER_PERF_HUD=1 at construction; otherwise None, so the
+        # per-paint cost is a single ``if self._perf_hud is None`` check.
+        self._perf_hud: PerfHud | None = (
+            PerfHud() if os.environ.get("PLOTTTER_PERF_HUD") == "1" else None
+        )
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)

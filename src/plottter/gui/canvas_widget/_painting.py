@@ -16,6 +16,7 @@ from PyQt6.QtGui import (
     QPixmap,
 )
 
+from ._perf_hud import _null_section
 from .enums import MaskTool, ShapeDrawTool
 
 
@@ -26,6 +27,14 @@ class _PaintingMixin:
     """
 
     def paintEvent(self, _event: QPaintEvent) -> None:
+        # Perf HUD (spec §5.1): times the whole paint body plus named
+        # sections via ``section(name)``. When the HUD is disabled, ``section``
+        # is ``_null_section`` so each ``with`` block is a no-op context manager.
+        hud = self._perf_hud
+        if hud is not None:
+            hud.begin_frame()
+        section = hud.section if hud is not None else _null_section
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
@@ -79,8 +88,9 @@ class _PaintingMixin:
             painter.setOpacity(1.0)
 
         # Mask paint overlay (above paper, below paths)
-        if self._mask_paint_active and self._mask_array is not None:
-            self._draw_mask_overlay(painter, canvas)
+        with section("mask"):
+            if self._mask_paint_active and self._mask_array is not None:
+                self._draw_mask_overlay(painter, canvas)
 
         # Grid overlay
         if self._show_grid:
@@ -91,76 +101,84 @@ class _PaintingMixin:
             self._draw_registration_marks(painter, canvas, project.reg_mark_style)
 
         # 3D preview mode: overlay dark viewport and render wireframe
-        if self._3d_preview_active:
-            self._draw_3d_preview(painter, canvas)
-        else:
-            # Paths.  In Ink Preview mode, switch to multiply blending so
-            # stacked layers combine like real ink on paper (cyan + yellow =
-            # green); restore the default mode afterwards so overlays
-            # (travel lines, registration marks, brush cursor, etc.) draw
-            # normally on top.
-            if self._ink_preview:
-                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Multiply)
-            try:
-                if self._anim_mode:
-                    self._draw_animated_paths(painter)
-                else:
-                    active_id = self._controller.active_layer_id
-                    for layer in project.layers:
-                        if not layer.visible:
-                            continue
-                        if (
-                            self._drag_move_active
-                            and self._drag_move_start_mm is not None
-                            and layer.id == active_id
-                        ):
-                            self._draw_layer(painter, layer, offset=self._drag_move_offset_mm)
-                        else:
-                            self._draw_layer(painter, layer)
-            finally:
+        with section("layers"):
+            if self._3d_preview_active:
+                self._draw_3d_preview(painter, canvas)
+            else:
+                # Paths.  In Ink Preview mode, switch to multiply blending so
+                # stacked layers combine like real ink on paper (cyan + yellow =
+                # green); restore the default mode afterwards so overlays
+                # (travel lines, registration marks, brush cursor, etc.) draw
+                # normally on top.
                 if self._ink_preview:
-                    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+                    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Multiply)
+                try:
+                    if self._anim_mode:
+                        self._draw_animated_paths(painter)
+                    else:
+                        active_id = self._controller.active_layer_id
+                        for layer in project.layers:
+                            if not layer.visible:
+                                continue
+                            if (
+                                self._drag_move_active
+                                and self._drag_move_start_mm is not None
+                                and layer.id == active_id
+                            ):
+                                self._draw_layer(painter, layer, offset=self._drag_move_offset_mm)
+                            else:
+                                self._draw_layer(painter, layer)
+                finally:
+                    if self._ink_preview:
+                        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
-            # Pen-up travel visualization (normal mode only)
-            if self._show_travel:
-                self._draw_travel_lines(painter, project)
+                # Pen-up travel visualization (normal mode only)
+                if self._show_travel:
+                    self._draw_travel_lines(painter, project)
 
-        # Map positioning preview overlay (faded lines + data-bounds outline)
-        if self._map_position_active:
-            self._draw_map_preview(painter, canvas)
+        # Interaction overlays (map/AI/FMM/shape feedback/brush cursor)
+        with section("overlays"):
+            # Map positioning preview overlay (faded lines + data-bounds outline)
+            if self._map_position_active:
+                self._draw_map_preview(painter, canvas)
 
-        # AI mask overlays (points and bounding box) — shown whenever prompts exist
-        if (
-            self._ai_mask_mode is not None
-            or self._ai_mask_positive_points
-            or self._ai_mask_negative_points
-            or (self._ai_box_start is not None and self._ai_box_end is not None)
-        ):
-            self._draw_ai_mask_overlays(painter)
+            # AI mask overlays (points and bounding box) — shown whenever prompts exist
+            if (
+                self._ai_mask_mode is not None
+                or self._ai_mask_positive_points
+                or self._ai_mask_negative_points
+                or (self._ai_box_start is not None and self._ai_box_end is not None)
+            ):
+                self._draw_ai_mask_overlays(painter)
 
-        # FMM source point marker (persistent, shown after pick or manual spinbox edit)
-        if self._fmm_source_marker_mm is not None:
-            self._draw_fmm_source_marker(painter, *self._fmm_source_marker_mm)
+            # FMM source point marker (persistent, shown after pick or manual spinbox edit)
+            if self._fmm_source_marker_mm is not None:
+                self._draw_fmm_source_marker(painter, *self._fmm_source_marker_mm)
 
-        # FMM live cursor preview (shown while pick mode is active)
-        if self._fmm_source_mode and self._fmm_cursor_preview_mm is not None:
-            self._draw_fmm_source_marker(painter, *self._fmm_cursor_preview_mm, is_preview=True)
+            # FMM live cursor preview (shown while pick mode is active)
+            if self._fmm_source_mode and self._fmm_cursor_preview_mm is not None:
+                self._draw_fmm_source_marker(painter, *self._fmm_cursor_preview_mm, is_preview=True)
 
-        # Shape tool rubber-band / in-progress feedback
-        if self._mask_paint_active:
-            self._draw_shape_feedback(painter)
+            # Shape tool rubber-band / in-progress feedback
+            if self._mask_paint_active:
+                self._draw_shape_feedback(painter)
 
-        # Shape draw in-progress feedback
-        if self._shape_draw_active:
-            self._draw_shape_draw_feedback(painter)
+            # Shape draw in-progress feedback
+            if self._shape_draw_active:
+                self._draw_shape_draw_feedback(painter)
 
-        # Brush cursor ring — only shown for the Brush tool
-        if (
-            self._mask_paint_active
-            and self._mask_tool == MaskTool.BRUSH
-            and self._brush_cursor_pos is not None
-        ):
-            self._draw_brush_cursor(painter, *self._brush_cursor_pos)
+            # Brush cursor ring — only shown for the Brush tool
+            if (
+                self._mask_paint_active
+                and self._mask_tool == MaskTool.BRUSH
+                and self._brush_cursor_pos is not None
+            ):
+                self._draw_brush_cursor(painter, *self._brush_cursor_pos)
+
+        # Draw the perf HUD last, on top of everything (spec §5.1).
+        if hud is not None:
+            hud.end_frame()
+            hud.draw(painter)
 
     # ------------------------------------------------------------------
     # 3D preview helpers
