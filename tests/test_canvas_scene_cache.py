@@ -415,3 +415,94 @@ def test_large_zoom_step_rebuilds_synchronously(qapp):
     # Out of soft range → synchronous crisp rebuild at the new zoom.
     assert widget._scene_cache.rebuild_count == 2
     assert widget._scene_cache.entry.zoom == widget._zoom
+
+
+# --------------------------------------------------------------------------
+# §7.5 — drag-to-move: active layer excluded from the bake, drawn live on top
+# --------------------------------------------------------------------------
+
+
+def _shift_paths(paths, dx, dy):
+    """Return *paths* with every point translated by ``(dx, dy)`` mm."""
+    return [[(x + dx, y + dy) for x, y in pl] for pl in paths]
+
+
+def test_drag_move_blit_matches_shifted_reference(qapp):
+    """A drag-move blit equals the oracle with the active layer pre-shifted (§7.5).
+
+    While ``_drag_move_active`` the cache bakes the scene *without* the active
+    layer and draws it live on top translated by ``_drag_move_offset_mm`` (cached
+    path + ``painter.translate``). The frame must therefore match a reference
+    rendered with only that layer's paths shifted by the same mm offset — to
+    within the ≤0.02 antialiasing tolerance.
+    """
+    from tests.canvas_render_ref import (
+        make_fixture_project,
+        pixel_diff_ratio,
+        render_reference,
+    )
+
+    dx, dy = 9.0, -6.0
+    size, zoom, pan = (400, 300), 3.0, (40.0, 30.0)
+
+    controller, widget = _make_widget(size=size, zoom=zoom, pan=pan)
+    widget._render_cache_enabled = True
+    active_id = controller.current_project.layers[0].id
+    controller.set_active_layer(active_id)
+    widget.set_drag_move_active(True)
+    widget._drag_move_start_mm = (0.0, 0.0)
+    widget._drag_move_offset_mm = (dx, dy)
+    img_real = _render_widget(widget)
+
+    # The baked pixmap must have left the active layer out (it is drawn live).
+    assert widget._scene_cache.entry.excluded_layer_id == active_id
+
+    # Oracle: same scene with only the active layer's paths translated by (dx, dy).
+    shifted = make_fixture_project()
+    shifted.layers[0].paths = _shift_paths(shifted.layers[0].paths, dx, dy)
+    img_ref = render_reference(shifted, zoom, pan, size)
+
+    ratio = pixel_diff_ratio(img_real, img_ref)
+    assert ratio <= 0.02, f"drag-move blit diff ratio {ratio:.4f} exceeds 0.02"
+
+
+def test_drag_move_enabled_without_drag_keeps_active_layer(qapp):
+    """Enabling drag-move before any drag must not drop the active layer (§7.5).
+
+    The bake excludes the active layer for the whole mode, so the live redraw
+    has to run on every frame of the mode — not only once ``_drag_move_start_mm``
+    is set by the first mouse press. Otherwise the active layer vanishes in the
+    gap between enabling the mode and starting a drag. A blit in that state must
+    therefore match a cache-disabled render (which draws the layer in place).
+    """
+    from tests.canvas_render_ref import pixel_diff_ratio
+
+    _c1, cached = _make_widget()
+    cached._render_cache_enabled = True
+    cached._controller.set_active_layer(cached._controller.current_project.layers[0].id)
+    cached.set_drag_move_active(True)  # mode on, no drag yet (start_mm is None)
+    assert cached._drag_move_start_mm is None
+    img_cached = _render_widget(cached)
+
+    _c2, bypass = _make_widget()
+    bypass._render_cache_enabled = False
+    bypass._controller.set_active_layer(bypass._controller.current_project.layers[0].id)
+    bypass.set_drag_move_active(True)
+    img_bypass = _render_widget(bypass)
+
+    assert pixel_diff_ratio(img_cached, img_bypass) <= 0.001
+
+
+def test_drag_move_toggle_bumps_scene_revision(qapp):
+    """Entering and leaving drag-move each bump ``scene_revision`` (§7.4).
+
+    The excluded-layer set changes on both edges, so a stale pixmap (one that
+    still contains — or still omits — the active layer) must never survive the
+    transition.
+    """
+    _controller, widget = _make_widget()
+    before = widget.scene_revision
+    widget.set_drag_move_active(True)
+    assert widget.scene_revision == before + 1
+    widget.set_drag_move_active(False)
+    assert widget.scene_revision == before + 2

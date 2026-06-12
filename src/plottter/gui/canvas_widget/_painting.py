@@ -256,9 +256,14 @@ class _PaintingMixin:
         if entry is not None:
             self._draw_scene_pixmap(painter, entry)
 
-        # Drag-to-move: the active layer was left out of the bake; draw it live
-        # on top at the current offset (spec §7.5). Frame cost = blit + one path.
-        if self._drag_move_active and self._drag_move_start_mm is not None:
+        # Drag-to-move: the active layer was left out of the bake (whenever
+        # ``_drag_move_active``, per ``_current_excluded_layer_id``), so it must
+        # be drawn live on top here for the *whole* mode — not only mid-drag —
+        # or it vanishes between enabling the mode and the first mouse press
+        # (``_drag_move_start_mm`` is ``None`` until then). The offset is (0, 0)
+        # until a drag starts, so this reduces to an un-translated redraw (spec
+        # §7.5). Frame cost = blit + one path.
+        if self._drag_move_active:
             active_id = self._controller.active_layer_id
             for layer in self._controller.current_project.layers:
                 if layer.visible and layer.id == active_id:

@@ -224,3 +224,45 @@ cache-build warmup, so `min` is the steady-state floor:
 > hardware-dependent (offscreen, dev-loop machine); reproduce the *shape* within
 > ±20 %. The `tests/test_canvas_path_cache.py::TestRenderCachePerfSmoke` test
 > guards the cache-on-beats-cache-off margin at a CI-friendly 5000 × 12.
+
+### After scene pixmap cache (Phase 166)
+
+The scene pixmap cache (`canvas-performance.md` §7) bakes the static content —
+grid, registration marks, every visible layer's path, travel lines — into one
+slop-padded `QPixmap` and blits it with a single `drawPixmap` per frame. The
+frame splits into two cost regimes:
+
+- **Gesture frame (blit)** — a pan within the 0.5-viewport slop, a soft scaled
+  zoom mid-gesture, or any repaint where the static content is unchanged: just
+  the `drawPixmap`. This is the number the §164 target ("gesture frames under
+  ~5 ms") is about.
+- **Crisp frame (rebuild)** — the pixmap is re-baked: on a `scene_revision` bump
+  (§7.4), a pan past the slop, a DPR change, or the 120 ms post-zoom idle timer.
+  This re-strokes every layer path once into the pixmap. Measured here with the
+  **path cache already warm** (the §6 `QPainterPath`s reused), so it isolates the
+  stroke-into-pixmap cost — not the one-time cold path build, which the very
+  first paint of a freshly loaded project folds in on top.
+
+Driver: `bench_canvas.py` renders the same view repeatedly, so `min` over frames
+after the first is the steady-state blit; the crisp column re-bakes each frame by
+bumping `scene_revision`. `no-cache` is the `--no-cache` (`PLOTTTER_NO_CANVAS_CACHE=1`)
+full per-frame draw, re-measured on this machine for an apples-to-apples baseline.
+Min/mean ms over 8 frames:
+
+| Scene      | no-cache min/mean | crisp rebuild min/mean | gesture blit min/mean | blit vs no-cache |
+| ---------- | ----------------: | ---------------------: | --------------------: | ---------------: |
+| 10000 × 12 |      92.6 / 105.1 |          31.2 / 34.4   |          2.24 / 2.86  |           ~41×   |
+| 38000 × 12 |     387.3 / 389.9 |          99.7 / 104.3  |          2.16 / 2.59  |          ~179×   |
+
+> **Gesture frames hit the target.** A blit is ~2.2 ms at *both* scales — flat in
+> path count, since it copies one pixmap regardless of how many paths it baked —
+> comfortably under the §164 ~5 ms goal (387 → 2.2 ms at 38k, ~179×). The crisp
+> rebuild is path-count bound (it re-strokes everything once): ~100 ms at 38k on
+> this machine, ~3.9× faster than the uncached full draw because the geometry is
+> reused and only the C++ stroke runs. That clears the §164 ~60 ms crisp target
+> at 10k (31 ms) but not at 38k (100 ms) on this (slower) dev-loop machine — the
+> crisp cost is the surviving stroke, which the pixmap cache cannot remove, only
+> defer off the gesture path; the 120 ms idle timer keeps it off-screen during
+> interaction so the user sees blits, not rebuilds. Numbers are hardware-dependent
+> (offscreen, dev-loop machine); reproduce the *shape* — flat blit, path-bound
+> crisp — within ±20 %.
