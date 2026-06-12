@@ -98,49 +98,15 @@ class _PaintingMixin:
             if self._mask_paint_active and self._mask_array is not None:
                 self._draw_mask_overlay(painter, canvas)
 
-        # Grid overlay
-        if self._show_grid:
-            self._draw_grid(painter, canvas)
-
-        # Registration marks
-        if self._show_reg_marks and project.registration_marks:
-            self._draw_registration_marks(painter, canvas, project.reg_mark_style)
-
-        # 3D preview mode: overlay dark viewport and render wireframe
+        # Static scene content — grid → reg marks → layer paths → travel
+        # (spec §7.1 frame list, z-order preserved). Blitted from one baked
+        # pixmap (§7.3) unless a bypass condition forces a direct §6 path draw
+        # (ink preview / animation / 3D / the test-bench cache flag, §7.6).
         with section("layers"):
-            if self._3d_preview_active:
-                self._draw_3d_preview(painter, canvas)
+            if self._scene_cache_active():
+                self._blit_scene_cache(painter)
             else:
-                # Paths.  In Ink Preview mode, switch to multiply blending so
-                # stacked layers combine like real ink on paper (cyan + yellow =
-                # green); restore the default mode afterwards so overlays
-                # (travel lines, registration marks, brush cursor, etc.) draw
-                # normally on top.
-                if self._ink_preview:
-                    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Multiply)
-                try:
-                    if self._anim_mode:
-                        self._draw_animated_paths(painter)
-                    else:
-                        active_id = self._controller.active_layer_id
-                        for layer in project.layers:
-                            if not layer.visible:
-                                continue
-                            if (
-                                self._drag_move_active
-                                and self._drag_move_start_mm is not None
-                                and layer.id == active_id
-                            ):
-                                self._draw_layer(painter, layer, offset=self._drag_move_offset_mm)
-                            else:
-                                self._draw_layer(painter, layer)
-                finally:
-                    if self._ink_preview:
-                        painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
-
-                # Pen-up travel visualization (normal mode only)
-                if self._show_travel:
-                    self._draw_travel_lines(painter, project)
+                self._draw_scene_content(painter, project, canvas)
 
         # Interaction overlays (map/AI/FMM/shape feedback/brush cursor)
         with section("overlays"):
@@ -185,6 +151,102 @@ class _PaintingMixin:
         if hud is not None:
             hud.end_frame()
             hud.draw(painter)
+
+    # ------------------------------------------------------------------
+    # Scene pixmap blit / bypass (spec §7)
+    # ------------------------------------------------------------------
+
+    def _scene_cache_active(self) -> bool:
+        """Whether the baked scene pixmap is used this frame (spec §7.6).
+
+        The cache is bypassed — scene content drawn live via §6 paths — when
+        ink preview, animation or 3D preview is active, or the test/bench
+        render-cache flag (§9) is off. The §6 per-layer path cache still
+        applies in the bypass path; only the §7 pixmap blit is skipped.
+        """
+        if not self._render_cache_enabled:
+            return False
+        return not (self._ink_preview or self._anim_mode or self._3d_preview_active)
+
+    def _draw_scene_content(self, painter: QPainter, project, canvas) -> None:  # type: ignore[no-untyped-def]
+        """Draw grid → reg marks → layer paths → travel directly (spec §7.1).
+
+        Used for the bypass path (ink / animation / 3D / no-cache) and, through
+        the very same ``_draw_*`` helpers, by ``ScenePixmapCache.rebuild`` — so
+        a blitted frame and a bypassed frame are pixel-identical in the normal
+        (non-bypass) modes. z-order matches the §4 frame list exactly.
+        """
+        if self._show_grid:
+            self._draw_grid(painter, canvas)
+        if self._show_reg_marks and project.registration_marks:
+            self._draw_registration_marks(painter, canvas, project.reg_mark_style)
+
+        # 3D preview replaces the path block with a dark viewport + wireframe.
+        if self._3d_preview_active:
+            self._draw_3d_preview(painter, canvas)
+            return
+
+        # In Ink Preview, switch to multiply blending so stacked layers combine
+        # like real ink on paper (cyan + yellow = green); restore afterwards so
+        # travel lines and overlays draw normally on top.
+        if self._ink_preview:
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Multiply)
+        try:
+            if self._anim_mode:
+                self._draw_animated_paths(painter)
+            else:
+                active_id = self._controller.active_layer_id
+                for layer in project.layers:
+                    if not layer.visible:
+                        continue
+                    if (
+                        self._drag_move_active
+                        and self._drag_move_start_mm is not None
+                        and layer.id == active_id
+                    ):
+                        self._draw_layer(painter, layer, offset=self._drag_move_offset_mm)
+                    else:
+                        self._draw_layer(painter, layer)
+        finally:
+            if self._ink_preview:
+                painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+
+        if self._show_travel:
+            self._draw_travel_lines(painter, project)
+
+    def _blit_scene_cache(self, painter: QPainter) -> None:
+        """Blit the baked scene pixmap, rebuilding if stale (spec §7.3, §7.5).
+
+        A valid entry is blitted at ``mm_to_pixel(origin_mm)``; an invalid one
+        — revision bump, zoom change, or a pan past the slop region — triggers
+        a synchronous rebuild centered on the current viewport first. During
+        drag-to-move the active layer is excluded from the bake (§7.5) and drawn
+        live on top here at the current drag offset.
+        """
+        cache = self._scene_cache
+        if not cache.is_valid(self):
+            cache.rebuild(self)
+        entry = cache.entry
+        if entry is not None:
+            origin_px = self.mm_to_pixel(entry.origin_mm)
+            pixmap = entry.pixmap
+            dpr = pixmap.devicePixelRatio()
+            target = QRectF(
+                origin_px.x(),
+                origin_px.y(),
+                pixmap.width() / dpr,
+                pixmap.height() / dpr,
+            )
+            painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
+
+        # Drag-to-move: the active layer was left out of the bake; draw it live
+        # on top at the current offset (spec §7.5). Frame cost = blit + one path.
+        if self._drag_move_active and self._drag_move_start_mm is not None:
+            active_id = self._controller.active_layer_id
+            for layer in self._controller.current_project.layers:
+                if layer.visible and layer.id == active_id:
+                    self._draw_layer(painter, layer, offset=self._drag_move_offset_mm)
+                    break
 
     # ------------------------------------------------------------------
     # 3D preview helpers

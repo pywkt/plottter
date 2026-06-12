@@ -246,3 +246,96 @@ def test_invalidate_drops_entry(qapp):
     widget._scene_cache.invalidate()
     assert widget._scene_cache.entry is None
     assert not widget._scene_cache.is_valid(widget)
+
+
+# --------------------------------------------------------------------------
+# §7.1 / §7.3 / §7.6 — paintEvent integration: blit vs bypass, pan slop
+# --------------------------------------------------------------------------
+
+
+def _render_widget(widget):
+    """Run a real paint into a fresh ARGB image and return it.
+
+    ``QWidget.render`` invokes ``paintEvent`` synchronously, so this exercises
+    the production blit/bypass branch exactly as an on-screen repaint would.
+    """
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QImage
+
+    img = QImage(widget.width(), widget.height(), QImage.Format.Format_ARGB32)
+    img.fill(Qt.GlobalColor.transparent)
+    widget.render(img)
+    return img
+
+
+@pytest.mark.parametrize("pan", [(40.0, 30.0), (120.0, 90.0)])
+def test_cached_blit_matches_bypass(qapp, pan):
+    """A blitted frame is pixel-identical to a direct §6 draw (same code, §9).
+
+    The cache renders the static scene into a pixmap anchored so that
+    ``mm_to_pixel(origin_mm)`` lands on the viewport pixel grid exactly, then
+    blits it; the bypass path draws the same ``_draw_*`` helpers live. Both
+    must agree at every pan state.
+    """
+    from tests.canvas_render_ref import pixel_diff_ratio
+
+    _c1, cached = _make_widget(pan=pan)
+    cached._render_cache_enabled = True
+    img_cached = _render_widget(cached)
+
+    _c2, bypass = _make_widget(pan=pan)
+    bypass._render_cache_enabled = False
+    img_bypass = _render_widget(bypass)
+
+    assert pixel_diff_ratio(img_cached, img_bypass) <= 0.001
+
+
+def test_pan_within_slop_reuses_pixmap(qapp):
+    """A small pan stays inside the 0.5-viewport slop → no rebuild (§7.2/§7.3)."""
+    _c, widget = _make_widget(size=(400, 300), zoom=3.0, pan=(40.0, 30.0))
+    widget._render_cache_enabled = True
+    _render_widget(widget)  # first paint builds the pixmap
+    assert widget._scene_cache.rebuild_count == 1
+
+    # Shift well inside the slop (200 px horizontal / 150 px vertical each side).
+    widget._pan_offset = QPointF(
+        widget._pan_offset.x() + 20.0, widget._pan_offset.y() + 15.0
+    )
+    _render_widget(widget)
+    assert widget._scene_cache.rebuild_count == 1  # reused, not rebuilt
+
+
+def test_pan_beyond_slop_triggers_rebuild(qapp):
+    """A pan past the slop region forces a synchronous rebuild then blit (§7.3)."""
+    _c, widget = _make_widget(size=(400, 300), zoom=3.0, pan=(40.0, 30.0))
+    widget._render_cache_enabled = True
+    _render_widget(widget)
+    assert widget._scene_cache.rebuild_count == 1
+
+    # Shift the viewport far past the 200 px horizontal slop.
+    widget._pan_offset = QPointF(
+        widget._pan_offset.x() - 400.0, widget._pan_offset.y()
+    )
+    _render_widget(widget)
+    assert widget._scene_cache.rebuild_count == 2
+
+
+def test_ink_preview_bypasses_cache(qapp):
+    """Ink preview is a §7.6 bypass: it never blits, and the live render
+    matches an explicitly cache-disabled render of the same scene."""
+    from tests.canvas_render_ref import pixel_diff_ratio
+
+    _c1, inked = _make_widget()
+    inked._render_cache_enabled = True
+    inked.set_ink_preview(True)
+    assert inked._scene_cache_active() is False  # bypassed despite cache on
+    img_inked = _render_widget(inked)
+    # No pixmap was baked while bypassed.
+    assert inked._scene_cache.rebuild_count == 0
+
+    _c2, bypass = _make_widget()
+    bypass._render_cache_enabled = False
+    bypass.set_ink_preview(True)
+    img_bypass = _render_widget(bypass)
+
+    assert pixel_diff_ratio(img_inked, img_bypass) <= 0.001

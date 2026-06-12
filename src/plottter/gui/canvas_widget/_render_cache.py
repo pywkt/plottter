@@ -237,6 +237,11 @@ class ScenePixmapCache:
 
     def __init__(self) -> None:
         self._entry: _SceneEntry | None = None
+        #: Number of full pixmap (re)builds since construction. A pure test/
+        #: bench hook (spec §11): lets a test assert that a small pan stayed
+        #: within the slop region and reused the cached pixmap instead of
+        #: rebuilding. Never read by production code.
+        self.rebuild_count: int = 0
 
     @property
     def entry(self) -> _SceneEntry | None:
@@ -296,6 +301,7 @@ class ScenePixmapCache:
             self._entry = None
             return None
 
+        self.rebuild_count += 1
         zoom = widget._zoom
         dpr = widget.devicePixelRatioF()
         excluded_layer_id = _current_excluded_layer_id(widget)
