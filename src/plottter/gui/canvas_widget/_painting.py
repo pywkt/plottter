@@ -381,37 +381,34 @@ class _PaintingMixin:
             canvas,
         )
 
-        # Viewport bounds in mm for culling
-        vp_left, vp_top = self.pixel_to_mm(QPointF(0.0, 0.0))
-        vp_right, vp_bottom = self.pixel_to_mm(
-            QPointF(float(self.width()), float(self.height()))
+        # Compose merc→mm (the view transform, incl. the -scale y-flip) with
+        # mm→px (zoom + pan), so the whole preview path draws via one
+        # QTransform instead of per-point projection loops. Qt applies the
+        # left operand first, so this maps Mercator coords → widget pixels.
+        merc_to_mm = QTransform(
+            transform.scale, 0.0, 0.0, -transform.scale,
+            transform.x_origin, transform.y_origin,
         )
+        mm_to_px = QTransform(
+            self._zoom, 0.0, 0.0, self._zoom,
+            self._pan_offset.x(), self._pan_offset.y(),
+        )
+        merc_to_px = merc_to_mm * mm_to_px
 
-        # Faded mid-grey lines for preview polylines
-        line_pen = QPen(QColor(120, 120, 120, 180), max(0.5, self._zoom * 0.2))
+        # The combined scale (mm-per-merc × px-per-mm) magnifies any pen width
+        # set in path (Mercator) units, so divide the desired on-screen width
+        # by it to keep the line the same thickness as the legacy loop.
+        on_screen_w = max(0.5, self._zoom * 0.2)
+        combined_scale = abs(transform.scale) * self._zoom
+        pen_w = on_screen_w / combined_scale if combined_scale > 0 else 0.0
+        line_pen = QPen(QColor(120, 120, 120, 180), pen_w)
+        line_pen.setCosmetic(False)
+
+        painter.save()
+        painter.setTransform(merc_to_px, combine=True)
         painter.setPen(line_pen)
-
-        for polyline in self._map_preview_polylines:
-            if len(polyline) < 2:
-                continue
-            # Project Mercator → mm
-            pts_mm = [
-                (
-                    transform.x_origin + mx * transform.scale,
-                    transform.y_origin - my * transform.scale,
-                )
-                for mx, my in polyline
-            ]
-            # Viewport culling (bounding-box check)
-            min_x = min(p[0] for p in pts_mm)
-            max_x = max(p[0] for p in pts_mm)
-            min_y = min(p[1] for p in pts_mm)
-            max_y = max(p[1] for p in pts_mm)
-            if max_x < vp_left or min_x > vp_right or max_y < vp_top or min_y > vp_bottom:
-                continue
-            pts_px = [self.mm_to_pixel(p) for p in pts_mm]
-            for i in range(len(pts_px) - 1):
-                painter.drawLine(pts_px[i], pts_px[i + 1])
+        painter.drawPath(self._map_merc_path)
+        painter.restore()
 
         # Dashed outline of the fetched-data bounds
         if self._map_data_bounds is not None:

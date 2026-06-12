@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from PyQt6.QtCore import QPointF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QImage, QPainterPath, QPixmap
 from PyQt6.QtWidgets import QWidget
 
 if TYPE_CHECKING:
@@ -265,6 +265,11 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # Map positioning preview state
         self._map_position_active: bool = False
         self._map_preview_polylines: list = []  # decimated polylines in Mercator coords
+        # One QPainterPath holding every preview polyline in Mercator coords,
+        # rebuilt only by ``set_map_preview_data``. ``_draw_map_preview`` draws
+        # it through a composed merc→mm→px QTransform so panning/zooming the map
+        # view never rebuilds the path (§8.2).
+        self._map_merc_path: QPainterPath = QPainterPath()
         self._map_data_bounds: tuple[float, float, float, float] | None = None  # (min_lat, min_lon, max_lat, max_lon)
         self._map_view: dict | None = None  # {center_lat, center_lon, scale}
         self._map_features: list | None = None  # MapFeature list for clamp_map_view
@@ -733,6 +738,18 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         MAX_POINTS = 15_000
         simplified = _simplify_polylines(raw)
         self._map_preview_polylines = _cap_polylines(simplified, MAX_POINTS)
+
+        # Build one Mercator-coordinate QPainterPath for the whole preview so
+        # repaints only need to compose a QTransform (§8.2) rather than
+        # re-projecting every point per frame.
+        merc_path = QPainterPath()
+        for polyline in self._map_preview_polylines:
+            if len(polyline) < 2:
+                continue
+            merc_path.moveTo(polyline[0][0], polyline[0][1])
+            for mx, my in polyline[1:]:
+                merc_path.lineTo(mx, my)
+        self._map_merc_path = merc_path
 
         if self._map_position_active:
             self.update()

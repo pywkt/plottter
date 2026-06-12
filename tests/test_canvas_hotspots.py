@@ -191,6 +191,123 @@ def test_invert_mask_refreshes_overlay(qapp):
     assert after[h // 2 :, :].min() == 150
 
 
+# --------------------------------------------------------------------------
+# §8.2 Map preview — Mercator path cache + composed transform
+# --------------------------------------------------------------------------
+
+
+def _make_synthetic_map_data(n=50):
+    """Build a MapData with ``n`` short open-line features near (40, -74)."""
+    from plottter.osm.types import MapData, MapFeature
+
+    features = []
+    base_lat, base_lon = 40.0, -74.0
+    for i in range(n):
+        # Deterministic spread; each polyline is a short 4-point zig-zag.
+        a = (i * 0.013) % 0.2
+        b = (i * 0.017) % 0.2
+        coords = [
+            (base_lat + a, base_lon + b),
+            (base_lat + a + 0.01, base_lon + b + 0.008),
+            (base_lat + a + 0.004, base_lon + b + 0.015),
+            (base_lat + a + 0.018, base_lon + b + 0.02),
+        ]
+        features.append(MapFeature(tags={}, coords=coords, is_area=False))
+    data_bounds = (base_lat, base_lon, base_lat + 0.22, base_lon + 0.22)
+    return MapData(
+        location="synthetic",
+        center=(base_lat + 0.1, base_lon + 0.1),
+        bbox=(base_lat, base_lon, base_lat + 0.22, base_lon + 0.22),
+        features={"roads": features},
+    ), data_bounds
+
+
+def _render_map_preview_new(widget, canvas, size):
+    """Render only the preview lines via the production composed-transform path."""
+    from PyQt6.QtGui import QImage, QPainter
+
+    img = QImage(size[0], size[1], QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    painter = QPainter(img)
+    # Bounds rectangle disabled so we compare only the line render.
+    widget._map_data_bounds = None
+    widget._draw_map_preview(painter, canvas)
+    painter.end()
+    return _img_to_array(img)
+
+
+def _render_map_preview_ref(widget, canvas, size):
+    """Reference: the legacy per-point projection loop (the oracle)."""
+    from PyQt6.QtCore import QPointF
+    from PyQt6.QtGui import QColor, QImage, QPainter, QPen
+
+    from plottter.osm.geometry import view_transform
+
+    transform = view_transform(
+        widget._map_view["center_lat"],
+        widget._map_view["center_lon"],
+        widget._map_view["scale"],
+        canvas,
+    )
+    img = QImage(size[0], size[1], QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    painter = QPainter(img)
+    pen = QPen(QColor(120, 120, 120, 180), max(0.5, widget._zoom * 0.2))
+    painter.setPen(pen)
+    for polyline in widget._map_preview_polylines:
+        if len(polyline) < 2:
+            continue
+        pts_mm = [
+            (
+                transform.x_origin + mx * transform.scale,
+                transform.y_origin - my * transform.scale,
+            )
+            for mx, my in polyline
+        ]
+        pts_px = [widget.mm_to_pixel(p) for p in pts_mm]
+        for i in range(len(pts_px) - 1):
+            painter.drawLine(pts_px[i], pts_px[i + 1])
+    painter.end()
+    return _img_to_array(img)
+
+
+@pytest.mark.parametrize(
+    "view",
+    [
+        {"center_lat": 40.1, "center_lon": -73.9, "scale": 400.0},
+        {"center_lat": 40.05, "center_lon": -73.95, "scale": 900.0},
+    ],
+)
+def test_map_preview_composed_transform_matches_reference(qapp, view):
+    size = (400, 300)
+    _controller, widget = _make_widget(size=size)
+    canvas = widget._controller.current_project.canvas
+
+    map_data, data_bounds = _make_synthetic_map_data(50)
+    widget.set_map_preview_data(map_data, data_bounds)
+    assert widget._map_merc_path.elementCount() > 0
+
+    widget._map_view = dict(view)
+
+    got = _render_map_preview_new(widget, canvas, size)
+    ref = _render_map_preview_ref(widget, canvas, size)
+
+    # Mean per-channel absolute difference, normalised to [0, 1].
+    diff = np.abs(got.astype(np.int16) - ref.astype(np.int16)).mean() / 255.0
+    assert diff <= 0.02, f"composed-transform render diverged: mean diff {diff:.4f}"
+
+
+def test_map_preview_path_not_rebuilt_on_view_change(qapp):
+    _controller, widget = _make_widget()
+    map_data, data_bounds = _make_synthetic_map_data(50)
+    widget.set_map_preview_data(map_data, data_bounds)
+
+    path_before = widget._map_merc_path
+    widget.update_map_view({"center_lat": 40.2, "center_lon": -73.8, "scale": 1200.0})
+    # Panning/zooming the view must not rebuild the Mercator path.
+    assert widget._map_merc_path is path_before
+
+
 def test_overlay_matches_reference_build(qapp):
     """The cached overlay equals an independent premultiplied-ARGB computation."""
     _controller, widget = _make_widget()
