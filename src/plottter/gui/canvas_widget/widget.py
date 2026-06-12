@@ -249,6 +249,11 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # 3D preview mode state
         self._3d_preview_active: bool = False
         self._3d_wireframe_polylines: list = []
+        # One QPainterPath holding every wireframe polyline in mm coords, rebuilt
+        # only by ``set_3d_wireframe_polylines``. ``_draw_3d_preview`` draws it
+        # through the world (mm→px) transform so orbit/pan/zoom repaints never
+        # re-cull or re-project per point (§8.3).
+        self._3d_wire_path: QPainterPath = QPainterPath()
         # Camera state stored for mouse-based orbit/pan/zoom
         self._3d_cam_azimuth: float = 30.0
         self._3d_cam_elevation: float = 20.0
@@ -639,6 +644,17 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
     def set_3d_wireframe_polylines(self, polylines: list) -> None:
         """Store pre-rendered wireframe polylines and repaint when in 3D mode."""
         self._3d_wireframe_polylines = polylines
+        # Build one mm-coordinate QPainterPath for the whole wireframe so
+        # repaints only need to set the world transform (§8.3) rather than
+        # culling + projecting every point per frame.
+        wire_path = QPainterPath()
+        for polyline in polylines:
+            if len(polyline) < 2:
+                continue
+            wire_path.moveTo(polyline[0][0], polyline[0][1])
+            for px, py in polyline[1:]:
+                wire_path.lineTo(px, py)
+        self._3d_wire_path = wire_path
         if self._3d_preview_active:
             self.update()
 

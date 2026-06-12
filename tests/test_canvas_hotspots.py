@@ -308,6 +308,119 @@ def test_map_preview_path_not_rebuilt_on_view_change(qapp):
     assert widget._map_merc_path is path_before
 
 
+# --------------------------------------------------------------------------
+# §8.3 3D wireframe — mm-coordinate path cache + world transform
+# --------------------------------------------------------------------------
+
+
+def _make_wireframe_polylines(n=40):
+    """Deterministic mm-coordinate zig-zag polylines inside the 100mm canvas."""
+    polylines = []
+    for i in range(n):
+        a = 10.0 + (i * 1.9) % 70.0
+        b = 12.0 + (i * 2.3) % 70.0
+        polylines.append(
+            [
+                (a, b),
+                (a + 6.0, b + 4.0),
+                (a + 2.0, b + 9.0),
+                (a + 11.0, b + 12.0),
+            ]
+        )
+    return polylines
+
+
+def _render_3d_wire_new(widget, size):
+    """Render only the wireframe via the production stored-path + world transform."""
+    from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QTransform
+
+    img = QImage(size[0], size[1], QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    painter = QPainter(img)
+    mm_to_px = QTransform(
+        widget._zoom, 0.0, 0.0, widget._zoom,
+        widget._pan_offset.x(), widget._pan_offset.y(),
+    )
+    pen = QPen(QColor("#00E5FF"), max(0.5 / widget._zoom, 0.25))
+    pen.setCosmetic(False)
+    painter.setTransform(mm_to_px, combine=True)
+    painter.setPen(pen)
+    painter.drawPath(widget._3d_wire_path)
+    painter.end()
+    return _img_to_array(img)
+
+
+def _render_3d_wire_ref(widget, size):
+    """Reference: the legacy per-point cull/convert loop (the oracle)."""
+    from PyQt6.QtGui import QColor, QImage, QPainter, QPen
+
+    img = QImage(size[0], size[1], QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    painter = QPainter(img)
+    pen = QPen(QColor("#00E5FF"), max(0.5, widget._zoom * 0.25))
+    painter.setPen(pen)
+
+    vp_left, vp_top = widget.pixel_to_mm(QPointF(0.0, 0.0))
+    vp_right, vp_bottom = widget.pixel_to_mm(
+        QPointF(float(size[0]), float(size[1]))
+    )
+    for polyline in widget._3d_wireframe_polylines:
+        if len(polyline) < 2:
+            continue
+        xs = [p[0] for p in polyline]
+        ys = [p[1] for p in polyline]
+        if (
+            max(xs) < vp_left
+            or min(xs) > vp_right
+            or max(ys) < vp_top
+            or min(ys) > vp_bottom
+        ):
+            continue
+        pts = [widget.mm_to_pixel(pt) for pt in polyline]
+        for i in range(len(pts) - 1):
+            painter.drawLine(pts[i], pts[i + 1])
+    painter.end()
+    return _img_to_array(img)
+
+
+def test_3d_wireframe_path_matches_reference(qapp):
+    size = (400, 300)
+    _controller, widget = _make_widget(size=size)
+
+    polylines = _make_wireframe_polylines(40)
+    widget.set_3d_wireframe_polylines(polylines)
+    assert widget._3d_wire_path.elementCount() > 0
+
+    got = _render_3d_wire_new(widget, size)
+    ref = _render_3d_wire_ref(widget, size)
+
+    diff = np.abs(got.astype(np.int16) - ref.astype(np.int16)).mean() / 255.0
+    assert diff <= 0.02, f"wireframe path render diverged: mean diff {diff:.4f}"
+    # Sanity: the wireframe actually drew cyan pixels (not two blank images).
+    assert got[:, :, 3].max() > 0
+
+
+def test_3d_wireframe_empty_shows_loading_without_error(qapp):
+    """An empty polyline set leaves the path empty and still paints the loading text."""
+    from PyQt6.QtGui import QImage, QPainter
+
+    _controller, widget = _make_widget()
+    canvas = widget._controller.current_project.canvas
+
+    widget.set_3d_wireframe_polylines([])
+    assert widget._3d_wire_path.elementCount() == 0
+    assert not widget._3d_wireframe_polylines
+
+    img = QImage(400, 300, QImage.Format.Format_ARGB32_Premultiplied)
+    img.fill(0)
+    painter = QPainter(img)
+    # Must not raise even with no wireframe — loading text branch is exercised.
+    widget._draw_3d_preview(painter, canvas)
+    painter.end()
+    # The dark viewport + loading label drew some pixels.
+    assert _img_to_array(img)[:, :, 3].max() > 0
+
+
 def test_overlay_matches_reference_build(qapp):
     """The cached overlay equals an independent premultiplied-ARGB computation."""
     _controller, widget = _make_widget()

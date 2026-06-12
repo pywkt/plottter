@@ -301,33 +301,22 @@ class _PaintingMixin:
         paper_rect = QRectF(paper_tl, paper_br)
         painter.fillRect(paper_rect, QColor("#1A1A2E"))
 
-        # Wireframe lines — bright cyan on dark background
-        wire_pen = QPen(QColor("#00E5FF"), max(0.5, self._zoom * 0.25))
+        # Wireframe lines — bright cyan on dark background. The path is stored in
+        # mm coords (§8.3); draw it through the world (mm→px) transform so the
+        # pen width in mm units divides by the zoom: max(0.5/zoom, 0.25) mm gives
+        # the same on-screen width as today's max(0.5, zoom*0.25) px formula.
+        wire_pen = QPen(QColor("#00E5FF"), max(0.5 / self._zoom, 0.25))
+        wire_pen.setCosmetic(False)
+
+        mm_to_px = QTransform(
+            self._zoom, 0.0, 0.0, self._zoom,
+            self._pan_offset.x(), self._pan_offset.y(),
+        )
+        painter.save()
+        painter.setTransform(mm_to_px, combine=True)
         painter.setPen(wire_pen)
-
-        vp_left, vp_top = self.pixel_to_mm(QPointF(0.0, 0.0))
-        vp_right, vp_bottom = self.pixel_to_mm(QPointF(float(self.width()), float(self.height())))
-
-        for polyline in self._3d_wireframe_polylines:
-            if len(polyline) < 2:
-                continue
-            # Viewport culling
-            min_x = min_y = float("inf")
-            max_x = max_y = float("-inf")
-            for px, py in polyline:
-                if px < min_x:
-                    min_x = px
-                if px > max_x:
-                    max_x = px
-                if py < min_y:
-                    min_y = py
-                if py > max_y:
-                    max_y = py
-            if max_x < vp_left or min_x > vp_right or max_y < vp_top or min_y > vp_bottom:
-                continue
-            pts = [self.mm_to_pixel(pt) for pt in polyline]
-            for i in range(len(pts) - 1):
-                painter.drawLine(pts[i], pts[i + 1])
+        painter.drawPath(self._3d_wire_path)
+        painter.restore()
 
         # Info label: camera params
         info_pen = QPen(QColor("#AAAAAA"), 1.0)
