@@ -6,7 +6,7 @@ import random
 
 import numpy as np
 
-from PyQt6.QtCore import QPoint, QPointF, QRectF, Qt
+from PyQt6.QtCore import QPoint, QPointF, QRect, QRectF, Qt
 from PyQt6.QtGui import (
     QColor,
     QImage,
@@ -23,6 +23,56 @@ from ._render_cache import (
     build_travel_path,
 )
 from .enums import MaskTool, ShapeDrawTool
+
+# FMM source crosshair geometry — shared by the drawing code
+# (``_draw_fmm_source_marker``) and the partial-repaint extent so the two never
+# drift apart (spec §11 / findings Phase 4).
+_FMM_ARM_PX = 12.0          # crosshair arm length in pixels
+_FMM_GAP_PX = 5.0           # gap centre→arm / circle radius
+_FMM_OUTLINE_PX = 2.5       # black outline pen width (widest stroke)
+
+# Pixel half-extent of the FMM marker: the longest arm reaches arm + gap from the
+# centre; add half the outline pen so a partial repaint of a moved preview never
+# clips the marker's stroke.
+_FMM_MARKER_HALF_EXTENT = _FMM_ARM_PX + _FMM_GAP_PX + _FMM_OUTLINE_PX / 2.0
+
+# Slop added to the brush-ring radius to cover its 1.5 px dash pen.
+_BRUSH_CURSOR_PEN_SLOP = 2.0
+
+
+def _marker_union_rect(
+    old_center: tuple[float, float] | None,
+    new_center: tuple[float, float],
+    half_extent: float,
+    pad: float = 2.0,
+) -> QRect:
+    """Union of a cursor marker's old and new footprints, padded (spec §11).
+
+    Each marker occupies a square of side ``2 * half_extent`` centred on its
+    position. The returned integer rect covers both the old and new squares so a
+    single ``update(rect)`` repaints the marker's old footprint (erased by the
+    scene-cache blit) and its new one, for cursor-only moves where the baked
+    scene is otherwise untouched. ``old_center`` is ``None`` on the first move —
+    the rect then covers only ``new_center``. Edges are floored/ceiled to whole
+    pixels so the integer rect always fully encloses the float box.
+    """
+    margin = half_extent + pad
+    nx, ny = new_center
+    left = nx - margin
+    top = ny - margin
+    right = nx + margin
+    bottom = ny + margin
+    if old_center is not None:
+        ox, oy = old_center
+        left = min(left, ox - margin)
+        top = min(top, oy - margin)
+        right = max(right, ox + margin)
+        bottom = max(bottom, oy + margin)
+    ileft = math.floor(left)
+    itop = math.floor(top)
+    iright = math.ceil(right)
+    ibottom = math.ceil(bottom)
+    return QRect(ileft, itop, iright - ileft, ibottom - itop)
 
 
 class _PaintingMixin:
@@ -166,6 +216,36 @@ class _PaintingMixin:
         if not self._render_cache_enabled:
             return False
         return not (self._ink_preview or self._anim_mode or self._3d_preview_active)
+
+    def _brush_cursor_half_extent(self) -> float:
+        """Pixel half-extent of the brush footprint ring (spec §11 / Phase 4)."""
+        radius_screen = self._mask_brush_size_mm * self._zoom / 2.0
+        return radius_screen + _BRUSH_CURSOR_PEN_SLOP
+
+    def _fmm_marker_half_extent(self) -> float:
+        """Pixel half-extent of the FMM crosshair marker (spec §11 / Phase 4)."""
+        return _FMM_MARKER_HALF_EXTENT
+
+    def _repaint_marker_move(
+        self,
+        old_center: tuple[float, float] | None,
+        new_center: tuple[float, float],
+        half_extent: float,
+    ) -> None:
+        """Schedule the cheapest correct repaint for a cursor-only marker move.
+
+        When the baked scene cache is valid (spec §7.6), only the union of the
+        marker's old and new footprints needs repainting — the scene blit erases
+        the old marker and redraws the new one within that small rect, so issue a
+        partial ``update(rect)`` (findings Phase 4 §2). When the cache is bypassed
+        (ink / animation / 3D preview, or the no-cache test flag) the background
+        can't be restored by a cheap blit, so fall back to a full ``update()`` and
+        keep behaviour unchanged.
+        """
+        if self._scene_cache_active():
+            self.update(_marker_union_rect(old_center, new_center, half_extent))
+        else:
+            self.update()
 
     def _draw_scene_content(self, painter: QPainter, project, canvas) -> None:  # type: ignore[no-untyped-def]
         """Draw grid → reg marks → layer paths → travel directly (spec §7.1).
@@ -1003,8 +1083,8 @@ class _PaintingMixin:
             is_preview: When True, renders semi-transparent (live cursor preview).
         """
         pos = self.mm_to_pixel((x_mm, y_mm))
-        arm_px = 12.0   # arm length in pixels
-        gap_px = 5.0    # gap between centre and arm start / circle radius
+        arm_px = _FMM_ARM_PX   # arm length in pixels
+        gap_px = _FMM_GAP_PX   # gap between centre and arm start / circle radius
 
         alpha = 160 if is_preview else 255
         fg_color = QColor(255, 140, 0, alpha)    # orange foreground
@@ -1013,7 +1093,7 @@ class _PaintingMixin:
         painter.setBrush(Qt.BrushStyle.NoBrush)
 
         # --- black outline pass (thicker, drawn first for contrast) ---
-        painter.setPen(QPen(outline_color, 2.5))
+        painter.setPen(QPen(outline_color, _FMM_OUTLINE_PX))
         # Horizontal arms
         painter.drawLine(
             QPointF(pos.x() - arm_px - gap_px, pos.y()),

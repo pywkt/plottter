@@ -357,10 +357,18 @@ class _EventsMixin:
             self.mouse_position_mm.emit(x_mm, y_mm)
             return
 
-        # FMM source pick mode: update live crosshair preview on mouse move
+        # FMM source pick mode: update live crosshair preview on mouse move.
+        # Only the preview marker moves, so a partial repaint of its old+new
+        # footprint suffices when the scene cache is valid (spec §11 / Phase 4).
         if self._fmm_source_mode:
+            old_mm = self._fmm_cursor_preview_mm
+            old_px = None
+            if old_mm is not None:
+                p = self.mm_to_pixel(old_mm)
+                old_px = (p.x(), p.y())
             self._fmm_cursor_preview_mm = self.pixel_to_mm(QPointF(event.pos()))
-            self.update()
+            new_px = (float(event.pos().x()), float(event.pos().y()))
+            self._repaint_marker_move(old_px, new_px, self._fmm_marker_half_extent())
             x_mm, y_mm = self._fmm_cursor_preview_mm
             self.mouse_position_mm.emit(x_mm, y_mm)
             return
@@ -404,10 +412,16 @@ class _EventsMixin:
         # Mask paint — all tools
         if self._mask_paint_active:
             pos_mm = self.pixel_to_mm(QPointF(event.pos()))
+            # Brush hover (no active stroke) moves only the cursor ring; an
+            # active stroke or any other tool mutates the mask / shape feedback
+            # and needs a full repaint (spec §11 / Phase 4).
+            cursor_only = False
             if self._mask_tool == MaskTool.BRUSH:
                 if self._last_brush_pos is not None:
                     self._interpolate_stroke(self._last_brush_pos, pos_mm)
                     self._last_brush_pos = pos_mm
+                else:
+                    cursor_only = True
             elif self._mask_tool in (MaskTool.RECTANGLE, MaskTool.CIRCLE):
                 if self._shape_start_mm is not None and (event.buttons() & Qt.MouseButton.LeftButton):
                     end_mm = pos_mm
@@ -425,8 +439,14 @@ class _EventsMixin:
             elif self._mask_tool == MaskTool.PEN:
                 if self._pen_points and (event.buttons() & Qt.MouseButton.LeftButton):
                     self._pen_points.append(pos_mm)
+            old_cursor = self._brush_cursor_pos
             self._brush_cursor_pos = (float(event.pos().x()), float(event.pos().y()))
-            self.update()
+            if cursor_only:
+                self._repaint_marker_move(
+                    old_cursor, self._brush_cursor_pos, self._brush_cursor_half_extent()
+                )
+            else:
+                self.update()
             x_mm, y_mm = pos_mm
             self.mouse_position_mm.emit(x_mm, y_mm)
             return

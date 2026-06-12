@@ -559,3 +559,242 @@ def test_anim_done_paths_preserve_colors(qapp):
     assert len(keys) == 3  # fixture: black, red dots, 50%-opacity blue
     for path in widget._anim_done_paths.values():
         assert path.elementCount() > 0
+
+
+# --------------------------------------------------------------------------
+# §11 / findings Phase 4 — partial repaints for cursor-only marker moves
+#
+# When the baked scene cache is valid and ONLY the brush-cursor ring or the FMM
+# live-cursor preview moved, the move issues a partial ``update(rect)`` over the
+# union of the marker's old + new footprints rather than a full-widget repaint.
+# The static scene is untouched (``scene_revision`` does not bump), and a full
+# render afterwards still matches a cache-bypass render pixel-for-pixel.
+# --------------------------------------------------------------------------
+
+
+def _render_widget(widget):
+    """Run a real synchronous paint into a fresh ARGB image (cf. scene-cache tests)."""
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtGui import QImage
+
+    img = QImage(widget.width(), widget.height(), QImage.Format.Format_ARGB32)
+    img.fill(Qt.GlobalColor.transparent)
+    widget.render(img)
+    return img
+
+
+def _hover_move_event(x, y):
+    """A button-less mouse-move event at widget pixel (x, y)."""
+    from PyQt6.QtCore import QEvent, Qt
+    from PyQt6.QtGui import QMouseEvent
+
+    return QMouseEvent(
+        QEvent.Type.MouseMove,
+        QPointF(x, y),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def _fill_mask(widget):
+    """Give the widget an empty mask array so overlay drawing has data."""
+    canvas = widget._controller.current_project.canvas
+    h = int(canvas.height_mm * _MASK_PX_PER_MM)
+    w = int(canvas.width_mm * _MASK_PX_PER_MM)
+    widget.set_mask(np.zeros((h, w), dtype=np.float32))
+
+
+def test_marker_union_rect_covers_both_footprints():
+    """The pure rect-union math encloses both old and new padded squares."""
+    from plottter.gui.canvas_widget._painting import _marker_union_rect
+
+    # Half-extent 10 + pad 2 → margin 12 around each centre.
+    rect = _marker_union_rect((100.0, 100.0), (130.0, 120.0), 10.0, pad=2.0)
+    assert rect.x() == 88  # min(100, 130) - 12
+    assert rect.y() == 88  # min(100, 120) - 12
+    assert rect.x() + rect.width() == 142  # max(100, 130) + 12
+    assert rect.y() + rect.height() == 132  # max(100, 120) + 12
+
+    # First move (no old centre) covers only the new footprint.
+    only = _marker_union_rect(None, (50.0, 60.0), 5.0, pad=1.0)
+    assert only.x() == 44 and only.y() == 54
+    assert only.x() + only.width() == 56
+    assert only.y() + only.height() == 66
+
+    # Fractional centres floor/ceil outward so the int rect fully encloses.
+    frac = _marker_union_rect(None, (10.5, 10.5), 1.0, pad=0.0)
+    assert frac.x() == 9  # floor(10.5 - 1.0)
+    assert frac.x() + frac.width() == 12  # ceil(10.5 + 1.0)
+
+
+def test_brush_cursor_move_does_not_bump_scene_revision(qapp):
+    """Hovering the brush ring repaints partially without touching the scene."""
+    _c, widget = _make_widget()
+    widget.set_mask_paint_active(True)
+    widget.set_mask_tool("brush")
+    widget._mask_brush_size_mm = 5.0
+    _fill_mask(widget)
+    _render_widget(widget)  # first paint bakes a valid scene pixmap
+    assert widget._scene_cache_active() is True
+    rev_before = widget.scene_revision
+    rebuilds_before = widget._scene_cache.rebuild_count
+
+    # Hover (no button held) → only the brush ring moves.
+    widget._brush_cursor_pos = (100.0, 100.0)
+    widget.mouseMoveEvent(_hover_move_event(150.0, 120.0))
+
+    assert widget._brush_cursor_pos == (150.0, 120.0)
+    assert widget.scene_revision == rev_before
+    # A subsequent paint reuses the baked pixmap — no rebuild from the cursor move.
+    _render_widget(widget)
+    assert widget._scene_cache.rebuild_count == rebuilds_before
+
+
+def test_fmm_preview_move_does_not_bump_scene_revision(qapp):
+    """Moving the FMM live cursor preview likewise leaves the scene untouched."""
+    _c, widget = _make_widget()
+    widget.set_fmm_source_mode(True)
+    _render_widget(widget)
+    rev_before = widget.scene_revision
+    rebuilds_before = widget._scene_cache.rebuild_count
+
+    widget.mouseMoveEvent(_hover_move_event(160.0, 110.0))
+
+    assert widget._fmm_cursor_preview_mm is not None
+    assert widget.scene_revision == rev_before
+    _render_widget(widget)
+    assert widget._scene_cache.rebuild_count == rebuilds_before
+
+
+def test_brush_cursor_render_matches_bypass(qapp):
+    """A full render after a brush-ring move equals a cache-bypass render (§11)."""
+    from tests.canvas_render_ref import pixel_diff_ratio
+
+    _c1, cached = _make_widget()
+    cached.set_mask_paint_active(True)
+    cached.set_mask_tool("brush")
+    cached._mask_brush_size_mm = 5.0
+    _fill_mask(cached)
+    cached._render_cache_enabled = True
+    cached.mouseMoveEvent(_hover_move_event(150.0, 120.0))
+    img_cached = _render_widget(cached)
+
+    _c2, bypass = _make_widget()
+    bypass.set_mask_paint_active(True)
+    bypass.set_mask_tool("brush")
+    bypass._mask_brush_size_mm = 5.0
+    _fill_mask(bypass)
+    bypass._render_cache_enabled = False
+    bypass.mouseMoveEvent(_hover_move_event(150.0, 120.0))
+    img_bypass = _render_widget(bypass)
+
+    assert cached._brush_cursor_pos == bypass._brush_cursor_pos == (150.0, 120.0)
+    assert pixel_diff_ratio(img_cached, img_bypass) <= 0.001
+
+
+def test_fmm_preview_render_matches_bypass(qapp):
+    """A full render after an FMM preview move equals a cache-bypass render."""
+    from tests.canvas_render_ref import pixel_diff_ratio
+
+    _c1, cached = _make_widget()
+    cached.set_fmm_source_mode(True)
+    cached._render_cache_enabled = True
+    cached.mouseMoveEvent(_hover_move_event(160.0, 110.0))
+    img_cached = _render_widget(cached)
+
+    _c2, bypass = _make_widget()
+    bypass.set_fmm_source_mode(True)
+    bypass._render_cache_enabled = False
+    bypass.mouseMoveEvent(_hover_move_event(160.0, 110.0))
+    img_bypass = _render_widget(bypass)
+
+    assert cached._fmm_cursor_preview_mm == bypass._fmm_cursor_preview_mm
+    assert pixel_diff_ratio(img_cached, img_bypass) <= 0.001
+
+
+def _capture_partial_update_rect(widget, send_move):
+    """Run ``send_move`` and return the single QRect passed to ``widget.update``.
+
+    Asserts exactly one partial ``update(rect)`` (and no full-widget ``update()``)
+    was issued — the whole point of the cursor-only optimisation.
+    """
+    from PyQt6.QtCore import QRect
+
+    rects = []
+    full_updates = []
+    orig_update = widget.update
+
+    def spy(*args):
+        if args and isinstance(args[0], QRect):
+            rects.append(args[0])
+        else:
+            full_updates.append(args)
+        return orig_update(*args)
+
+    widget.update = spy
+    try:
+        send_move()
+    finally:
+        widget.update = orig_update
+    assert full_updates == [], "cursor-only move must not trigger a full update"
+    assert len(rects) == 1, f"expected one partial update rect, got {rects}"
+    return rects[0]
+
+
+def test_brush_cursor_partial_region_equals_full_repaint(qapp):
+    """Painting ONLY the captured update rect over a stale frame equals a full
+    repaint — proves the union rect is large enough to erase the old ring and
+    draw the new one (spec §11 / Phase 4)."""
+    from PyQt6.QtGui import QRegion
+
+    from tests.canvas_render_ref import pixel_diff_ratio
+
+    _c, widget = _make_widget()
+    widget.set_mask_paint_active(True)
+    widget.set_mask_tool("brush")
+    widget._mask_brush_size_mm = 5.0
+    _fill_mask(widget)
+    widget._render_cache_enabled = True
+
+    # Baseline full frame with the ring at A.
+    widget._brush_cursor_pos = (100.0, 100.0)
+    framebuffer = _render_widget(widget)
+
+    # Move the ring to B; capture the partial rect the move scheduled.
+    rect = _capture_partial_update_rect(
+        widget, lambda: widget.mouseMoveEvent(_hover_move_event(150.0, 120.0))
+    )
+
+    # Apply ONLY that region on top of the stale (ring-at-A) framebuffer, exactly
+    # as an on-screen partial repaint would.
+    widget.render(framebuffer, rect.topLeft(), QRegion(rect))
+
+    # Must match a from-scratch full render of the ring at B.
+    full = _render_widget(widget)
+    assert pixel_diff_ratio(framebuffer, full) <= 0.001
+
+
+def test_fmm_preview_partial_region_equals_full_repaint(qapp):
+    """Same partial-region equivalence check for the FMM live cursor preview."""
+    from PyQt6.QtGui import QRegion
+
+    from tests.canvas_render_ref import pixel_diff_ratio
+
+    _c, widget = _make_widget()
+    widget.set_fmm_source_mode(True)
+    widget._render_cache_enabled = True
+
+    # Baseline frame with the preview at A.
+    widget.mouseMoveEvent(_hover_move_event(120.0, 100.0))
+    framebuffer = _render_widget(widget)
+
+    # Move the preview to B; capture the scheduled partial rect.
+    rect = _capture_partial_update_rect(
+        widget, lambda: widget.mouseMoveEvent(_hover_move_event(170.0, 140.0))
+    )
+
+    widget.render(framebuffer, rect.topLeft(), QRegion(rect))
+
+    full = _render_widget(widget)
+    assert pixel_diff_ratio(framebuffer, full) <= 0.001
