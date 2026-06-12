@@ -241,6 +241,9 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         self._anim_all_paths: list[tuple[str, float, list]] = []
         self._anim_current_path = 0   # index into _anim_all_paths
         self._anim_current_point = 0  # point index within current path
+        # Completed-path geometry, one cached QPainterPath per (color, opacity),
+        # appended as paths finish (spec §8.4); rebuilt on backward jumps.
+        self._anim_done_paths: dict[tuple[str, float], QPainterPath] = {}
         self._anim_speed = 1.0
         self._anim_timer = QTimer(self)
         self._anim_timer.setInterval(self.ANIM_TIMER_INTERVAL_MS)

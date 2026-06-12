@@ -1,6 +1,12 @@
 """_AnimationMixin — stroke-order animation helpers for CanvasWidget."""
 from __future__ import annotations
 
+import zlib
+
+from numpy.random import default_rng
+
+from PyQt6.QtGui import QPainterPath
+
 
 class _AnimationMixin:
     """Mixin providing animation playback methods for CanvasWidget.
@@ -21,9 +27,10 @@ class _AnimationMixin:
             self._pause_animation()
         else:
             if self._anim_current_path >= len(self._anim_all_paths):
-                # Rewind to start
+                # Rewind to start — drop the fully-accumulated done cache.
                 self._anim_current_path = 0
                 self._anim_current_point = 0
+                self._rebuild_anim_done_paths()
             self._play_animation()
 
     def step_anim_forward(self) -> None:
@@ -36,6 +43,8 @@ class _AnimationMixin:
             self._anim_current_point = 0
             self._anim_mode = True
         if self._anim_current_path < len(self._anim_all_paths):
+            # The path we step past is now complete — bake it incrementally.
+            self._anim_append_done(self._anim_current_path)
             self._anim_current_path += 1
             self._anim_current_point = 0
         self._emit_anim_state()
@@ -48,6 +57,8 @@ class _AnimationMixin:
         if self._anim_current_path > 0:
             self._anim_current_path -= 1
             self._anim_current_point = 0
+        # Backward jump invalidates the incremental accumulation (spec §8.4).
+        self._rebuild_anim_done_paths()
         self._emit_anim_state()
         self.update()
 
@@ -58,6 +69,8 @@ class _AnimationMixin:
             self._anim_mode = True
         self._anim_current_path = max(0, min(path_idx, len(self._anim_all_paths)))
         self._anim_current_point = 0
+        # A seek may jump backward, so rebuild the cache from scratch (spec §8.4).
+        self._rebuild_anim_done_paths()
         self._emit_anim_state()
         self.update()
 
@@ -75,6 +88,50 @@ class _AnimationMixin:
                     self._anim_all_paths.append(
                         (layer.color, layer.opacity, list(polyline))
                     )
+        # Fresh path set ⇒ nothing completed yet (spec §8.4).
+        self._anim_done_paths = {}
+
+    def _anim_append_done(self, idx: int) -> None:
+        """Bake completed path ``idx`` into the per-colour done cache (spec §8.4).
+
+        Each ``(color, opacity)`` combination keeps one ``QPainterPath``; the
+        path's polyline is appended as a disconnected subpath in insertion
+        order. When jitter is enabled the points are displaced with the baked
+        approach of §6.4 — a deterministic normal sample seeded by the
+        flattened path index, so an incremental append and a from-scratch
+        rebuild produce byte-identical geometry.
+        """
+        if not 0 <= idx < len(self._anim_all_paths):
+            return
+        color_str, opacity, polyline = self._anim_all_paths[idx]
+        if len(polyline) < 2:
+            return
+        key = (color_str, opacity)
+        path = self._anim_done_paths.get(key)
+        if path is None:
+            path = QPainterPath()
+            self._anim_done_paths[key] = path
+        if self._jitter_enabled:
+            sigma_mm = 0.15 * self._jitter_intensity
+            disp = default_rng(zlib.crc32(str(idx).encode())).normal(
+                0.0, sigma_mm, (len(polyline), 2)
+            )
+            x0, y0 = polyline[0]
+            path.moveTo(x0 + disp[0, 0], y0 + disp[0, 1])
+            for k in range(1, len(polyline)):
+                x, y = polyline[k]
+                path.lineTo(x + disp[k, 0], y + disp[k, 1])
+        else:
+            x0, y0 = polyline[0]
+            path.moveTo(x0, y0)
+            for x, y in polyline[1:]:
+                path.lineTo(x, y)
+
+    def _rebuild_anim_done_paths(self) -> None:
+        """Rebuild the done cache from scratch for the current play head (§8.4)."""
+        self._anim_done_paths = {}
+        for i in range(min(self._anim_current_path, len(self._anim_all_paths))):
+            self._anim_append_done(i)
 
     def _play_animation(self) -> None:
         self._anim_playing = True
@@ -94,6 +151,7 @@ class _AnimationMixin:
         self._anim_all_paths = []
         self._anim_current_path = 0
         self._anim_current_point = 0
+        self._anim_done_paths = {}
         self._emit_anim_state()
 
     def _emit_anim_state(self) -> None:
@@ -131,7 +189,8 @@ class _AnimationMixin:
             next_pt = self._anim_current_point + 1
 
             if next_pt >= len(current_polyline):
-                # Finished this path; advance to the next one
+                # Finished this path; bake it into the done cache, then advance.
+                self._anim_append_done(self._anim_current_path)
                 self._anim_current_path += 1
                 self._anim_current_point = 0
                 changed_path = True

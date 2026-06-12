@@ -587,50 +587,68 @@ class _PaintingMixin:
         return build_layer_path(layer)
 
     def _draw_animated_paths(self, painter: QPainter) -> None:
-        """Render paths in animation mode: completed=full, current=partial, future=hidden."""
+        """Render paths in animation mode (spec §8.4).
+
+        Completed paths live in ``_anim_done_paths`` — one cached
+        ``QPainterPath`` per ``(color, opacity)``, appended as each path
+        finishes (with baked jitter per §6.4 when enabled). They are blitted in
+        insertion order through the world transform, so per-frame geometry work
+        is a handful of ``drawPath`` calls rather than a per-point Python loop
+        over every finished stroke. The single in-progress path is still drawn
+        live point-by-point and capped with the red pen-position crosshair.
+        """
         all_paths = self._anim_all_paths
         current_idx = self._anim_current_path
 
-        for i, (color_str, opacity, polyline) in enumerate(all_paths):
-            if i > current_idx:
-                break  # future paths hidden
-
+        # Completed strokes — draw each colour's cached mm-space path through the
+        # world transform; Qt scales the mm pen width by zoom so the on-screen
+        # width matches static rendering (`max(0.5, zoom*width)` px).
+        painter.save()
+        painter.setTransform(
+            QTransform(
+                self._zoom, 0.0, 0.0, self._zoom,
+                self._pan_offset.x(), self._pan_offset.y(),
+            ),
+            False,
+        )
+        for (color_str, opacity), path in self._anim_done_paths.items():
             color = QColor(color_str)
             color.setAlphaF(opacity)
-            # Match _draw_layer so animation playback uses the same preview
-            # width as static rendering.
-            pen = QPen(color, max(0.5, self._zoom * self._preview_pen_width_mm))
+            pen = QPen(color, max(0.5 / self._zoom, self._preview_pen_width_mm))
             painter.setPen(pen)
+            painter.drawPath(path)
+        painter.restore()
 
-            if i < current_idx:
-                # Completed path — draw fully
-                if len(polyline) < 2:
-                    continue
-                pts = [self._jitter_point(pt) for pt in polyline]
-                for j in range(len(pts) - 1):
-                    painter.drawLine(pts[j], pts[j + 1])
-            else:
-                # Current partial path — draw up to current point
-                end_pt = min(self._anim_current_point + 1, len(polyline))
-                partial = polyline[:end_pt]
-                if len(partial) >= 2:
-                    pts = [self._jitter_point(pt) for pt in partial]
-                    for j in range(len(pts) - 1):
-                        painter.drawLine(pts[j], pts[j + 1])
+        if current_idx >= len(all_paths):
+            return
 
-                # Pen position indicator (red crosshair)
-                pt_idx = min(self._anim_current_point, len(polyline) - 1)
-                if polyline:
-                    pos = self.mm_to_pixel(polyline[pt_idx])
-                    indicator_pen = QPen(QColor("#FF4444"), 1.5)
-                    painter.setPen(indicator_pen)
-                    r = 5.0  # pixel radius
-                    painter.drawLine(
-                        QPointF(pos.x() - r, pos.y()), QPointF(pos.x() + r, pos.y())
-                    )
-                    painter.drawLine(
-                        QPointF(pos.x(), pos.y() - r), QPointF(pos.x(), pos.y() + r)
-                    )
+        # Current partial path — one polyline, drawn live up to the play head.
+        color_str, opacity, polyline = all_paths[current_idx]
+        color = QColor(color_str)
+        color.setAlphaF(opacity)
+        pen = QPen(color, max(0.5, self._zoom * self._preview_pen_width_mm))
+        painter.setPen(pen)
+
+        end_pt = min(self._anim_current_point + 1, len(polyline))
+        partial = polyline[:end_pt]
+        if len(partial) >= 2:
+            pts = [self._jitter_point(pt) for pt in partial]
+            for j in range(len(pts) - 1):
+                painter.drawLine(pts[j], pts[j + 1])
+
+        # Pen position indicator (red crosshair).
+        if polyline:
+            pt_idx = min(self._anim_current_point, len(polyline) - 1)
+            pos = self.mm_to_pixel(polyline[pt_idx])
+            indicator_pen = QPen(QColor("#FF4444"), 1.5)
+            painter.setPen(indicator_pen)
+            r = 5.0  # pixel radius
+            painter.drawLine(
+                QPointF(pos.x() - r, pos.y()), QPointF(pos.x() + r, pos.y())
+            )
+            painter.drawLine(
+                QPointF(pos.x(), pos.y() - r), QPointF(pos.x(), pos.y() + r)
+            )
 
     def _draw_travel_lines(self, painter: QPainter, project) -> None:  # type: ignore[no-untyped-def]
         """Draw pen-up travel moves as one cached dotted-gray ``QPainterPath``."""

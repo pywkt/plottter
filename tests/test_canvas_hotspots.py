@@ -442,3 +442,120 @@ def test_overlay_matches_reference_build(qapp):
     assert np.array_equal(got[:, :, 1], exp_g)
     assert np.array_equal(got[:, :, 2], exp_r)
     assert np.array_equal(got[:, :, 3], exp_a)
+
+
+# --------------------------------------------------------------------------
+# §8.4 Animation — incremental completed-paths cache
+# --------------------------------------------------------------------------
+
+
+def _render_anim(widget):
+    """Render only the animation overlay (done paths + partial + crosshair)."""
+    from PyQt6.QtGui import QImage, QPainter
+
+    img = QImage(
+        widget.width(), widget.height(), QImage.Format.Format_ARGB32_Premultiplied
+    )
+    img.fill(0)
+    painter = QPainter(img)
+    widget._draw_animated_paths(painter)
+    painter.end()
+    return _img_to_array(img)
+
+
+def _enter_anim(widget):
+    """Put the widget into animation mode with a freshly collected path set."""
+    widget._rebuild_anim_paths()
+    widget._anim_mode = True
+
+
+def test_anim_incremental_done_paths_match_rebuild(qapp):
+    """At tick N, the incrementally appended cache renders like a fresh rebuild."""
+    _controller, widget = _make_widget()
+    _enter_anim(widget)
+    assert len(widget._anim_all_paths) > 6
+
+    # Advance several paths — each step bakes the completed path into the cache.
+    for _ in range(6):
+        widget.step_anim_forward()
+    # Land partway into the current stroke so a live partial is drawn too.
+    widget._anim_current_point = 1
+
+    incremental = _render_anim(widget)
+    assert incremental[:, :, 3].max() > 0  # actually drew pixels
+
+    # A from-scratch rebuild at the identical play head must be pixel-identical.
+    widget._rebuild_anim_done_paths()
+    rebuilt = _render_anim(widget)
+    assert np.array_equal(incremental, rebuilt)
+
+
+def test_anim_seek_matches_incremental(qapp):
+    """seek_animation rebuilds a cache that renders like the incremental one."""
+    _controller, widget = _make_widget()
+    _enter_anim(widget)
+
+    for _ in range(5):
+        widget.step_anim_forward()
+    incremental = _render_anim(widget)
+
+    widget.seek_animation(5)  # same head, but rebuilt from scratch
+    seeked = _render_anim(widget)
+    assert np.array_equal(incremental, seeked)
+
+
+def test_anim_step_backward_render_matches_fresh_seek(qapp):
+    """After a backward step the render matches a fresh widget seeked there."""
+    _controller, widget = _make_widget()
+    _enter_anim(widget)
+    for _ in range(8):
+        widget.step_anim_forward()
+    widget.step_anim_backward()  # play head 8 -> 7, cache rebuilt
+    assert widget._anim_current_path == 7
+    got = _render_anim(widget)
+
+    _controller2, fresh = _make_widget()
+    fresh._anim_mode = True
+    fresh._rebuild_anim_paths()
+    fresh.seek_animation(7)
+    ref = _render_anim(fresh)
+    assert np.array_equal(got, ref)
+
+
+def test_anim_jitter_baked_incremental_matches_rebuild(qapp):
+    """Baked (crc-seeded) jitter is order-independent: append == rebuild."""
+    _controller, widget = _make_widget()
+    widget._jitter_enabled = True
+    widget._jitter_intensity = 2.0
+    _enter_anim(widget)
+
+    for _ in range(6):
+        widget.step_anim_forward()
+    # current_point == 0 ⇒ the live partial has <2 points (crosshair only), so
+    # the frame is fully determined by the baked done-paths cache.
+    incremental = _render_anim(widget)
+    assert incremental[:, :, 3].max() > 0
+
+    widget._rebuild_anim_done_paths()
+    rebuilt = _render_anim(widget)
+    assert np.array_equal(incremental, rebuilt)
+
+
+def test_anim_done_paths_preserve_colors(qapp):
+    """Every visible (color, opacity) combination gets its own cached path."""
+    _controller, widget = _make_widget()
+    _enter_anim(widget)
+
+    # Run to the end so every path is completed and baked.
+    widget.seek_animation(len(widget._anim_all_paths))
+
+    keys = set(widget._anim_done_paths.keys())
+    expected = {
+        (layer.color, layer.opacity)
+        for layer in widget._controller.current_project.layers
+        if layer.visible
+    }
+    assert keys == expected
+    assert len(keys) == 3  # fixture: black, red dots, 50%-opacity blue
+    for path in widget._anim_done_paths.values():
+        assert path.elementCount() > 0
