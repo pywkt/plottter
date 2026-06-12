@@ -266,3 +266,65 @@ Min/mean ms over 8 frames:
 > interaction so the user sees blits, not rebuilds. Numbers are hardware-dependent
 > (offscreen, dev-loop machine); reproduce the *shape* — flat blit, path-bound
 > crisp — within ±20 %.
+
+### Antialiasing during gestures — not toggled (Phase 168)
+
+The source document's §6 ("render-hints toggling") proposed turning antialiasing
+**off** during pan/zoom/drag gestures and restoring it on idle, on the theory
+that AA is a per-frame rasterization cost worth shedding while the view is
+moving (the findings doc measured `drawPath` at 58 ms vs 43 ms AA-off at 38k).
+The findings doc gated that work on the post-cache HUD numbers
+(`canvas_improvements_findings.md` Phase 4 §1: *"only if gesture frames still
+exceed budget … likely unnecessary; blits don't re-rasterize"*), and the
+benchmark settles it: **AA toggling is unnecessary and is not implemented.**
+
+Measured with `tools/bench_canvas.py` (38000 × 12, cache on) plus a simulated
+pan gesture — bake the scene pixmap once, then nudge `_pan_offset` 10 px/tick for
+20 ticks (all within the 0.5-viewport slop, so every frame is a pure
+`drawPixmap` blit, **0 cache rebuilds**), timing each:
+
+| Scene      | pan-gesture frame min/mean/max (ms) | budget (60 FPS) | margin |
+| ---------- | ----------------------------------: | --------------: | -----: |
+| 38000 × 12 |                  2.3 / 2.6 / 3.3    |           16.7  |  ~6×   |
+
+Why toggling buys nothing here: a gesture frame is no longer a `drawPath` over
+456k points — Phase 166 turned it into a single blit of an already-rasterized
+pixmap. AA applies when geometry is **stroked into** that pixmap (the crisp
+rebuild, which happens on idle / invalidation, *not* during the gesture), so the
+expensive AA stroke is already off the gesture path by construction. Disabling
+the `Antialiasing` render hint on the blit would not change the copy cost — Qt
+does not re-antialias a `drawPixmap` source — it would only make the static
+paper/margin/overlay chrome alias for no measurable gain. The 120 ms post-zoom
+idle timer (`_zoom_idle_timer`, §7.3) that would have driven the "restore AA on
+idle" half of the feature is already in place for the crisp rebuild; no second
+timer or render-hint bookkeeping is added.
+
+At 2.6 ms mean (6× under the 16.7 ms budget) there is no headroom to reclaim, so
+`paintEvent` keeps `Antialiasing` on unconditionally and the source document's §6
+is closed as **adopted-then-found-unnecessary**, exactly as the findings doc
+predicted.
+
+### Final canvas perf table — baseline → path cache → scene cache
+
+The whole arc, one representative frame at each scale, as each cache landed.
+Baseline is the legacy per-segment `drawLine` loop (Phase 164); "path cache" is
+the steady-state cached `drawPath` frame (Phase 165, cache on, `min`); "scene
+cache (gesture blit)" is the pan/zoom gesture frame served from the baked pixmap
+(Phase 166, `min`). All offscreen on the dev-loop machine; reproduce the *shape*
+(orders-of-magnitude collapse, blit flat in path count) within ±20 %:
+
+| Scene      | baseline (ms) | path cache (ms) | scene cache — gesture blit (ms) | total speedup |
+| ---------- | ------------: | --------------: | ------------------------------: | ------------: |
+| 10000 × 12 |           332 |              59 |                            2.2  |        ~150×  |
+| 38000 × 12 |          1323 |             228 |                            2.2  |        ~600×  |
+
+> The two caches attack different costs and compound. The **path cache** removes
+> the per-frame geometry rebuild (1323 → 228 ms at 38k, ~5.8×), leaving the C++
+> stroke as the floor. The **scene pixmap cache** then removes the stroke from
+> *gesture* frames entirely by blitting a pre-rasterized pixmap (228 → 2.2 ms,
+> another ~100×), and — being a fixed-size pixmap copy — the blit is **flat in
+> path count**: 2.2 ms at both 10k and 38k. End to end a 38k-path working scene
+> goes from ~1.3 s/frame (under 1 FPS) to ~2.2 ms/frame (well past 60 FPS), a
+> ~600× gesture-frame speedup. The surviving cost is the crisp rebuild
+> (path-count bound, ~100 ms at 38k), which the 120 ms idle timer keeps off the
+> interactive path so the user only ever sees blits while gesturing.
