@@ -18,7 +18,7 @@ from ._events import _EventsMixin
 from ._mask_ops import _MaskOpsMixin
 from ._painting import _PaintingMixin
 from ._perf_hud import PerfHud
-from ._render_cache import LayerPathCache, TravelPathCache
+from ._render_cache import LayerPathCache, ScenePixmapCache, TravelPathCache
 from .enums import MaskTool, ShapeDrawTool, _MASK_PX_PER_MM
 
 
@@ -302,6 +302,16 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
             os.environ.get("PLOTTTER_NO_CANVAS_CACHE") != "1"
         )
 
+        # Baked scene pixmap cache (spec §7). ``scene_revision`` is a single
+        # monotonically increasing integer bumped by EVERY trigger that changes
+        # the static scene content (grid / reg marks / layer paths / travel);
+        # the pixmap entry stores the revision it was built at, so a mismatch
+        # forces a rebuild. Every §7.4 setter/signal/event calls
+        # ``_bump_scene_revision`` — when in doubt, bump (a spurious rebuild is
+        # ~60 ms once; a stale cache is a visible bug).
+        self._scene_cache = ScenePixmapCache()
+        self.scene_revision: int = 0
+
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
@@ -312,7 +322,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         controller.paths_changed.connect(self._on_paths_changed)
         controller.layer_changed.connect(self._on_layer_changed)
         controller.layers_reordered.connect(self._on_layers_reordered)
-        controller.canvas_changed.connect(self.update)
+        controller.canvas_changed.connect(self._on_canvas_changed)
         controller.layer_added.connect(self._on_layer_added)
         controller.layer_removed.connect(self._on_layer_removed)
 
@@ -320,25 +330,39 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
     # Public API
     # ------------------------------------------------------------------
 
+    def _bump_scene_revision(self) -> None:
+        """Invalidate the baked scene pixmap by advancing ``scene_revision`` (§7.4).
+
+        Every trigger that changes the static scene content (grid / reg marks /
+        layer paths / travel, or the view geometry the pixmap was rendered for)
+        calls this so the next paint rebuilds rather than blitting stale pixels.
+        """
+        self.scene_revision += 1
+
     def set_show_grid(self, visible: bool) -> None:
         self._show_grid = visible
+        self._bump_scene_revision()
         self.update()
 
     def set_show_reg_marks(self, visible: bool) -> None:
         self._show_reg_marks = visible
+        self._bump_scene_revision()
         self.update()
 
     def set_show_travel(self, visible: bool) -> None:
         self._show_travel = visible
+        self._bump_scene_revision()
         self.update()
 
     def set_paper_texture(self, enabled: bool) -> None:
         self._show_paper_texture = enabled
+        self._bump_scene_revision()
         self.update()
 
     def set_ink_preview(self, enabled: bool) -> None:
         """Toggle multiply-blended layer rendering for colour-mixing preview."""
         self._ink_preview = enabled
+        self._bump_scene_revision()
         self.update()
 
     def set_preview_pen_width_mm(self, width_mm: float) -> None:
@@ -349,6 +373,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         the path geometry.
         """
         self._preview_pen_width_mm = max(0.05, min(5.0, float(width_mm)))
+        self._bump_scene_revision()
         self.update()
 
     def get_preview_pen_width_mm(self) -> float:
@@ -364,6 +389,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # Baked-jitter variants depend on the enabled flag; drop them so the
         # next paint rebuilds (or skips) them. Un-jittered paths are kept (§6.4).
         self._path_cache.invalidate_jitter()
+        self._bump_scene_revision()
         self.update()
 
     def set_jitter_intensity(self, intensity: float) -> None:
@@ -372,6 +398,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # Intensity sets the baked displacement sigma; invalidate variants so
         # they rebuild at the new intensity on the next paint (§6.4).
         self._path_cache.invalidate_jitter()
+        self._bump_scene_revision()
         self.update()
 
     def get_jitter_intensity(self) -> float:
@@ -712,6 +739,9 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         self._drag_move_active = active
         self._drag_move_start_mm = None
         self._drag_move_offset_mm = (0.0, 0.0)
+        # Entering/exiting drag-move changes which layer is excluded from the
+        # baked pixmap (§7.5), so the scene must rebuild.
+        self._bump_scene_revision()
         if active:
             # Disable conflicting modes
             self._mask_paint_active = False
@@ -852,10 +882,17 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
     # Event handlers (controller signals)
     # ------------------------------------------------------------------
 
+    def _on_canvas_changed(self) -> None:
+        # Canvas size / margin / registration-mark style changed — all baked
+        # into the scene pixmap, so bump the revision (§7.4) and repaint.
+        self._bump_scene_revision()
+        self.update()
+
     def _on_project_loaded(self) -> None:
         # Whole project replaced — every cached path is stale (§6.3).
         self._path_cache.invalidate_all()
         self._travel_cache.invalidate()
+        self._bump_scene_revision()
         self._fitted = True  # already visible; fit immediately
         self._fit_to_window()
         self._reset_animation()
@@ -866,6 +903,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # (travel hops depend on every layer's endpoints).
         self._path_cache.invalidate(layer_id)
         self._travel_cache.invalidate()
+        self._bump_scene_revision()
         if self._anim_mode:
             self._reset_animation()
         self.update()
@@ -876,6 +914,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # too, which also affects the travel path (§6.5).
         self._path_cache.invalidate(layer_id)
         self._travel_cache.invalidate()
+        self._bump_scene_revision()
         if self._anim_mode:
             self._reset_animation()
         self.update()
@@ -884,6 +923,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # A new layer has no cached path yet; only the travel path (which spans
         # all visible layers) needs rebuilding (§6.3).
         self._travel_cache.invalidate()
+        self._bump_scene_revision()
         if self._anim_mode:
             self._reset_animation()
         self.update()
@@ -892,6 +932,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # Drop the removed layer's entry and rebuild the travel path (§6.3).
         self._path_cache.invalidate(layer_id)
         self._travel_cache.invalidate()
+        self._bump_scene_revision()
         if self._anim_mode:
             self._reset_animation()
         self.update()
@@ -900,6 +941,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # Per-layer paths are unchanged, but travel order follows layer order
         # so the travel path is rebuilt (§6.3).
         self._travel_cache.invalidate()
+        self._bump_scene_revision()
         self.update()
 
     # ------------------------------------------------------------------
@@ -966,3 +1008,6 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
 
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
+        # The scene pixmap is sized to the viewport (+ slop); a resize changes
+        # the covered region, so the cache must rebuild (§7.4).
+        self._bump_scene_revision()

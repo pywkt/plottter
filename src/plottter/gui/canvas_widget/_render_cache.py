@@ -18,11 +18,13 @@ from typing import TYPE_CHECKING
 
 from numpy.random import default_rng
 
-from PyQt6.QtGui import QPainterPath
+from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtGui import QPainter, QPainterPath, QPixmap
 
 from plottter.models.layer import Layer
 
 if TYPE_CHECKING:
+    from plottter.gui.canvas_widget import CanvasWidget
     from plottter.models.project import Project
 
 
@@ -189,3 +191,154 @@ class TravelPathCache:
     def invalidate(self) -> None:
         """Drop the cached travel path so the next ``get`` rebuilds."""
         self._path = None
+
+
+@dataclass
+class _SceneEntry:
+    """A baked scene pixmap plus the view state it was rendered for (§7.2).
+
+    ``pixmap`` holds grid + reg marks + layer paths + travel on a transparent
+    background, covering the viewport plus 0.5 viewport of slop per side and
+    rendered at ``devicePixelRatio`` (tagged via ``setDevicePixelRatio``).
+    ``origin_mm`` is the mm coordinate of the pixmap's top-left corner.
+    """
+
+    pixmap: QPixmap
+    zoom: float
+    origin_mm: tuple[float, float]
+    scene_revision: int
+    excluded_layer_id: str | None
+
+
+def _current_excluded_layer_id(widget: "CanvasWidget") -> str | None:
+    """The layer id to leave out of the scene pixmap (§7.5).
+
+    While drag-to-move is active the active layer is drawn live on top of the
+    blit, so it is excluded from the baked pixmap; otherwise nothing is.
+    """
+    if widget._drag_move_active:
+        return widget._controller.active_layer_id
+    return None
+
+
+class ScenePixmapCache:
+    """Single baked scene pixmap for the canvas (canvas-performance §7).
+
+    Renders the expensive *static* content — grid, registration marks, layer
+    paths and travel lines — into one transparent pixmap that can be blitted in
+    a single ``drawPixmap`` per frame instead of re-stroking every path. The
+    pixmap covers the current viewport plus 0.5 viewport of slop on each side
+    (so small pans stay within the cached region) and is rendered at the
+    widget's ``devicePixelRatio``.
+
+    This class owns only the cache entry and its (re)build / validity logic;
+    blitting into ``paintEvent`` is wired up in a later phase.
+    """
+
+    def __init__(self) -> None:
+        self._entry: _SceneEntry | None = None
+
+    @property
+    def entry(self) -> _SceneEntry | None:
+        """The current cached entry, or ``None`` if never built / invalidated."""
+        return self._entry
+
+    def invalidate(self) -> None:
+        """Drop the cached pixmap so the next paint rebuilds (§7.4)."""
+        self._entry = None
+
+    def is_valid(self, widget: "CanvasWidget") -> bool:
+        """Whether the cached pixmap can be blitted for the current view (§7.2).
+
+        Valid iff the zoom, ``scene_revision`` and excluded layer all match the
+        widget's current state *and* the live viewport lies fully inside the
+        cached (slop-padded) region.
+        """
+        entry = self._entry
+        if entry is None:
+            return False
+        if entry.zoom != widget._zoom:
+            return False
+        if entry.scene_revision != widget.scene_revision:
+            return False
+        if entry.excluded_layer_id != _current_excluded_layer_id(widget):
+            return False
+        # A DPR change has no setter to bump ``scene_revision`` (spec §7.4 folds
+        # it into a paint-time comparison), so guard it here too — a pixmap baked
+        # at the wrong device ratio would blit blurry.
+        dpr = entry.pixmap.devicePixelRatio()
+        if dpr != widget.devicePixelRatioF():
+            return False
+        cov_w_mm = (entry.pixmap.width() / dpr) / entry.zoom
+        cov_h_mm = (entry.pixmap.height() / dpr) / entry.zoom
+        x0, y0 = entry.origin_mm
+        vp_tl = widget.pixel_to_mm(QPointF(0.0, 0.0))
+        vp_br = widget.pixel_to_mm(QPointF(float(widget.width()), float(widget.height())))
+        return (
+            vp_tl[0] >= x0
+            and vp_tl[1] >= y0
+            and vp_br[0] <= x0 + cov_w_mm
+            and vp_br[1] <= y0 + cov_h_mm
+        )
+
+    def rebuild(self, widget: "CanvasWidget") -> _SceneEntry | None:
+        """Render the static scene into a fresh slop-padded pixmap (§7.1, §7.2).
+
+        The pixmap is 2× the viewport per dimension (viewport + 0.5 slop each
+        side), allocated at ``devicePixelRatio`` and filled transparent, then
+        painted with grid → reg marks → layer paths → travel using the widget's
+        own ``_draw_*`` helpers so the output is pixel-identical to drawing them
+        live. Returns the stored entry (or ``None`` for a zero-size widget).
+        """
+        w = widget.width()
+        h = widget.height()
+        if w <= 0 or h <= 0:
+            self._entry = None
+            return None
+
+        zoom = widget._zoom
+        dpr = widget.devicePixelRatioF()
+        excluded_layer_id = _current_excluded_layer_id(widget)
+
+        # Covered region: viewport (w×h) plus 0.5·viewport slop on each side →
+        # 2w×2h logical px, top-left at (-0.5w, -0.5h) in widget pixels.
+        origin_mm = widget.pixel_to_mm(QPointF(-0.5 * w, -0.5 * h))
+
+        pixmap = QPixmap(round(2 * w * dpr), round(2 * h * dpr))
+        pixmap.setDevicePixelRatio(dpr)
+        pixmap.fill(Qt.GlobalColor.transparent)
+
+        # The widget's draw helpers read ``_pan_offset`` (directly and via
+        # ``mm_to_pixel``). Swap in the pan that maps ``origin_mm`` to the
+        # pixmap's top-left so a mm point p lands at (p − origin_mm)·zoom, then
+        # restore — the swap is synchronous and never re-entrant.
+        saved_pan = widget._pan_offset
+        widget._pan_offset = QPointF(-origin_mm[0] * zoom, -origin_mm[1] * zoom)
+        painter = QPainter(pixmap)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            project = widget._controller.current_project
+            canvas = project.canvas
+            if widget._show_grid:
+                widget._draw_grid(painter, canvas)
+            if widget._show_reg_marks and project.registration_marks:
+                widget._draw_registration_marks(painter, canvas, project.reg_mark_style)
+            for layer in project.layers:
+                if not layer.visible or layer.id == excluded_layer_id:
+                    continue
+                widget._draw_layer(painter, layer)
+            if widget._show_travel:
+                widget._draw_travel_lines(painter, project)
+        finally:
+            painter.end()
+            widget._pan_offset = saved_pan
+
+        entry = _SceneEntry(
+            pixmap=pixmap,
+            zoom=zoom,
+            origin_mm=origin_mm,
+            scene_revision=widget.scene_revision,
+            excluded_layer_id=excluded_layer_id,
+        )
+        self._entry = entry
+        return entry
