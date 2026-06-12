@@ -12,10 +12,59 @@ across frames. These tests cover the data model only (no GUI wiring):
 
 from __future__ import annotations
 
-from PyQt6.QtGui import QPainterPath
+import pytest
+
+from PyQt6.QtCore import QPointF
+from PyQt6.QtGui import QImage, QPainterPath
 
 from plottter.gui.canvas_widget._render_cache import LayerPathCache, build_layer_path
 from plottter.models.layer import Layer
+from tests.canvas_render_ref import (
+    make_fixture_project,
+    pixel_diff_ratio,
+    render_reference,
+)
+
+# Render target / view states for the equivalence tests (spec §11.1: two
+# zoom/pan states — a fit-like view and a zoomed-in view pushing part of the
+# scene off-screen so Qt's C++ clip replaces the deleted Python cull).
+SIZE = (400, 400)
+VIEW_STATES = [
+    pytest.param(3.0, (50.0, 50.0), id="fit-view"),
+    pytest.param(5.0, (-80.0, -60.0), id="zoomed-in"),
+]
+
+
+def _make_widget(project, zoom, pan, size, *, cache_enabled: bool = True):
+    """Build a CanvasWidget over *project*, pinned to a fixed view state.
+
+    Returns ``(controller, widget)`` — the controller is returned so callers
+    that mutate paths through it (invalidation tests) keep it alive.
+    """
+    from plottter.gui.canvas_widget import CanvasWidget
+    from plottter.gui.project_controller import ProjectController
+
+    controller = ProjectController(project)
+    widget = CanvasWidget(controller)
+    widget._render_cache_enabled = cache_enabled
+    widget.resize(*size)
+    widget._fitted = True  # block the fit-on-show refit
+    widget._zoom = zoom
+    widget._pan_offset = QPointF(*pan)
+    return controller, widget
+
+
+def _render(widget, size=SIZE) -> QImage:
+    """Render *widget* to a fresh ARGB32 image (paintEvent overwrites all px)."""
+    img = QImage(*size, QImage.Format.Format_ARGB32)
+    img.fill(0)
+    widget.render(img)
+    return img
+
+
+def _shift_paths(paths, dx: float, dy: float):
+    """Return *paths* translated by (dx, dy) — for the drag-move oracle."""
+    return [[(x + dx, y + dy) for x, y in pl] for pl in paths]
 
 
 def _subpath_count(path: QPainterPath) -> int:
@@ -107,3 +156,103 @@ class TestLayerPathCache:
         second = cache.get(layer)
         assert first is not second
         assert second.elementCount() == 3
+
+
+class TestPathCacheEquivalence:
+    """The cached drawPath render must match the legacy oracle within §5.3
+    tolerance (≤ 2% pixels) — covers the ordinary, dots, and opacity layers in
+    the fixture at two zoom/pan states (spec §11.1)."""
+
+    @pytest.mark.parametrize("zoom,pan", VIEW_STATES)
+    def test_cached_render_matches_reference(self, qapp, zoom, pan):
+        project = make_fixture_project()
+        ref = render_reference(project, zoom, pan, SIZE)
+        _controller, widget = _make_widget(project, zoom, pan, SIZE)
+        real = _render(widget)
+        ratio = pixel_diff_ratio(real, ref)
+        assert ratio <= 0.02, f"cached diff ratio {ratio:.4f} exceeds 0.02"
+
+    @pytest.mark.parametrize("zoom,pan", VIEW_STATES)
+    def test_uncached_render_matches_reference(self, qapp, zoom, pan):
+        # _render_cache_enabled=False builds the path fresh each frame (spec §9)
+        # via the same drawing code, so it must match the oracle too.
+        project = make_fixture_project()
+        ref = render_reference(project, zoom, pan, SIZE)
+        _controller, widget = _make_widget(
+            project, zoom, pan, SIZE, cache_enabled=False
+        )
+        real = _render(widget)
+        ratio = pixel_diff_ratio(real, ref)
+        assert ratio <= 0.02, f"uncached diff ratio {ratio:.4f} exceeds 0.02"
+
+    def test_cached_and_uncached_are_identical(self, qapp):
+        # Same drawing code both sides → pixel-identical output (spec §11.1).
+        project = make_fixture_project()
+        _c1, cached = _make_widget(project, 3.0, (50.0, 50.0), SIZE)
+        _c2, uncached = _make_widget(
+            make_fixture_project(), 3.0, (50.0, 50.0), SIZE, cache_enabled=False
+        )
+        assert pixel_diff_ratio(_render(cached), _render(uncached)) == 0.0
+
+
+class TestPathCacheInvalidation:
+    """``paths_changed`` drops the affected entry and the re-render reflects the
+    new geometry (spec §11.2)."""
+
+    def test_paths_changed_invalidates_and_rerenders(self, qapp):
+        project = make_fixture_project()
+        controller, widget = _make_widget(project, 3.0, (50.0, 50.0), SIZE)
+        layer = project.layers[0]
+
+        before = _render(widget)
+        # First render populated the cache for every visible layer.
+        assert layer.id in widget._path_cache._entries
+
+        # Mutate the layer's geometry through the controller → paths_changed.
+        new_paths = [[(10.0, 10.0), (90.0, 90.0)], [(90.0, 10.0), (10.0, 90.0)]]
+        controller._raw_set_layer_paths(layer.id, new_paths)
+        # The handler dropped the stale entry...
+        assert layer.id not in widget._path_cache._entries
+
+        after = _render(widget)
+        # ...and the re-render both differs from the old frame and matches a
+        # fresh oracle render of the now-updated project.
+        assert pixel_diff_ratio(before, after) > 0.0
+        ref = render_reference(controller.current_project, 3.0, (50.0, 50.0), SIZE)
+        assert pixel_diff_ratio(after, ref) <= 0.02
+
+    def test_paths_changed_invalidates_travel_cache(self, qapp):
+        project = make_fixture_project()
+        controller, widget = _make_widget(project, 3.0, (50.0, 50.0), SIZE)
+        widget._show_travel = True
+        _render(widget)
+        assert widget._travel_cache._path is not None
+
+        controller._raw_set_layer_paths(project.layers[0].id, [[(5.0, 5.0), (9.0, 9.0)]])
+        assert widget._travel_cache._path is None
+
+
+class TestDragMoveEquivalence:
+    """Drag-to-move live preview offsets the active layer via
+    ``painter.translate`` — the output must match the oracle rendered with that
+    layer's paths shifted by the same offset (spec §11.1)."""
+
+    def test_drag_move_offset_matches_shifted_reference(self, qapp):
+        dx, dy = 12.0, -7.0
+        project = make_fixture_project()
+        active = project.layers[0]
+
+        controller, widget = _make_widget(project, 3.0, (50.0, 50.0), SIZE)
+        controller.set_active_layer(active.id)
+        widget._drag_move_active = True
+        widget._drag_move_start_mm = (0.0, 0.0)
+        widget._drag_move_offset_mm = (dx, dy)
+        real = _render(widget)
+
+        # Oracle: the same scene with only the active layer's paths translated.
+        shifted = make_fixture_project()
+        shifted.layers[0].paths = _shift_paths(shifted.layers[0].paths, dx, dy)
+        ref = render_reference(shifted, 3.0, (50.0, 50.0), SIZE)
+
+        ratio = pixel_diff_ratio(real, ref)
+        assert ratio <= 0.02, f"drag-move diff ratio {ratio:.4f} exceeds 0.02"

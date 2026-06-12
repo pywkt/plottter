@@ -18,6 +18,7 @@ from ._events import _EventsMixin
 from ._mask_ops import _MaskOpsMixin
 from ._painting import _PaintingMixin
 from ._perf_hud import PerfHud
+from ._render_cache import LayerPathCache, TravelPathCache
 from .enums import MaskTool, ShapeDrawTool, _MASK_PX_PER_MM
 
 
@@ -290,18 +291,30 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
             PerfHud() if os.environ.get("PLOTTTER_PERF_HUD") == "1" else None
         )
 
+        # Cached render geometry (spec §6). ``_path_cache`` holds one mm
+        # ``QPainterPath`` per layer; ``_travel_cache`` holds the single travel
+        # path spanning all visible layers. Disable caching (build fresh per
+        # frame, store nothing) via ``PLOTTTER_NO_CANVAS_CACHE=1`` or by setting
+        # ``_render_cache_enabled`` directly in tests / the bench --no-cache run.
+        self._path_cache = LayerPathCache()
+        self._travel_cache = TravelPathCache()
+        self._render_cache_enabled: bool = (
+            os.environ.get("PLOTTTER_NO_CANVAS_CACHE") != "1"
+        )
+
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setAttribute(Qt.WidgetAttribute.WA_OpaquePaintEvent)
 
-        # Connect controller signals
+        # Connect controller signals. Cache invalidation is wired into these
+        # existing handlers per spec §6.3 (no new connections):
         controller.project_loaded.connect(self._on_project_loaded)
         controller.paths_changed.connect(self._on_paths_changed)
         controller.layer_changed.connect(self._on_layer_changed)
-        controller.layers_reordered.connect(self.update)
+        controller.layers_reordered.connect(self._on_layers_reordered)
         controller.canvas_changed.connect(self.update)
-        controller.layer_added.connect(self._on_layer_changed)
-        controller.layer_removed.connect(self._on_layer_changed)
+        controller.layer_added.connect(self._on_layer_added)
+        controller.layer_removed.connect(self._on_layer_removed)
 
     # ------------------------------------------------------------------
     # Public API
@@ -834,19 +847,53 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
     # ------------------------------------------------------------------
 
     def _on_project_loaded(self) -> None:
+        # Whole project replaced — every cached path is stale (§6.3).
+        self._path_cache.invalidate_all()
+        self._travel_cache.invalidate()
         self._fitted = True  # already visible; fit immediately
         self._fit_to_window()
         self._reset_animation()
         self.update()
 
-    def _on_paths_changed(self, _layer_id: str) -> None:
+    def _on_paths_changed(self, layer_id: str) -> None:
+        # The layer's geometry changed → rebuild its path and the travel path
+        # (travel hops depend on every layer's endpoints).
+        self._path_cache.invalidate(layer_id)
+        self._travel_cache.invalidate()
         if self._anim_mode:
             self._reset_animation()
         self.update()
 
-    def _on_layer_changed(self, _layer_id: str) -> None:
+    def _on_layer_changed(self, layer_id: str) -> None:
+        # Colour/opacity changes don't strictly need it, but paths may have
+        # changed too — keep it simple (§6.3). Visibility toggles arrive here
+        # too, which also affects the travel path (§6.5).
+        self._path_cache.invalidate(layer_id)
+        self._travel_cache.invalidate()
         if self._anim_mode:
             self._reset_animation()
+        self.update()
+
+    def _on_layer_added(self, _layer_id: str) -> None:
+        # A new layer has no cached path yet; only the travel path (which spans
+        # all visible layers) needs rebuilding (§6.3).
+        self._travel_cache.invalidate()
+        if self._anim_mode:
+            self._reset_animation()
+        self.update()
+
+    def _on_layer_removed(self, layer_id: str) -> None:
+        # Drop the removed layer's entry and rebuild the travel path (§6.3).
+        self._path_cache.invalidate(layer_id)
+        self._travel_cache.invalidate()
+        if self._anim_mode:
+            self._reset_animation()
+        self.update()
+
+    def _on_layers_reordered(self) -> None:
+        # Per-layer paths are unchanged, but travel order follows layer order
+        # so the travel path is rebuilt (§6.3).
+        self._travel_cache.invalidate()
         self.update()
 
     # ------------------------------------------------------------------

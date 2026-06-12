@@ -14,9 +14,11 @@ from PyQt6.QtGui import (
     QPainter,
     QPen,
     QPixmap,
+    QTransform,
 )
 
 from ._perf_hud import _null_section
+from ._render_cache import build_layer_path, build_travel_path
 from .enums import MaskTool, ShapeDrawTool
 
 
@@ -449,37 +451,39 @@ class _PaintingMixin:
             if isinstance(dot_dia, (int, float)) and dot_dia > 0.0:
                 width_mm = float(dot_dia)
                 cap = Qt.PenCapStyle.RoundCap
-        pen = QPen(color, max(0.5, self._zoom * width_mm))
+        # Pen width is expressed in mm and stroked through the world transform,
+        # so Qt scales it by ``zoom``: ``max(0.5/zoom, width_mm) * zoom ==
+        # max(0.5, zoom*width_mm)`` px — identical to the legacy pixel formula.
+        pen = QPen(color, max(0.5 / self._zoom, width_mm))
         pen.setCapStyle(cap)
+
+        # Draw the cached mm-space path through the world transform; Qt does the
+        # per-point work in C++ and clips to the viewport (no Python culling).
+        path = self._layer_path(layer)
+        painter.save()
+        painter.setTransform(
+            QTransform(
+                self._zoom, 0.0, 0.0, self._zoom,
+                self._pan_offset.x(), self._pan_offset.y(),
+            ),
+            False,
+        )
+        if offset != (0.0, 0.0):
+            painter.translate(offset[0], offset[1])  # drag-to-move live preview
         painter.setPen(pen)
+        painter.drawPath(path)
+        painter.restore()
 
-        # Compute viewport bounds in mm for culling — paths whose bounding box
-        # is entirely outside the visible area can be skipped entirely.
-        vp_left, vp_top = self.pixel_to_mm(QPointF(0.0, 0.0))
-        vp_right, vp_bottom = self.pixel_to_mm(QPointF(float(self.width()), float(self.height())))
+    def _layer_path(self, layer):  # type: ignore[no-untyped-def]
+        """Return the layer's mm ``QPainterPath``, cached unless caching is off.
 
-        ox, oy = offset
-        for polyline in layer.paths:
-            if len(polyline) < 2:
-                continue
-            # Viewport culling: skip paths entirely outside the visible area.
-            min_x = min_y = float("inf")
-            max_x = max_y = float("-inf")
-            for px, py in polyline:
-                opx, opy = px + ox, py + oy
-                if opx < min_x:
-                    min_x = opx
-                if opx > max_x:
-                    max_x = opx
-                if opy < min_y:
-                    min_y = opy
-                if opy > max_y:
-                    max_y = opy
-            if max_x < vp_left or min_x > vp_right or max_y < vp_top or min_y > vp_bottom:
-                continue
-            pts = [self._jitter_point((px + ox, py + oy)) for px, py in polyline]
-            for i in range(len(pts) - 1):
-                painter.drawLine(pts[i], pts[i + 1])
+        With ``_render_cache_enabled`` False (tests / ``--no-cache`` bench) the
+        path is rebuilt fresh every frame and nothing is stored, exercising the
+        same drawing code uncached for apples-to-apples comparison (spec §9).
+        """
+        if self._render_cache_enabled:
+            return self._path_cache.get(layer)
+        return build_layer_path(layer)
 
     def _draw_animated_paths(self, painter: QPainter) -> None:
         """Render paths in animation mode: completed=full, current=partial, future=hidden."""
@@ -528,22 +532,25 @@ class _PaintingMixin:
                     )
 
     def _draw_travel_lines(self, painter: QPainter, project) -> None:  # type: ignore[no-untyped-def]
-        """Draw pen-up travel moves as dotted gray lines."""
-        travel_pen = QPen(QColor("#AAAAAA"), 0.5, Qt.PenStyle.DotLine)
-        painter.setPen(travel_pen)
+        """Draw pen-up travel moves as one cached dotted-gray ``QPainterPath``."""
+        if self._render_cache_enabled:
+            path = self._travel_cache.get(project)
+        else:
+            path = build_travel_path(project)
 
-        last_end: tuple[float, float] | None = None
-        for layer in project.layers:
-            if not layer.visible:
-                continue
-            for polyline in layer.paths:
-                if not polyline:
-                    continue
-                if last_end is not None:
-                    p1 = self.mm_to_pixel(last_end)
-                    p2 = self.mm_to_pixel(polyline[0])
-                    painter.drawLine(p1, p2)
-                last_end = polyline[-1]
+        # Cosmetic-thin: 0.5/zoom mm → 0.5 px once scaled by the world transform.
+        travel_pen = QPen(QColor("#AAAAAA"), 0.5 / self._zoom, Qt.PenStyle.DotLine)
+        painter.save()
+        painter.setTransform(
+            QTransform(
+                self._zoom, 0.0, 0.0, self._zoom,
+                self._pan_offset.x(), self._pan_offset.y(),
+            ),
+            False,
+        )
+        painter.setPen(travel_pen)
+        painter.drawPath(path)
+        painter.restore()
 
     # ------------------------------------------------------------------
     # Mask paint rendering helpers
