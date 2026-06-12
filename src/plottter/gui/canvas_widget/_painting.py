@@ -328,8 +328,15 @@ class _PaintingMixin:
             if not (0.5 <= ratio <= 2.0):
                 cache.rebuild(self)  # scaled blit would look broken
                 self._zoom_idle_timer.stop()
-            # else: soft scaled preview; idle timer (armed in _apply_zoom) will
-            # rebuild crisp ~120 ms after the gesture ends.
+            elif not self._zoom_idle_timer.isActive():
+                # Self-heal: a soft scaled preview with no pending crisp
+                # rebuild would stay blurry forever. _apply_zoom and
+                # _fit_to_window arm the timer; this guard covers any other
+                # path that mutates self._zoom directly.
+                self._zoom_idle_timer.start(self.ZOOM_IDLE_MS)
+            # else: soft scaled preview; idle timer (armed in _apply_zoom /
+            # _fit_to_window) will rebuild crisp ~120 ms after the gesture
+            # ends.
 
         entry = cache.entry
         if entry is not None:

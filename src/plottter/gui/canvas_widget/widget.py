@@ -1098,6 +1098,10 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
             (self.height() - paper_px_h) / 2,
         )
         self.view_changed.emit()
+        # Like _apply_zoom, this mutates self._zoom — arm the idle timer so a
+        # soft scaled blit (zoom ratio within [0.5, 2.0]) gets its crisp
+        # rebuild instead of staying blurry indefinitely (§7.3).
+        self._zoom_idle_timer.start(self.ZOOM_IDLE_MS)
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)

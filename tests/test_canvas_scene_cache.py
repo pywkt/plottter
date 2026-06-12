@@ -417,6 +417,47 @@ def test_large_zoom_step_rebuilds_synchronously(qapp):
     assert widget._scene_cache.entry.zoom == widget._zoom
 
 
+def test_fit_to_window_arms_idle_timer(qapp):
+    """Fit-to-window must arm the crisp-rebuild timer like _apply_zoom (§7.3).
+
+    Regression: _fit_to_window mutates ``_zoom`` directly; without arming the
+    idle timer a soft scaled blit (fit ratio within [0.5, 2.0]) stayed blurry
+    indefinitely because nothing ever triggered the crisp rebuild.
+    """
+    _c, widget = _make_widget(size=(400, 300), zoom=3.0, pan=(40.0, 30.0))
+    widget._render_cache_enabled = True
+    _render_widget(widget)
+    cached_zoom = widget._scene_cache.entry.zoom
+
+    widget._fit_to_window()  # 100 mm canvas in 400x300 - 2*20 margin -> zoom 2.6
+    assert widget._zoom != cached_zoom
+    assert 0.5 <= widget._zoom / cached_zoom <= 2.0  # soft-blit range
+    assert widget._zoom_idle_timer.isActive()
+
+    _render_widget(widget)  # soft frame
+    widget._zoom_idle_timer.timeout.emit()  # idle fires -> crisp rebuild
+    assert widget._scene_cache.entry.zoom == widget._zoom
+
+
+def test_soft_blit_self_heals_when_timer_not_armed(qapp):
+    """A soft blit with no pending rebuild arms the timer itself (§7.3 guard).
+
+    Covers any future code path that mutates ``_zoom`` directly without arming
+    the idle timer: the paint's soft branch must self-heal rather than leave
+    the canvas blurry forever.
+    """
+    _c, widget = _make_widget(size=(400, 300), zoom=3.0, pan=(40.0, 30.0))
+    widget._render_cache_enabled = True
+    _render_widget(widget)
+
+    widget._zoom = 3.9  # direct write, ratio 1.3 — nothing armed the timer
+    widget._zoom_idle_timer.stop()
+    _render_widget(widget)  # soft frame must arm the timer
+    assert widget._zoom_idle_timer.isActive()
+    widget._zoom_idle_timer.timeout.emit()
+    assert widget._scene_cache.entry.zoom == widget._zoom
+
+
 # --------------------------------------------------------------------------
 # §7.5 — drag-to-move: active layer excluded from the bake, drawn live on top
 # --------------------------------------------------------------------------
