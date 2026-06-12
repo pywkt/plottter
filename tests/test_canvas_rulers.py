@@ -363,6 +363,85 @@ def test_main_window_has_rulers_and_renders_canvas(qapp):
     assert _is_non_blank(img)
 
 
+# --------------------------------------------------------------------------
+# Show Rulers toggle + QSettings persistence (§10.4)
+# --------------------------------------------------------------------------
+
+
+def _make_window(qapp):
+    from plottter.gui.main_window import MainWindow
+    from plottter.gui.project_controller import ProjectController
+    from tests.canvas_render_ref import make_fixture_project
+
+    controller = ProjectController(make_fixture_project())
+    win = MainWindow(controller)
+    win._prompt_save_if_modified = lambda: True
+    return win
+
+
+def test_show_rulers_default_hidden(qapp):
+    # Default (no saved preference) is hidden — the rulers are off by default.
+    from PyQt6.QtCore import QSettings
+
+    QSettings("Plottter", "Plottter").remove("view/show_rulers")
+    win = _make_window(qapp)
+    assert win._act_show_rulers.isChecked() is False
+    assert win._ruler_top.isHidden()
+    assert win._ruler_left.isHidden()
+    assert win._ruler_corner.isHidden()
+
+
+def test_show_rulers_action_toggles_widget_visibility(qapp):
+    win = _make_window(qapp)
+
+    win._act_show_rulers.setChecked(True)
+    assert not win._ruler_top.isHidden()
+    assert not win._ruler_left.isHidden()
+    assert not win._ruler_corner.isHidden()
+
+    win._act_show_rulers.setChecked(False)
+    assert win._ruler_top.isHidden()
+    assert win._ruler_left.isHidden()
+    assert win._ruler_corner.isHidden()
+
+
+def test_show_rulers_persists_across_fresh_window(qapp):
+    # Enabling rulers and saving state must restore them on a fresh window.
+    from PyQt6.QtCore import QSettings
+
+    win = _make_window(qapp)
+    win._act_show_rulers.setChecked(True)
+    win._save_state()
+
+    assert QSettings("Plottter", "Plottter").value(
+        "view/show_rulers", False, type=bool
+    ) is True
+
+    win2 = _make_window(qapp)
+    assert win2._act_show_rulers.isChecked() is True
+    assert not win2._ruler_top.isHidden()
+    assert not win2._ruler_left.isHidden()
+    assert not win2._ruler_corner.isHidden()
+
+
+def test_show_rulers_disabled_state_persists(qapp):
+    from PyQt6.QtCore import QSettings
+
+    win = _make_window(qapp)
+    win._act_show_rulers.setChecked(True)
+    win._save_state()
+    win._act_show_rulers.setChecked(False)
+    win._save_state()
+
+    assert QSettings("Plottter", "Plottter").value(
+        "view/show_rulers", True, type=bool
+    ) is False
+
+    win2 = _make_window(qapp)
+    assert win2._act_show_rulers.isChecked() is False
+    assert win2._ruler_top.isHidden()
+
+
 def test_main_window_view_change_repaints_rulers(qapp):
     # The canvas's view_changed is wired to the rulers' update().
     from plottter.gui.main_window import MainWindow

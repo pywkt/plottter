@@ -292,10 +292,16 @@ class MainWindow(
     # Window state persistence
     # ------------------------------------------------------------------
 
+    def _set_show_rulers(self, show: bool) -> None:
+        """Show or hide the canvas rulers and their corner (spec §10.4)."""
+        for widget in (self._ruler_top, self._ruler_left, self._ruler_corner):
+            widget.setVisible(show)
+
     def _save_state(self) -> None:
         settings = QSettings("Plottter", "Plottter")
         settings.setValue("geometry", self.saveGeometry())
         settings.setValue("splitter_state", self._splitter.saveState())
+        settings.setValue("view/show_rulers", self._act_show_rulers.isChecked())
 
     def _restore_state(self) -> None:
         settings = QSettings("Plottter", "Plottter")
@@ -305,6 +311,10 @@ class MainWindow(
         splitter_state = settings.value("splitter_state")
         if splitter_state is not None:
             self._splitter.restoreState(splitter_state)
+        # Rulers are a persisted workspace preference, default hidden (§10.4).
+        show_rulers = settings.value("view/show_rulers", False, type=bool)
+        self._act_show_rulers.setChecked(show_rulers)
+        self._set_show_rulers(show_rulers)
 
     # ------------------------------------------------------------------
     # Window close

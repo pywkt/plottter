@@ -150,6 +150,17 @@ class _MenusMixin:
         self._act_grid.toggled.connect(self._canvas.set_show_grid)
         view_menu.addAction(self._act_grid)
 
+        # Show Rulers — frames the canvas with mm measurement rulers. Unlike the
+        # other view toggles this is persisted as a workspace preference (spec
+        # §10.4, QSettings key "view/show_rulers"); restored in _restore_state.
+        self._act_show_rulers = QAction("Show &Rulers", self)
+        self._act_show_rulers.setCheckable(True)
+        self._act_show_rulers.setToolTip(
+            "Show measurement rulers framing the canvas (position is shown in mm)"
+        )
+        self._act_show_rulers.toggled.connect(self._set_show_rulers)
+        view_menu.addAction(self._act_show_rulers)
+
         self._act_reg_marks = QAction("Toggle &Registration Marks", self)
         self._act_reg_marks.setShortcut(QKeySequence("R"))
         self._act_reg_marks.setCheckable(True)

@@ -63,6 +63,14 @@ affect export.
 Press `R` (or **View › Toggle Registration Marks**) to show corner crosshairs. These marks appear
 in the exported SVG to help you align multi-pen plots.
 
+### Rulers
+
+Enable **View › Show Rulers** to frame the canvas with horizontal and vertical
+rulers marked in millimetres. The rulers track the current zoom and pan, and a
+marker line on each follows the cursor so you can read off its position. Unlike
+the other view toggles, this preference is remembered between sessions (it is
+off by default).
+
 ### Pen-up travel visualization
 
 Press `T` (or **View › Toggle Travel Lines**) to show dashed grey lines between path endpoints.
@@ -248,6 +256,7 @@ The status bar at the bottom of the window shows:
 | Zoom In | `Ctrl+=` | Zoom in |
 | Zoom Out | `Ctrl+-` | Zoom out |
 | Fit to Window | `Ctrl+0` | Fit the entire canvas |
+| Show Rulers | — | Show or hide mm rulers framing the canvas (remembered between sessions) |
 | Toggle Grid | `G` | Show or hide the 10 mm grid |
 | Toggle Registration Marks | `R` | Show or hide corner crosshairs |
 | Toggle Travel Lines | `T` | Show or hide pen-up travel moves |
