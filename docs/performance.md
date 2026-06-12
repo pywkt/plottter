@@ -196,3 +196,31 @@ the project's real working scale costs hundreds of ms to over a second:
 > Python loops of `_draw_layer` — is the part that matters. Target after the
 > rewrite: gesture frames under ~5 ms (cached blit), crisp re-render under
 > ~60 ms at 38k paths.
+
+### After path cache (Phase 165)
+
+These are measured with the `LayerPathCache` + travel-path cache landed (spec
+`canvas-performance.md` §6, §9). Each layer's mm-space `QPainterPath` is built
+once and reused across frames; the renderer now hands one `drawPath` per layer
+to Qt's C++ stroker instead of rebuilding the geometry every repaint. `cache on`
+is the default paint path; `cache off` is the `PLOTTTER_NO_CANVAS_CACHE=1`
+bypass (`--no-cache`), which rebuilds the path fresh per frame for an
+apples-to-apples comparison. Min/mean over 5 frames; the first frame is the
+cache-build warmup, so `min` is the steady-state floor:
+
+| Scene      | cache off min/mean (ms) | cache on min/mean (ms) | vs §164 baseline (min) |
+| ---------- | ----------------------: | ---------------------: | ---------------------: |
+| 10000 × 12 |             103 / 108   |          59 / 69       |                  5.6×  |
+| 38000 × 12 |             347 / 361   |         228 / 303      |                  5.8×  |
+
+> The ≥5× win at 38k vs the §164 per-segment baseline (1323 → 228 ms) is met.
+> Most of it comes from the `drawPath` migration itself — even `cache off` is
+> already ~3.8× faster than the legacy per-`drawLine` loop — and the layer-path
+> cache adds the remaining **~1.5–1.75×** by skipping the per-frame path
+> rebuild (38k: 347 → 228 ms; 10k: 103 → 59 ms). The cached/uncached ratio
+> floors around ~0.6 because the surviving cost is the C++ stroke, which caching
+> doesn't touch; the sub-5 ms gesture frames in the §164 target depend on the
+> later scene-pixmap blit cache, not the path cache alone. Numbers are
+> hardware-dependent (offscreen, dev-loop machine); reproduce the *shape* within
+> ±20 %. The `tests/test_canvas_path_cache.py::TestRenderCachePerfSmoke` test
+> guards the cache-on-beats-cache-off margin at a CI-friendly 5000 × 12.
