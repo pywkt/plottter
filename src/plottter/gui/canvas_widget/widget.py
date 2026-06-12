@@ -142,6 +142,14 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
     # Args: (x_mm, y_mm) — click position in canvas mm coordinates.
     fmm_source_point_set = pyqtSignal(float, float)
 
+    # Emitted whenever the view transform (``_zoom`` / ``_pan_offset``) changes,
+    # so the rulers can repaint to stay aligned with the canvas (spec §10.3).
+    view_changed = pyqtSignal()
+
+    # Emitted when the mouse leaves the canvas, so the rulers clear their cursor
+    # marker (spec §10.3).
+    mouse_left = pyqtSignal()
+
     MIN_ZOOM = 0.1
     MAX_ZOOM = 20.0
     GRID_SPACING_MM = 10.0
@@ -861,26 +869,31 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
             (self.width() - paper_px_w) / 2,
             (self.height() - paper_px_h) / 2,
         )
+        self.view_changed.emit()
         self.update()
 
     def pan_left(self) -> None:
         self._pan_offset += QPointF(40.0, 0.0)
         self._clamp_pan_offset()
+        self.view_changed.emit()
         self.update()
 
     def pan_right(self) -> None:
         self._pan_offset += QPointF(-40.0, 0.0)
         self._clamp_pan_offset()
+        self.view_changed.emit()
         self.update()
 
     def pan_up(self) -> None:
         self._pan_offset += QPointF(0.0, 40.0)
         self._clamp_pan_offset()
+        self.view_changed.emit()
         self.update()
 
     def pan_down(self) -> None:
         self._pan_offset += QPointF(0.0, -40.0)
         self._clamp_pan_offset()
+        self.view_changed.emit()
         self.update()
 
     def zoom_in(self) -> None:
@@ -1045,6 +1058,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
             cy - scale * (cy - self._pan_offset.y()),
         )
         self._zoom = new_zoom
+        self.view_changed.emit()
         # Arm the soft-zoom idle timer: this frame will blit the cached pixmap
         # scaled (if the ratio is in range), and ``_on_zoom_idle_rebuild`` will
         # swap in a crisp rebuild ~120 ms after the gesture stops (spec §7.3).
@@ -1083,6 +1097,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
             (self.width() - paper_px_w) / 2,
             (self.height() - paper_px_h) / 2,
         )
+        self.view_changed.emit()
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)

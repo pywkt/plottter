@@ -102,6 +102,7 @@ class _EventsMixin:
         if modifiers & Qt.KeyboardModifier.ControlModifier:
             self._pan_offset += QPointF(0.0, angle_delta / 120.0 * 40)
             self._clamp_pan_offset()
+            self.view_changed.emit()
             self.update()
             return
 
@@ -109,6 +110,7 @@ class _EventsMixin:
         if modifiers & Qt.KeyboardModifier.AltModifier:
             self._pan_offset += QPointF(angle_delta / 120.0 * 40, 0.0)
             self._clamp_pan_offset()
+            self.view_changed.emit()
             self.update()
             return
 
@@ -274,6 +276,11 @@ class _EventsMixin:
         ):
             self._last_pan_pos = event.pos()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
+
+    def leaveEvent(self, event) -> None:  # type: ignore[no-untyped-def]
+        # Mouse left the canvas — let the rulers clear their cursor marker.
+        self.mouse_left.emit()
+        super().leaveEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         # ── 3D preview mode: orbit and pan ──────────────────────────────
@@ -470,6 +477,7 @@ class _EventsMixin:
             self._pan_offset += QPointF(delta.x(), delta.y())
             self._last_pan_pos = event.pos()
             self._clamp_pan_offset()
+            self.view_changed.emit()
             self.update()
 
         # Emit mm position for status bar
@@ -728,6 +736,7 @@ class _EventsMixin:
             elif key == Qt.Key.Key_Down:
                 self._pan_offset += QPointF(0.0, -step)
             self._clamp_pan_offset()
+            self.view_changed.emit()
             self.update()
             return
 

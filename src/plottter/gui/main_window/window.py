@@ -5,6 +5,7 @@ from __future__ import annotations
 from PyQt6.QtCore import Qt, QSettings
 from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
+    QGridLayout,
     QMainWindow,
     QSplitter,
     QVBoxLayout,
@@ -13,6 +14,7 @@ from PyQt6.QtWidgets import (
 
 from plottter.gui.animation_bar import AnimationBar
 from plottter.gui.canvas_widget import CanvasWidget
+from plottter.gui.widgets.ruler import RulerCorner, RulerWidget
 from plottter.gui.layer_panel import LayerPanel
 from plottter.gui.mode_panel import ModePanel
 from plottter.gui.project_controller import ProjectController
@@ -86,7 +88,30 @@ class MainWindow(
             "Wheel to zoom · Ctrl+wheel to pan vertically · Alt+wheel to pan horizontally · "
             "Middle-drag or Space+drag to pan · Ctrl+= / Ctrl+\u2212 to zoom · Ctrl+0 to fit"
         )
-        canvas_vbox.addWidget(self._canvas, stretch=1)
+        # Wrap the canvas in a grid framed by rulers (spec §10.1): corner (0,0),
+        # top ruler (0,1), left ruler (1,0), canvas (1,1).
+        ruler_grid = QWidget()
+        grid = QGridLayout(ruler_grid)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(0)
+
+        self._ruler_corner = RulerCorner()
+        self._ruler_top = RulerWidget(Qt.Orientation.Horizontal, canvas=self._canvas)
+        self._ruler_left = RulerWidget(Qt.Orientation.Vertical, canvas=self._canvas)
+        grid.addWidget(self._ruler_corner, 0, 0)
+        grid.addWidget(self._ruler_top, 0, 1)
+        grid.addWidget(self._ruler_left, 1, 0)
+        grid.addWidget(self._canvas, 1, 1)
+        grid.setRowStretch(1, 1)
+        grid.setColumnStretch(1, 1)
+
+        # Keep the rulers aligned with the canvas view and cursor (spec §10.3).
+        for ruler in (self._ruler_top, self._ruler_left):
+            self._canvas.view_changed.connect(ruler.update)
+            self._canvas.mouse_position_mm.connect(ruler.set_marker_mm)
+            self._canvas.mouse_left.connect(ruler.clear_marker)
+
+        canvas_vbox.addWidget(ruler_grid, stretch=1)
 
         self._anim_bar = AnimationBar()
         canvas_vbox.addWidget(self._anim_bar)

@@ -253,3 +253,131 @@ def test_view_accessors_round_trip_on_real_canvas(qapp):
     pt = widget.mm_to_pixel((10.0, 20.0))
     assert pt.x() == pytest.approx(10.0 * 6.0 + 33.0)
     assert pt.y() == pytest.approx(20.0 * 6.0 - 12.0)
+
+
+# --------------------------------------------------------------------------
+# view_changed signal — emitted from every view-mutating site (§10.3)
+# --------------------------------------------------------------------------
+
+
+def _real_canvas(qapp):
+    """A real CanvasWidget over the fixture project, sized non-zero."""
+    from plottter.gui.canvas_widget import CanvasWidget
+    from plottter.gui.project_controller import ProjectController
+    from tests.canvas_render_ref import make_fixture_project
+
+    controller = ProjectController(make_fixture_project())
+    widget = CanvasWidget(controller)
+    widget.resize(800, 600)
+    return widget
+
+
+class _SignalSpy:
+    def __init__(self, signal):
+        self.count = 0
+        signal.connect(self._bump)
+
+    def _bump(self, *args):
+        self.count += 1
+
+
+def test_apply_zoom_emits_view_changed(qapp):
+    widget = _real_canvas(qapp)
+    spy = _SignalSpy(widget.view_changed)
+    widget._apply_zoom(1.25, widget.rect().center())
+    assert spy.count == 1
+
+
+def test_apply_zoom_no_change_does_not_emit(qapp):
+    # Clamped at MAX_ZOOM → no transform change → no signal.
+    widget = _real_canvas(qapp)
+    widget._zoom = widget.MAX_ZOOM
+    spy = _SignalSpy(widget.view_changed)
+    widget._apply_zoom(2.0, widget.rect().center())
+    assert spy.count == 0
+
+
+def test_pan_left_emits_view_changed(qapp):
+    widget = _real_canvas(qapp)
+    spy = _SignalSpy(widget.view_changed)
+    widget.pan_left()
+    assert spy.count == 1
+
+
+def test_pan_directions_each_emit_view_changed(qapp):
+    widget = _real_canvas(qapp)
+    spy = _SignalSpy(widget.view_changed)
+    widget.pan_left()
+    widget.pan_right()
+    widget.pan_up()
+    widget.pan_down()
+    assert spy.count == 4
+
+
+def test_center_view_emits_view_changed(qapp):
+    widget = _real_canvas(qapp)
+    spy = _SignalSpy(widget.view_changed)
+    widget.center_view()
+    assert spy.count == 1
+
+
+def test_fit_to_window_emits_view_changed(qapp):
+    widget = _real_canvas(qapp)
+    spy = _SignalSpy(widget.view_changed)
+    widget.fit_to_window()
+    assert spy.count == 1
+
+
+def test_mouse_left_signal_exists_and_emits(qapp):
+    widget = _real_canvas(qapp)
+    spy = _SignalSpy(widget.mouse_left)
+    widget.mouse_left.emit()
+    assert spy.count == 1
+
+
+# --------------------------------------------------------------------------
+# MainWindow integration — rulers present, canvas still renders (§10.1)
+# --------------------------------------------------------------------------
+
+
+def test_main_window_has_rulers_and_renders_canvas(qapp):
+    from plottter.gui.main_window import MainWindow
+    from plottter.gui.project_controller import ProjectController
+    from plottter.gui.widgets.ruler import RulerCorner, RulerWidget
+    from tests.canvas_render_ref import make_fixture_project
+
+    controller = ProjectController(make_fixture_project())
+    win = MainWindow(controller)
+    win._prompt_save_if_modified = lambda: True
+
+    # Rulers were constructed and framed around the canvas.
+    assert isinstance(win._ruler_top, RulerWidget)
+    assert isinstance(win._ruler_left, RulerWidget)
+    assert isinstance(win._ruler_corner, RulerCorner)
+    assert win._ruler_top._canvas is win._canvas
+    assert win._ruler_left._canvas is win._canvas
+
+    # The canvas still renders the fixture (non-blank) inside the grid.
+    win._canvas.fit_to_window()
+    img = _render(win._canvas, 800, 600)
+    assert _is_non_blank(img)
+
+
+def test_main_window_view_change_repaints_rulers(qapp):
+    # The canvas's view_changed is wired to the rulers' update().
+    from plottter.gui.main_window import MainWindow
+    from plottter.gui.project_controller import ProjectController
+    from tests.canvas_render_ref import make_fixture_project
+
+    controller = ProjectController(make_fixture_project())
+    win = MainWindow(controller)
+    win._prompt_save_if_modified = lambda: True
+
+    # Driving a marker through mouse_position_mm reaches the rulers.
+    win._canvas.mouse_position_mm.emit(42.0, 17.0)
+    assert win._ruler_top._marker_mm == pytest.approx(42.0)
+    assert win._ruler_left._marker_mm == pytest.approx(17.0)
+
+    win._canvas.mouse_left.emit()
+    assert win._ruler_top._marker_mm is None
+    assert win._ruler_left._marker_mm is None
