@@ -145,6 +145,9 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
     MIN_ZOOM = 0.1
     MAX_ZOOM = 20.0
     GRID_SPACING_MM = 10.0
+    #: Idle delay (ms) after the last zoom step before the soft scaled blit is
+    #: replaced by a crisp re-render of the scene pixmap (spec §7.3 / §2.2).
+    ZOOM_IDLE_MS = 120
     ANIM_TIMER_INTERVAL_MS = 50  # ~20 fps
 
     def __init__(self, controller: ProjectController, parent: QWidget | None = None) -> None:
@@ -311,6 +314,15 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # ~60 ms once; a stale cache is a visible bug).
         self._scene_cache = ScenePixmapCache()
         self.scene_revision: int = 0
+
+        # Soft-zoom idle timer (spec §7.3). During a wheel-zoom gesture frames
+        # are a scaled blit of the last crisp pixmap; this single-shot timer is
+        # (re)armed on every zoom step and, ``ZOOM_IDLE_MS`` after the gesture
+        # settles, rebuilds the pixmap crisp and repaints.
+        self._zoom_idle_timer = QTimer(self)
+        self._zoom_idle_timer.setSingleShot(True)
+        self._zoom_idle_timer.setInterval(self.ZOOM_IDLE_MS)
+        self._zoom_idle_timer.timeout.connect(self._on_zoom_idle_rebuild)
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -979,6 +991,25 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
             cy - scale * (cy - self._pan_offset.y()),
         )
         self._zoom = new_zoom
+        # Arm the soft-zoom idle timer: this frame will blit the cached pixmap
+        # scaled (if the ratio is in range), and ``_on_zoom_idle_rebuild`` will
+        # swap in a crisp rebuild ~120 ms after the gesture stops (spec §7.3).
+        self._zoom_idle_timer.start(self.ZOOM_IDLE_MS)
+        self.update()
+
+    def _on_zoom_idle_rebuild(self) -> None:
+        """Rebuild the scene pixmap crisp after a soft-zoom gesture settles (§7.3).
+
+        Fired ``ZOOM_IDLE_MS`` after the last zoom step. While the cache is
+        bypassed (ink / animation / 3D / no-cache) there is no pixmap to refine,
+        so this is a no-op. Otherwise, if the cached pixmap is still at the old
+        zoom (the soft state), rebuild it at the now-stable zoom and repaint so
+        the next frame blits a crisp 1:1 pixmap instead of the scaled preview.
+        """
+        if not self._scene_cache_active():
+            return
+        if not self._scene_cache.is_valid(self):
+            self._scene_cache.rebuild(self)
         self.update()
 
     def _fit_to_window(self) -> None:

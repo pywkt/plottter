@@ -252,17 +252,18 @@ class ScenePixmapCache:
         """Drop the cached pixmap so the next paint rebuilds (§7.4)."""
         self._entry = None
 
-    def is_valid(self, widget: "CanvasWidget") -> bool:
-        """Whether the cached pixmap can be blitted for the current view (§7.2).
+    def static_matches(self, widget: "CanvasWidget") -> bool:
+        """Whether the baked *static content* still matches the widget (§7.3).
 
-        Valid iff the zoom, ``scene_revision`` and excluded layer all match the
-        widget's current state *and* the live viewport lies fully inside the
-        cached (slop-padded) region.
+        Checks everything that determines what pixels were painted — the
+        ``scene_revision``, the excluded drag layer, and the device pixel ratio
+        — but **not** the view geometry (zoom / pan). When this is true and only
+        the zoom has drifted, the pixmap can be reused as a soft scaled preview
+        (§7.3 zoom-mismatch branch); when it is false the content itself changed
+        and a fresh rebuild is required.
         """
         entry = self._entry
         if entry is None:
-            return False
-        if entry.zoom != widget._zoom:
             return False
         if entry.scene_revision != widget.scene_revision:
             return False
@@ -271,9 +272,21 @@ class ScenePixmapCache:
         # A DPR change has no setter to bump ``scene_revision`` (spec §7.4 folds
         # it into a paint-time comparison), so guard it here too — a pixmap baked
         # at the wrong device ratio would blit blurry.
-        dpr = entry.pixmap.devicePixelRatio()
-        if dpr != widget.devicePixelRatioF():
+        if entry.pixmap.devicePixelRatio() != widget.devicePixelRatioF():
             return False
+        return True
+
+    def covers_viewport(self, widget: "CanvasWidget") -> bool:
+        """Whether the live viewport lies fully inside the cached region (§7.2).
+
+        Evaluated at the *cached* zoom, so it answers "did the pan stay within
+        the slop?" independently of any zoom drift. Used both by :meth:`is_valid`
+        (same-zoom blit) and to decide a pan-beyond-slop rebuild.
+        """
+        entry = self._entry
+        if entry is None:
+            return False
+        dpr = entry.pixmap.devicePixelRatio()
         cov_w_mm = (entry.pixmap.width() / dpr) / entry.zoom
         cov_h_mm = (entry.pixmap.height() / dpr) / entry.zoom
         x0, y0 = entry.origin_mm
@@ -285,6 +298,20 @@ class ScenePixmapCache:
             and vp_br[0] <= x0 + cov_w_mm
             and vp_br[1] <= y0 + cov_h_mm
         )
+
+    def is_valid(self, widget: "CanvasWidget") -> bool:
+        """Whether the cached pixmap can be blitted 1:1 for the current view (§7.2).
+
+        Valid iff the static content still matches (:meth:`static_matches`), the
+        zoom is unchanged, and the viewport lies inside the covered region
+        (:meth:`covers_viewport`).
+        """
+        entry = self._entry
+        if entry is None:
+            return False
+        if entry.zoom != widget._zoom:
+            return False
+        return self.static_matches(widget) and self.covers_viewport(widget)
 
     def rebuild(self, widget: "CanvasWidget") -> _SceneEntry | None:
         """Render the static scene into a fresh slop-padded pixmap (§7.1, §7.2).

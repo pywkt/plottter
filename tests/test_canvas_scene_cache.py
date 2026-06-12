@@ -339,3 +339,79 @@ def test_ink_preview_bypasses_cache(qapp):
     img_bypass = _render_widget(bypass)
 
     assert pixel_diff_ratio(img_inked, img_bypass) <= 0.001
+
+
+# --------------------------------------------------------------------------
+# §7.3 / §2.2 — soft zoom blits + 120 ms idle crisp re-render
+# --------------------------------------------------------------------------
+
+
+def test_soft_zoom_blits_scaled_without_rebuild(qapp):
+    """A small wheel-zoom mid-gesture reuses the crisp pixmap scaled (§7.3).
+
+    With ``current/cached ∈ [0.5, 2.0]`` the frame is a scaled blit of the last
+    crisp pixmap — no rebuild fires and the cached entry stays at the old zoom.
+    """
+    _c, widget = _make_widget(size=(400, 300), zoom=3.0, pan=(40.0, 30.0))
+    widget._render_cache_enabled = True
+    _render_widget(widget)
+    assert widget._scene_cache.rebuild_count == 1
+    cached_zoom = widget._scene_cache.entry.zoom
+
+    widget._apply_zoom(1.25, widget.rect().center())
+    assert widget._zoom != cached_zoom
+    assert 0.5 <= widget._zoom / cached_zoom <= 2.0
+    assert widget._zoom_idle_timer.isActive()  # idle timer armed by the gesture
+
+    _render_widget(widget)
+    # Scaled blit reused the crisp pixmap: no rebuild, entry still at old zoom.
+    assert widget._scene_cache.rebuild_count == 1
+    assert widget._scene_cache.entry.zoom == cached_zoom
+
+
+def test_zoom_idle_timeout_rebuilds_crisp(qapp):
+    """The 120 ms idle timeout rebuilds crisp and matches a fresh render (§7.3).
+
+    After the soft frame, firing the idle timer's timeout rebuilds the pixmap
+    at the now-stable zoom (rebuild count advances, cache zoom matches) and the
+    resulting crisp blit equals a direct cache-disabled render of the same view.
+    """
+    from tests.canvas_render_ref import pixel_diff_ratio
+
+    _c, widget = _make_widget(size=(400, 300), zoom=3.0, pan=(40.0, 30.0))
+    widget._render_cache_enabled = True
+    _render_widget(widget)
+    widget._apply_zoom(1.25, widget.rect().center())
+    _render_widget(widget)  # soft scaled frame
+    assert widget._scene_cache.rebuild_count == 1
+
+    # Invoke the timer's timeout (no event loop wait): rebuild crisp.
+    widget._zoom_idle_timer.timeout.emit()
+    assert widget._scene_cache.rebuild_count == 2
+    assert widget._scene_cache.entry.zoom == widget._zoom
+
+    img_crisp = _render_widget(widget)
+
+    # A fresh bypass render at the post-zoom view is the oracle.
+    _c2, bypass = _make_widget(size=(400, 300))
+    bypass._render_cache_enabled = False
+    bypass._zoom = widget._zoom
+    bypass._pan_offset = QPointF(widget._pan_offset)
+    img_bypass = _render_widget(bypass)
+
+    assert pixel_diff_ratio(img_crisp, img_bypass) <= 0.001
+
+
+def test_large_zoom_step_rebuilds_synchronously(qapp):
+    """A zoom ratio outside [0.5, 2.0] rebuilds now rather than blitting garbage."""
+    _c, widget = _make_widget(size=(400, 300), zoom=3.0, pan=(40.0, 30.0))
+    widget._render_cache_enabled = True
+    _render_widget(widget)
+    assert widget._scene_cache.rebuild_count == 1
+
+    widget._apply_zoom(0.4, widget.rect().center())  # ratio 0.4 < 0.5
+    assert widget._zoom / 3.0 < 0.5
+    _render_widget(widget)
+    # Out of soft range → synchronous crisp rebuild at the new zoom.
+    assert widget._scene_cache.rebuild_count == 2
+    assert widget._scene_cache.entry.zoom == widget._zoom

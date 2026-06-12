@@ -215,29 +215,46 @@ class _PaintingMixin:
             self._draw_travel_lines(painter, project)
 
     def _blit_scene_cache(self, painter: QPainter) -> None:
-        """Blit the baked scene pixmap, rebuilding if stale (spec §7.3, §7.5).
+        """Blit the baked scene pixmap, rebuilding or soft-scaling per §7.3, §7.5.
 
-        A valid entry is blitted at ``mm_to_pixel(origin_mm)``; an invalid one
-        — revision bump, zoom change, or a pan past the slop region — triggers
-        a synchronous rebuild centered on the current viewport first. During
-        drag-to-move the active layer is excluded from the bake (§7.5) and drawn
-        live on top here at the current drag offset.
+        Frame logic (spec §7.3):
+
+        - **Static content changed** (revision / DPR / excluded-layer drift) →
+          synchronous crisp rebuild.
+        - **Same zoom** → blit 1:1 when the viewport is inside the slop region,
+          else a synchronous rebuild centered on the current viewport (pan
+          beyond slop).
+        - **Zoom mismatch** mid-gesture → if ``current/cached ∈ [0.5, 2.0]`` draw
+          the cached pixmap *scaled* (soft preview); the 120 ms idle timer
+          armed by ``_apply_zoom`` rebuilds crisp once the gesture settles.
+          Outside that ratio a scaled blit looks broken, so rebuild now.
+
+        Either way the resulting (possibly stale-zoom) entry is drawn through
+        :meth:`_draw_scene_pixmap`, which maps the pixmap's mm extent through the
+        *current* view transform so the soft and crisp cases share one path.
+        During drag-to-move the active layer is excluded from the bake (§7.5) and
+        drawn live on top here at the current drag offset.
         """
         cache = self._scene_cache
-        if not cache.is_valid(self):
+        entry = cache.entry
+        if entry is None or not cache.static_matches(self):
             cache.rebuild(self)
+            self._zoom_idle_timer.stop()
+        elif entry.zoom == self._zoom:
+            if not cache.covers_viewport(self):
+                cache.rebuild(self)  # pan beyond slop → recenter
+            self._zoom_idle_timer.stop()
+        else:
+            ratio = self._zoom / entry.zoom
+            if not (0.5 <= ratio <= 2.0):
+                cache.rebuild(self)  # scaled blit would look broken
+                self._zoom_idle_timer.stop()
+            # else: soft scaled preview; idle timer (armed in _apply_zoom) will
+            # rebuild crisp ~120 ms after the gesture ends.
+
         entry = cache.entry
         if entry is not None:
-            origin_px = self.mm_to_pixel(entry.origin_mm)
-            pixmap = entry.pixmap
-            dpr = pixmap.devicePixelRatio()
-            target = QRectF(
-                origin_px.x(),
-                origin_px.y(),
-                pixmap.width() / dpr,
-                pixmap.height() / dpr,
-            )
-            painter.drawPixmap(target, pixmap, QRectF(pixmap.rect()))
+            self._draw_scene_pixmap(painter, entry)
 
         # Drag-to-move: the active layer was left out of the bake; draw it live
         # on top at the current offset (spec §7.5). Frame cost = blit + one path.
@@ -247,6 +264,26 @@ class _PaintingMixin:
                 if layer.visible and layer.id == active_id:
                     self._draw_layer(painter, layer, offset=self._drag_move_offset_mm)
                     break
+
+    def _draw_scene_pixmap(self, painter: QPainter, entry) -> None:  # type: ignore[no-untyped-def]
+        """Blit a scene-cache entry through the *current* view transform (§7.3).
+
+        The pixmap covers the mm rectangle ``[origin_mm, origin_mm + coverage]``,
+        where ``coverage = logical_size / cached_zoom``. Mapping both corners
+        through ``mm_to_pixel`` places it correctly for any current zoom/pan:
+        when the cached zoom equals the live zoom this reduces to a 1:1 blit at
+        ``mm_to_pixel(origin_mm)``; when they differ Qt scales the source to fill
+        the target, yielding the soft preview.
+        """
+        pixmap = entry.pixmap
+        dpr = pixmap.devicePixelRatio()
+        cov_w_mm = (pixmap.width() / dpr) / entry.zoom
+        cov_h_mm = (pixmap.height() / dpr) / entry.zoom
+        tl = self.mm_to_pixel(entry.origin_mm)
+        br = self.mm_to_pixel(
+            (entry.origin_mm[0] + cov_w_mm, entry.origin_mm[1] + cov_h_mm)
+        )
+        painter.drawPixmap(QRectF(tl, br), pixmap, QRectF(pixmap.rect()))
 
     # ------------------------------------------------------------------
     # 3D preview helpers
