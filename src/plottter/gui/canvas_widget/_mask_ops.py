@@ -64,6 +64,13 @@ class _MaskOpsMixin:
         else:
             self._mask_array[y1:y2, x1:x2] = np.minimum(patch + stamp, 1.0)
 
+        # Update only the stamp bbox of the cached overlay (§8.1). When the
+        # cache is missing or stale, ``_ensure_mask_overlay`` rebuilds it in full
+        # on the next paint; we keep it in sync with the mask shape here so the
+        # incremental write is valid.
+        self._ensure_mask_overlay()
+        self._update_mask_overlay_region(x1, y1, x2, y2)
+
         self.update()
 
     def _interpolate_stroke(
@@ -130,6 +137,8 @@ class _MaskOpsMixin:
         else:
             self._mask_array[row1:row2, col1:col2] = 1.0
 
+        self._invalidate_mask_overlay()
+
     def _apply_ellipse_mask(self) -> None:
         """Fill a hard-edged ellipse into the mask array (or erase)."""
         if self._shape_start_mm is None or self._shape_end_mm is None:
@@ -161,6 +170,8 @@ class _MaskOpsMixin:
         else:
             self._mask_array[ellipse_buf > 0] = 1.0
 
+        self._invalidate_mask_overlay()
+
     def _apply_polygon_mask(self) -> None:
         """Fill a hard-edged polygon into the mask array (or erase)."""
         if len(self._polygon_vertices) < 3:
@@ -187,6 +198,8 @@ class _MaskOpsMixin:
         else:
             self._mask_array[poly_buf > 0] = 1.0
 
+        self._invalidate_mask_overlay()
+
     def _apply_pen_mask(self) -> None:
         """Fill a hard-edged lasso (freeform closed shape) into the mask array (or erase)."""
         if len(self._pen_points) < 3:
@@ -212,3 +225,5 @@ class _MaskOpsMixin:
             self._mask_array[pen_buf > 0] = 0.0
         else:
             self._mask_array[pen_buf > 0] = 1.0
+
+        self._invalidate_mask_overlay()

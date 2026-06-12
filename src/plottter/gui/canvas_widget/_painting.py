@@ -13,7 +13,6 @@ from PyQt6.QtGui import (
     QPaintEvent,
     QPainter,
     QPen,
-    QPixmap,
     QTransform,
 )
 
@@ -672,23 +671,88 @@ class _PaintingMixin:
     # Mask paint rendering helpers
     # ------------------------------------------------------------------
 
-    def _draw_mask_overlay(self, painter: QPainter, canvas) -> None:  # type: ignore[no-untyped-def]
-        """Render the mask as a semi-transparent red overlay scaled to the paper area."""
-        assert self._mask_array is not None
+    # Overlay tint: warm red, alpha capped at 150/255 (§8.1).
+    _MASK_OVERLAY_R = 180
+    _MASK_OVERLAY_G = 30
+    _MASK_OVERLAY_B = 0
+    _MASK_OVERLAY_ALPHA = 150
+
+    def _invalidate_mask_overlay(self) -> None:
+        """Drop the cached overlay so the next paint rebuilds it from scratch.
+
+        Used by set/clear/invert and the one-shot shape fills, where a full
+        rebuild is cheap and correct.
+        """
+        self._mask_overlay_qimage = None
+
+    def _ensure_mask_overlay(self) -> None:
+        """Make sure the cached overlay QImage exists and matches the mask shape.
+
+        Allocates a fresh premultiplied-ARGB image and does a full rebuild when
+        the cache is missing or the mask has been resized.
+        """
+        if self._mask_array is None:
+            self._mask_overlay_qimage = None
+            return
         h, w = self._mask_array.shape
-        rgba = np.zeros((h, w, 4), dtype=np.uint8)
-        rgba[:, :, 0] = 180   # red
-        rgba[:, :, 1] = 30    # slight green tint → warm red
-        rgba[:, :, 3] = (self._mask_array * 150).astype(np.uint8)
+        img = self._mask_overlay_qimage
+        if img is None or img.width() != w or img.height() != h:
+            img = QImage(w, h, QImage.Format.Format_ARGB32_Premultiplied)
+            self._mask_overlay_qimage = img
+            self._update_mask_overlay_region(0, 0, w, h)
 
-        arr_c = np.ascontiguousarray(rgba)
-        qimg = QImage(arr_c.data, w, h, w * 4, QImage.Format.Format_RGBA8888)
-        pixmap = QPixmap.fromImage(qimg.copy())
+    def _update_mask_overlay_region(
+        self, x1: int, y1: int, x2: int, y2: int
+    ) -> None:
+        """Recompute the cached overlay pixels for the ``[y1:y2, x1:x2]`` bbox.
 
+        This is the single place overlay pixels are written — both the full
+        rebuild and the per-stamp incremental update funnel through here, so the
+        ``_mask_overlay_pixels_written`` test hook stays accurate.
+        """
+        img = self._mask_overlay_qimage
+        if img is None or self._mask_array is None:
+            return
+        h, w = self._mask_array.shape
+        x1 = max(0, min(x1, w))
+        x2 = max(0, min(x2, w))
+        y1 = max(0, min(y1, h))
+        y2 = max(0, min(y2, h))
+        if x1 >= x2 or y1 >= y2:
+            return
+
+        # Numpy view over the QImage's pixel buffer. ARGB32 has no row padding
+        # (bytesPerLine == w*4), so a flat (h, w, 4) reshape is exact. In memory
+        # the channel order is B, G, R, A on little-endian platforms.
+        ptr = img.bits()
+        ptr.setsize(h * w * 4)
+        buf = np.frombuffer(ptr, dtype=np.uint8).reshape(h, w, 4)
+
+        sub = self._mask_array[y1:y2, x1:x2]
+        # Alpha 0..150; premultiply each colour channel by alpha/255.
+        alpha = (sub * float(self._MASK_OVERLAY_ALPHA)).astype(np.uint16)
+        r = (self._MASK_OVERLAY_R * alpha // 255).astype(np.uint8)
+        g = (self._MASK_OVERLAY_G * alpha // 255).astype(np.uint8)
+        b = (self._MASK_OVERLAY_B * alpha // 255).astype(np.uint8)
+
+        region = buf[y1:y2, x1:x2]
+        region[:, :, 0] = b
+        region[:, :, 1] = g
+        region[:, :, 2] = r
+        region[:, :, 3] = alpha.astype(np.uint8)
+
+        self._mask_overlay_pixels_written += (y2 - y1) * (x2 - x1)
+
+    def _draw_mask_overlay(self, painter: QPainter, canvas) -> None:  # type: ignore[no-untyped-def]
+        """Blit the cached mask overlay, scaled to the paper area (one drawImage)."""
+        self._ensure_mask_overlay()
+        img = self._mask_overlay_qimage
+        if img is None:
+            return
         paper_tl = self.mm_to_pixel((0.0, 0.0))
         paper_br = self.mm_to_pixel((canvas.width_mm, canvas.height_mm))
         paper_rect = QRectF(paper_tl, paper_br)
-        painter.drawPixmap(paper_rect, pixmap, QRectF(pixmap.rect()))
+        painter.drawImage(paper_rect, img)
 
     def _draw_brush_cursor(self, painter: QPainter, px: float, py: float) -> None:
         """Draw a dashed ring showing the current brush footprint."""

@@ -184,6 +184,13 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         # Mask paint state
         self._mask_paint_active = False
         self._mask_array: np.ndarray | None = None   # float32 H×W, values 0–1
+        # Persistent premultiplied-ARGB overlay cache (§8.1). Built lazily from
+        # ``_mask_array``; ``_paint_at`` writes only its stamp bbox, full
+        # rebuilds happen on set/clear/invert/first-creation/shape fills.
+        self._mask_overlay_qimage: QImage | None = None
+        # Test hook: total pixels written into the overlay cache so a test can
+        # assert a brush stamp touches no more than its bbox.
+        self._mask_overlay_pixels_written: int = 0
         self._mask_brush_size_mm: float = 5.0        # brush diameter in mm
         self._mask_brush_hardness: float = 0.8       # 0.0 (soft) → 1.0 (hard)
         self._mask_erase: bool = False
@@ -467,6 +474,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
     def set_mask(self, mask: np.ndarray | None) -> None:
         """Load a pre-existing mask (float32 H×W) or None to clear."""
         self._mask_array = mask
+        self._invalidate_mask_overlay()
         self.update()
 
     def get_mask(self) -> np.ndarray | None:
@@ -476,6 +484,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
     def clear_mask(self) -> None:
         """Erase the entire mask."""
         self._mask_array = None
+        self._invalidate_mask_overlay()
         self.update()
 
     def invert_mask(self) -> tuple:
@@ -494,6 +503,7 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
         assert self._mask_array is not None
         self._mask_array = 1.0 - self._mask_array
         after = self._mask_array.copy()
+        self._invalidate_mask_overlay()
         self.update()
         return before, after
 
