@@ -17,7 +17,11 @@ import pytest
 from PyQt6.QtCore import QPointF
 from PyQt6.QtGui import QImage, QPainterPath
 
-from plottter.gui.canvas_widget._render_cache import LayerPathCache, build_layer_path
+from plottter.gui.canvas_widget._render_cache import (
+    LayerPathCache,
+    build_jittered_layer_path,
+    build_layer_path,
+)
 from plottter.models.layer import Layer
 from tests.canvas_render_ref import (
     make_fixture_project,
@@ -71,6 +75,14 @@ def _subpath_count(path: QPainterPath) -> int:
     """Number of ``MoveToElement`` markers — i.e. disconnected subpaths."""
     move = QPainterPath.ElementType.MoveToElement
     return sum(1 for i in range(path.elementCount()) if path.elementAt(i).type == move)
+
+
+def _path_coords(path: QPainterPath) -> list[tuple[float, float]]:
+    """All element (x, y) coordinates of *path*, in order."""
+    return [
+        (path.elementAt(i).x, path.elementAt(i).y)
+        for i in range(path.elementCount())
+    ]
 
 
 class TestBuildLayerPath:
@@ -256,3 +268,79 @@ class TestDragMoveEquivalence:
 
         ratio = pixel_diff_ratio(real, ref)
         assert ratio <= 0.02, f"drag-move diff ratio {ratio:.4f} exceeds 0.02"
+
+
+# Fixed-id layers so the crc32(layer.id) seed is reproducible across tests.
+_JITTER_PATHS = [
+    [(20.0, 20.0), (80.0, 20.0), (80.0, 80.0), (20.0, 80.0), (20.0, 20.0)],
+    [(20.0, 20.0), (80.0, 80.0)],
+]
+
+
+class TestBakedJitter:
+    """Baked per-layer jitter (spec §6.4): deterministic, mm-space (zoom-
+    independent), distinct across layers, and stable across frames."""
+
+    def test_build_is_deterministic(self, qapp):
+        # Two builds of the same layer at the same intensity are identical —
+        # the displacement is seeded only by the layer id, never re-randomised.
+        layer = Layer(name="a", id="layer-fixed", paths=_JITTER_PATHS)
+        first = build_jittered_layer_path(layer, 0.15)
+        second = build_jittered_layer_path(layer, 0.15)
+        assert _path_coords(first) == _path_coords(second)
+
+    def test_displacement_actually_applied(self, qapp):
+        # The jittered path differs from the un-jittered one (jitter is real)
+        # but keeps the same element/subpath structure.
+        layer = Layer(name="a", id="layer-fixed", paths=_JITTER_PATHS)
+        plain = build_layer_path(layer)
+        jittered = build_jittered_layer_path(layer, 0.15)
+        assert jittered.elementCount() == plain.elementCount()
+        assert _subpath_count(jittered) == _subpath_count(plain)
+        assert _path_coords(jittered) != _path_coords(plain)
+
+    def test_differs_between_layers(self, qapp):
+        # Same geometry, different ids → different displacement (crc32 seed).
+        a = Layer(name="a", id="layer-a", paths=_JITTER_PATHS)
+        b = Layer(name="b", id="layer-b", paths=_JITTER_PATHS)
+        coords_a = _path_coords(build_jittered_layer_path(a, 0.15))
+        coords_b = _path_coords(build_jittered_layer_path(b, 0.15))
+        assert coords_a != coords_b
+
+    def test_displacement_is_mm_space_zoom_independent(self, qapp):
+        # The baked path lives in mm and is built before the world transform,
+        # so changing the widget's zoom must not change the jittered mm coords.
+        project = make_fixture_project()
+        layer = project.layers[0]
+        _controller, widget = _make_widget(project, 2.0, (50.0, 50.0), SIZE)
+        widget._jitter_enabled = True
+
+        coords_low = _path_coords(widget._layer_path(layer))
+        widget._zoom = 9.0
+        coords_high = _path_coords(widget._layer_path(layer))
+        assert coords_low == coords_high
+        # And the displacement is genuinely applied (differs from un-jittered).
+        assert coords_low != _path_coords(build_layer_path(layer))
+
+    def test_renders_are_stable_across_frames(self, qapp):
+        # No shimmer-on-pan: two consecutive renders with jitter on are pixel-
+        # identical because the displacement is baked, not re-rolled per frame.
+        project = make_fixture_project()
+        _controller, widget = _make_widget(project, 3.0, (50.0, 50.0), SIZE)
+        widget._jitter_enabled = True
+        first = _render(widget)
+        second = _render(widget)
+        assert pixel_diff_ratio(first, second) == 0.0
+
+    def test_intensity_change_invalidates_variant(self, qapp):
+        # set_jitter_intensity drops the baked variant so it rebuilds at the new
+        # sigma; the un-jittered path is retained (§6.4).
+        project = make_fixture_project()
+        _controller, widget = _make_widget(project, 3.0, (50.0, 50.0), SIZE)
+        widget._jitter_enabled = True
+        layer = project.layers[0]
+
+        low = _path_coords(widget._layer_path(layer))
+        widget.set_jitter_intensity(4.0)
+        high = _path_coords(widget._layer_path(layer))
+        assert low != high

@@ -361,11 +361,17 @@ class CanvasWidget(_EventsMixin, _PaintingMixin, _MaskOpsMixin, _AnimationMixin,
     def set_jitter_enabled(self, enabled: bool) -> None:
         """Enable/disable pen jitter simulation (preview-only)."""
         self._jitter_enabled = enabled
+        # Baked-jitter variants depend on the enabled flag; drop them so the
+        # next paint rebuilds (or skips) them. Un-jittered paths are kept (§6.4).
+        self._path_cache.invalidate_jitter()
         self.update()
 
     def set_jitter_intensity(self, intensity: float) -> None:
         """Set pen jitter intensity (0.1–5.0). Higher values = more wobble."""
         self._jitter_intensity = max(0.1, min(5.0, intensity))
+        # Intensity sets the baked displacement sigma; invalidate variants so
+        # they rebuild at the new intensity on the next paint (§6.4).
+        self._path_cache.invalidate_jitter()
         self.update()
 
     def get_jitter_intensity(self) -> float:

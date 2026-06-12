@@ -18,7 +18,11 @@ from PyQt6.QtGui import (
 )
 
 from ._perf_hud import _null_section
-from ._render_cache import build_layer_path, build_travel_path
+from ._render_cache import (
+    build_jittered_layer_path,
+    build_layer_path,
+    build_travel_path,
+)
 from .enums import MaskTool, ShapeDrawTool
 
 
@@ -477,12 +481,20 @@ class _PaintingMixin:
     def _layer_path(self, layer):  # type: ignore[no-untyped-def]
         """Return the layer's mm ``QPainterPath``, cached unless caching is off.
 
-        With ``_render_cache_enabled`` False (tests / ``--no-cache`` bench) the
-        path is rebuilt fresh every frame and nothing is stored, exercising the
-        same drawing code uncached for apples-to-apples comparison (spec §9).
+        When jitter is enabled the baked-jitter variant (spec §6.4) is used: a
+        deterministic, zoom-independent mm-space displacement per layer that
+        replaces the old per-frame ``_jitter_point`` wobble. With
+        ``_render_cache_enabled`` False (tests / ``--no-cache`` bench) the path
+        is rebuilt fresh every frame and nothing is stored, exercising the same
+        drawing code uncached for apples-to-apples comparison (spec §9).
         """
+        jitter = (
+            (True, self._jitter_intensity) if self._jitter_enabled else None
+        )
         if self._render_cache_enabled:
-            return self._path_cache.get(layer)
+            return self._path_cache.get(layer, jitter)
+        if jitter is not None:
+            return build_jittered_layer_path(layer, 0.15 * self._jitter_intensity)
         return build_layer_path(layer)
 
     def _draw_animated_paths(self, painter: QPainter) -> None:
