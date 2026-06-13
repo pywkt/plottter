@@ -328,3 +328,42 @@ cache (gesture blit)" is the pan/zoom gesture frame served from the baked pixmap
 > ~600× gesture-frame speedup. The surviving cost is the crisp rebuild
 > (path-count bound, ~100 ms at 38k), which the 120 ms idle timer keeps off the
 > interactive path so the user only ever sees blits while gesturing.
+
+### Zoomed-in rendering: the 1-px stroker cliff and chunked culling
+
+Post-ship profiling of real zoom gestures (2026-06-12) found a pathological
+case the fit-zoom benchmarks above never exercise: **Qt's stroker has a hard
+cliff at 1 device pixel of pen width**. Measured at identical zoom, identical
+geometry: a 0.99 px pen strokes 120k points in 59 ms; a 1.01 px pen takes
+4,896 ms — **~83×**. Above 1 px the cost is also superlinear in per-call path
+size (a 54k-point path strokes no faster than a 120k-point one), and
+`setClipRect` does not help (off-screen geometry is stroked regardless).
+
+The preview pen is `0.3 mm × zoom` device px, so any zoom past ~3.3× crossed
+the cliff (Pointillist dot layers at 0.6 mm crossed at ~1.7×) and the crisp
+scene rebuild stroked *all* geometry through the slow path — measured up to
+**49 s** at 38k×12 zoomed in. The legacy renderer dodged this by Python-culling
+to the viewport before drawing.
+
+Fix (commit after b7f3a26): the layer path cache stores **spatially-bucketed
+chunks** (~24 polylines per grid cell) with two granularities — a combined
+per-chunk path drawn when the pen is ≤ 1 device px (hairline stroker, no
+regression at fit zoom), and per-polyline subpaths with tight bbox culling
+drawn when the pen is wider. The soft-zoom blit also lost its `[0.5, 2.0]`
+ratio gate: a zoom mismatch now *always* draws the (possibly pixelated) scaled
+blit and defers the crisp rebuild to the 120 ms idle timer — never a
+synchronous rebuild mid-gesture.
+
+Measured zoom-gesture profile after the fix (12 consecutive 1.15× wheel clicks):
+
+| Scene      | gesture frames (every click) | crisp rebuild after settling |
+| ---------- | ---------------------------: | ---------------------------: |
+| 10000 × 12 |                   1.8–2.5 ms |                   270–380 ms |
+| 38000 × 12 |                   1.7–2.3 ms |                  980–1430 ms |
+
+Before the fix the same gesture stuttered 76 ms–49 s mid-scroll. The remaining
+cost is the one-time crisp rebuild ~120 ms after the gesture ends (path-count
+and zoom-depth bound; it *shrinks* as you zoom deeper and culling discards
+more). Note `--no-cache` bench numbers roughly doubled with this change — the
+bypass path now constructs both chunk granularities fresh per frame; only
+tests/bench use that path.

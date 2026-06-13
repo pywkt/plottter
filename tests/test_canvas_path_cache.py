@@ -19,7 +19,9 @@ from PyQt6.QtGui import QImage, QPainterPath
 
 from plottter.gui.canvas_widget._render_cache import (
     LayerPathCache,
+    build_jittered_layer_chunks,
     build_jittered_layer_path,
+    build_layer_chunks,
     build_layer_path,
 )
 from plottter.models.layer import Layer
@@ -83,6 +85,19 @@ def _path_coords(path: QPainterPath) -> list[tuple[float, float]]:
         (path.elementAt(i).x, path.elementAt(i).y)
         for i in range(path.elementCount())
     ]
+
+
+def _chunks_coords(chunks) -> list[tuple[float, float]]:
+    """All coordinates across a chunk list, in deterministic chunk order."""
+    return [pt for c in chunks for pt in _path_coords(c.path)]
+
+
+def _chunks_element_count(chunks) -> int:
+    return sum(c.path.elementCount() for c in chunks)
+
+
+def _chunks_subpath_count(chunks) -> int:
+    return sum(_subpath_count(c.path) for c in chunks)
 
 
 class TestBuildLayerPath:
@@ -167,7 +182,7 @@ class TestLayerPathCache:
         layer.paths[0].append((2.0, 2.0))
         second = cache.get(layer)
         assert first is not second
-        assert second.elementCount() == 3
+        assert _chunks_element_count(second) == 3
 
 
 class TestPathCacheEquivalence:
@@ -270,6 +285,80 @@ class TestDragMoveEquivalence:
         assert ratio <= 0.02, f"drag-move diff ratio {ratio:.4f} exceeds 0.02"
 
 
+class TestChunking:
+    """Spatial chunking of cached geometry (wide-pen stroker cliff fix).
+
+    Qt's stroker for pens wider than 1 device px is superlinear in per-call
+    path size, so zoomed-in views (default pen > ~3.3×, Pointillist dot layers
+    > ~1.7×) must draw many small culled chunks instead of one huge path.
+    """
+
+    def test_chunks_preserve_geometry(self, qapp):
+        # Chunked coords are a permutation of the single-path coords with the
+        # same totals — no point is lost, duplicated, or split across chunks.
+        project = make_fixture_project()
+        for layer in project.layers:
+            chunks = build_layer_chunks(layer)
+            single = build_layer_path(layer)
+            assert _chunks_element_count(chunks) == single.elementCount()
+            assert _chunks_subpath_count(chunks) == _subpath_count(single)
+            assert sorted(_chunks_coords(chunks)) == sorted(_path_coords(single))
+
+    def test_jittered_chunks_match_jittered_path_geometry(self, qapp):
+        # The chunked jitter variant uses the same seed/order as the unchunked
+        # builder, so the displaced coordinates are identical.
+        layer = Layer(name="a", id="layer-fixed", paths=_JITTER_PATHS)
+        chunks = build_jittered_layer_chunks(layer, 0.15)
+        single = build_jittered_layer_path(layer, 0.15)
+        assert sorted(_chunks_coords(chunks)) == sorted(_path_coords(single))
+
+    def test_chunk_bboxes_cover_their_points(self, qapp):
+        project = make_fixture_project()
+        for layer in project.layers:
+            for chunk in build_layer_chunks(layer):
+                x0, y0, x1, y1 = chunk.bbox
+                for x, y in _path_coords(chunk.path):
+                    assert x0 - 1e-9 <= x <= x1 + 1e-9
+                    assert y0 - 1e-9 <= y <= y1 + 1e-9
+
+    def test_dot_layer_zero_height_bbox_not_culled(self, qapp):
+        # Pointillist dots are 0.01 mm horizontal segments → zero-height bboxes.
+        # QRectF.intersects would cull them (empty-rect semantics); the manual
+        # interval test must keep them. Render a dots-only project and assert
+        # the dots actually appear.
+        from plottter.models import Canvas, Project
+
+        dots = [[(x, 50.0), (x + 0.01, 50.0)] for x in range(10, 90, 5)]
+        layer = Layer(
+            name="dots",
+            color="#000000",
+            paths=dots,
+            generator_info={"dot_diameter_mm": 2.0},
+        )
+        project = Project(
+            name="p",
+            canvas=Canvas(width_mm=100.0, height_mm=100.0),
+            registration_marks=False,
+        )
+        project.add_layer(layer)
+        _c, widget = _make_widget(project, 3.0, (50.0, 50.0), SIZE)
+        img = _render(widget)
+        ref = render_reference(project, 3.0, (50.0, 50.0), SIZE)
+        assert pixel_diff_ratio(img, ref) <= 0.02
+
+    def test_wide_pen_zoomed_render_matches_reference(self, qapp):
+        # The regression scenario: zoomed in far enough that the default pen
+        # exceeds 1 device px (zoom 9 → 2.7 px) — chunked culled drawing must
+        # still match the legacy oracle.
+        project = make_fixture_project()
+        zoom, pan = 9.0, (-300.0, -250.0)
+        ref = render_reference(project, zoom, pan, SIZE)
+        _c, widget = _make_widget(project, zoom, pan, SIZE)
+        real = _render(widget)
+        ratio = pixel_diff_ratio(real, ref)
+        assert ratio <= 0.02, f"wide-pen zoomed diff {ratio:.4f} exceeds 0.02"
+
+
 # Fixed-id layers so the crc32(layer.id) seed is reproducible across tests.
 _JITTER_PATHS = [
     [(20.0, 20.0), (80.0, 20.0), (80.0, 80.0), (20.0, 80.0), (20.0, 20.0)],
@@ -315,12 +404,12 @@ class TestBakedJitter:
         _controller, widget = _make_widget(project, 2.0, (50.0, 50.0), SIZE)
         widget._jitter_enabled = True
 
-        coords_low = _path_coords(widget._layer_path(layer))
+        coords_low = _chunks_coords(widget._layer_chunks(layer))
         widget._zoom = 9.0
-        coords_high = _path_coords(widget._layer_path(layer))
+        coords_high = _chunks_coords(widget._layer_chunks(layer))
         assert coords_low == coords_high
         # And the displacement is genuinely applied (differs from un-jittered).
-        assert coords_low != _path_coords(build_layer_path(layer))
+        assert coords_low != _chunks_coords(build_layer_chunks(layer))
 
     def test_renders_are_stable_across_frames(self, qapp):
         # No shimmer-on-pan: two consecutive renders with jitter on are pixel-
@@ -340,9 +429,9 @@ class TestBakedJitter:
         widget._jitter_enabled = True
         layer = project.layers[0]
 
-        low = _path_coords(widget._layer_path(layer))
+        low = _chunks_coords(widget._layer_chunks(layer))
         widget.set_jitter_intensity(4.0)
-        high = _path_coords(widget._layer_path(layer))
+        high = _chunks_coords(widget._layer_chunks(layer))
         assert low != high
 
 

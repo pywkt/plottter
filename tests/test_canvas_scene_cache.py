@@ -402,17 +402,27 @@ def test_zoom_idle_timeout_rebuilds_crisp(qapp):
     assert pixel_diff_ratio(img_crisp, img_bypass) <= 0.001
 
 
-def test_large_zoom_step_rebuilds_synchronously(qapp):
-    """A zoom ratio outside [0.5, 2.0] rebuilds now rather than blitting garbage."""
+def test_large_zoom_step_stays_soft_until_idle(qapp):
+    """Even extreme zoom ratios never rebuild synchronously mid-gesture.
+
+    A zoomed-in crisp rebuild can take real time (wide-pen stroking), so the
+    frame is always a (possibly pixelated) soft blit; the idle timeout then
+    delivers the crisp rebuild.
+    """
     _c, widget = _make_widget(size=(400, 300), zoom=3.0, pan=(40.0, 30.0))
     widget._render_cache_enabled = True
     _render_widget(widget)
     assert widget._scene_cache.rebuild_count == 1
 
-    widget._apply_zoom(0.4, widget.rect().center())  # ratio 0.4 < 0.5
+    widget._apply_zoom(0.4, widget.rect().center())  # ratio 0.4
     assert widget._zoom / 3.0 < 0.5
+    assert widget._zoom_idle_timer.isActive()
     _render_widget(widget)
-    # Out of soft range → synchronous crisp rebuild at the new zoom.
+    # Mid-gesture frame stayed a soft blit — no synchronous rebuild.
+    assert widget._scene_cache.rebuild_count == 1
+    assert widget._scene_cache.entry.zoom == 3.0
+
+    widget._zoom_idle_timer.timeout.emit()  # gesture settles → crisp rebuild
     assert widget._scene_cache.rebuild_count == 2
     assert widget._scene_cache.entry.zoom == widget._zoom
 

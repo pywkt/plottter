@@ -18,8 +18,8 @@ from PyQt6.QtGui import (
 
 from ._perf_hud import _null_section
 from ._render_cache import (
-    build_jittered_layer_path,
-    build_layer_path,
+    build_jittered_layer_chunks,
+    build_layer_chunks,
     build_travel_path,
 )
 from .enums import MaskTool, ShapeDrawTool
@@ -303,10 +303,12 @@ class _PaintingMixin:
         - **Same zoom** → blit 1:1 when the viewport is inside the slop region,
           else a synchronous rebuild centered on the current viewport (pan
           beyond slop).
-        - **Zoom mismatch** mid-gesture → if ``current/cached ∈ [0.5, 2.0]`` draw
-          the cached pixmap *scaled* (soft preview); the 120 ms idle timer
-          armed by ``_apply_zoom`` rebuilds crisp once the gesture settles.
-          Outside that ratio a scaled blit looks broken, so rebuild now.
+        - **Zoom mismatch** mid-gesture → draw the cached pixmap *scaled*
+          (soft preview — possibly pixelated at extreme ratios) and let the
+          120 ms idle timer rebuild crisp once the gesture settles. Never
+          rebuild synchronously on zoom: zoomed-in rebuilds stroke wide pens
+          and can take real time, and a transiently soft frame beats a frozen
+          gesture.
 
         Either way the resulting (possibly stale-zoom) entry is drawn through
         :meth:`_draw_scene_pixmap`, which maps the pixmap's mm extent through the
@@ -324,19 +326,17 @@ class _PaintingMixin:
                 cache.rebuild(self)  # pan beyond slop → recenter
             self._zoom_idle_timer.stop()
         else:
-            ratio = self._zoom / entry.zoom
-            if not (0.5 <= ratio <= 2.0):
-                cache.rebuild(self)  # scaled blit would look broken
-                self._zoom_idle_timer.stop()
-            elif not self._zoom_idle_timer.isActive():
+            # Zoom mismatch mid-gesture: ALWAYS draw the soft scaled blit and
+            # let the idle timer deliver the crisp rebuild ~120 ms after the
+            # gesture settles. Never rebuild synchronously here — a zoomed-in
+            # crisp rebuild can take noticeable time (wide-pen stroking), and
+            # a briefly pixelated-but-responsive frame beats a frozen gesture.
+            if not self._zoom_idle_timer.isActive():
                 # Self-heal: a soft scaled preview with no pending crisp
                 # rebuild would stay blurry forever. _apply_zoom and
                 # _fit_to_window arm the timer; this guard covers any other
                 # path that mutates self._zoom directly.
                 self._zoom_idle_timer.start(self.ZOOM_IDLE_MS)
-            # else: soft scaled preview; idle timer (armed in _apply_zoom /
-            # _fit_to_window) will rebuild crisp ~120 ms after the gesture
-            # ends.
 
         entry = cache.entry
         if entry is not None:
@@ -612,7 +612,21 @@ class _PaintingMixin:
         painter: QPainter,
         layer,  # type: ignore[no-untyped-def]
         offset: tuple[float, float] = (0.0, 0.0),
+        device_size_px: tuple[float, float] | None = None,
     ) -> None:
+        """Draw a layer's cached chunks through the world transform.
+
+        ``device_size_px`` is the paint device's logical pixel size, used for
+        chunk culling; ``None`` means the widget itself (live frames). The
+        scene-pixmap rebuild passes its own 2w×2h size so culling matches the
+        pixmap's slop-padded coverage.
+
+        Chunked drawing (vs one big path) matters for two reasons: chunks whose
+        bbox misses the device region are skipped entirely, and Qt's wide-pen
+        stroker (device width > 1 px — e.g. zoomed-in default pens, Pointillist
+        dot layers beyond ~1.7×) is superlinear in per-call path size, so many
+        small calls are dramatically cheaper than one huge one.
+        """
         color = QColor(layer.color)
         # In Ink Preview the multiply blend depends on full-alpha sources to
         # produce true subtractive colour — a 50% opacity cyan × magenta would
@@ -637,9 +651,29 @@ class _PaintingMixin:
         pen = QPen(color, max(0.5 / self._zoom, width_mm))
         pen.setCapStyle(cap)
 
-        # Draw the cached mm-space path through the world transform; Qt does the
-        # per-point work in C++ and clips to the viewport (no Python culling).
-        path = self._layer_path(layer)
+        # Cull rect: the device's visible mm region, shifted opposite the
+        # drag-move offset (geometry is drawn translated by +offset) and grown
+        # by half the stroke width plus a hairline of slack.
+        if device_size_px is None:
+            dev_w, dev_h = float(self.width()), float(self.height())
+        else:
+            dev_w, dev_h = device_size_px
+        ox, oy = offset
+        vis_tl = self.pixel_to_mm(QPointF(0.0, 0.0))
+        vis_br = self.pixel_to_mm(QPointF(dev_w, dev_h))
+        margin = max(0.5 / self._zoom, width_mm) * 0.5 + 1.0 / self._zoom
+        cull_x0 = vis_tl[0] - ox - margin
+        cull_y0 = vis_tl[1] - oy - margin
+        cull_x1 = vis_br[0] - ox + margin
+        cull_y1 = vis_br[1] - oy + margin
+
+        # Qt's stroker has a hard cliff at 1 device px (measured ~83×): below
+        # it the fast hairline path applies and the chunk's combined path is
+        # cheapest; above it stroke cost is superlinear in per-call path size,
+        # so draw per-polyline with tight bbox culling instead.
+        wide_pen = max(0.5, width_mm * self._zoom) > 1.0
+
+        chunks = self._layer_chunks(layer)
         painter.save()
         painter.setTransform(
             QTransform(
@@ -651,18 +685,30 @@ class _PaintingMixin:
         if offset != (0.0, 0.0):
             painter.translate(offset[0], offset[1])  # drag-to-move live preview
         painter.setPen(pen)
-        painter.drawPath(path)
+        for chunk in chunks:
+            bx0, by0, bx1, by1 = chunk.bbox
+            # Manual interval overlap — QRectF.intersects would cull zero-height
+            # dot chunks (empty rects never intersect in Qt's semantics).
+            if bx1 < cull_x0 or bx0 > cull_x1 or by1 < cull_y0 or by0 > cull_y1:
+                continue
+            if not wide_pen:
+                painter.drawPath(chunk.path)
+                continue
+            for (px0, py0, px1, py1), poly_path in chunk.polys:
+                if px1 < cull_x0 or px0 > cull_x1 or py1 < cull_y0 or py0 > cull_y1:
+                    continue
+                painter.drawPath(poly_path)
         painter.restore()
 
-    def _layer_path(self, layer):  # type: ignore[no-untyped-def]
-        """Return the layer's mm ``QPainterPath``, cached unless caching is off.
+    def _layer_chunks(self, layer):  # type: ignore[no-untyped-def]
+        """Return the layer's mm chunk list, cached unless caching is off.
 
         When jitter is enabled the baked-jitter variant (spec §6.4) is used: a
         deterministic, zoom-independent mm-space displacement per layer that
         replaces the old per-frame ``_jitter_point`` wobble. With
-        ``_render_cache_enabled`` False (tests / ``--no-cache`` bench) the path
-        is rebuilt fresh every frame and nothing is stored, exercising the same
-        drawing code uncached for apples-to-apples comparison (spec §9).
+        ``_render_cache_enabled`` False (tests / ``--no-cache`` bench) the
+        chunks are rebuilt fresh every frame and nothing is stored, exercising
+        the same drawing code uncached for apples-to-apples comparison (§9).
         """
         jitter = (
             (True, self._jitter_intensity) if self._jitter_enabled else None
@@ -670,8 +716,8 @@ class _PaintingMixin:
         if self._render_cache_enabled:
             return self._path_cache.get(layer, jitter)
         if jitter is not None:
-            return build_jittered_layer_path(layer, 0.15 * self._jitter_intensity)
-        return build_layer_path(layer)
+            return build_jittered_layer_chunks(layer, 0.15 * self._jitter_intensity)
+        return build_layer_chunks(layer)
 
     def _draw_animated_paths(self, painter: QPainter) -> None:
         """Render paths in animation mode (spec §8.4).
