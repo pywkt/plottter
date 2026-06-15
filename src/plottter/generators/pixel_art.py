@@ -161,9 +161,31 @@ class PixelArtGenerator(Generator):
             ChoiceParam(
                 name="cell_fill_style",
                 label="Cell Fill Style",
-                choices=["solid_hatch", "cross_hatch", "dithered_dots", "none"],
+                choices=["solid_hatch", "cross_hatch", "dithered_dots", "point", "none"],
                 default="solid_hatch",
-                description="Fill pattern drawn inside each cell. Use 'none' for outline-only rendering.",
+                description=(
+                    "Fill pattern drawn inside each cell. 'point' drops a single "
+                    "pen tap at the cell centre (no back-and-forth fill) — ideal "
+                    "for plotting one marker dot per cell; size it with 'Point "
+                    "Diameter'. Use 'none' for outline-only rendering."
+                ),
+            ),
+            FloatParam(
+                name="point_diameter_mm",
+                label="Point Diameter (mm)",
+                min=0.1,
+                max=10.0,
+                step=0.1,
+                default=1.0,
+                visible_when={"cell_fill_style": ["point"]},
+                description=(
+                    "Marker/pen tip diameter for the 'point' fill style. The dot "
+                    "stays a single pen tap (the plotter just dabs once); this "
+                    "value only sets how big that dot is drawn in the preview and "
+                    "SVG export. Match it to your real marker tip — e.g. 3.0 for a "
+                    "3 mm marker — and set Grid Width so cells are about this size "
+                    "for edge-to-edge, non-overlapping dots."
+                ),
             ),
             FloatParam(
                 name="fill_density",
@@ -506,6 +528,7 @@ class PixelArtGenerator(Generator):
         cell_shape = str(params.get("cell_shape", "square"))
         fill_style = str(params.get("cell_fill_style", "solid_hatch"))
         density = float(params.get("fill_density", 0.7))
+        point_diameter_mm = float(params.get("point_diameter_mm", 1.0))
         cell_border = bool(params.get("cell_border", False))
         cell_gap_mm = float(params.get("cell_gap_mm", 0.0))
         force_grayscale = bool(params.get("force_grayscale", False))
@@ -526,6 +549,7 @@ class PixelArtGenerator(Generator):
                 palette=palette,
                 fill_style=fill_style,
                 density=density,
+                point_diameter_mm=point_diameter_mm,
                 cell_border=cell_border,
                 cell_gap_mm=cell_gap_mm,
                 canvas=canvas,
@@ -605,6 +629,18 @@ class PixelArtGenerator(Generator):
 
                 cell_paths: list = []
 
+                # A 'point' cell is a single pen tap at the cell centre — no fill
+                # geometry and no clip polygon needed.
+                if fill_style == "point":
+                    px_c = cell_x + effective_cell_mm / 2.0
+                    py_c = cell_y + effective_cell_mm / 2.0
+                    cell_paths.append([(px_c, py_c), (px_c + 0.01, py_c)])
+                    paths_by_index.setdefault(idx, []).extend(cell_paths)
+                    processed += 1
+                    if progress_callback and processed % report_every == 0:
+                        progress_callback(int(processed / total_cells * 100))
+                    continue
+
                 # Build the clip polygon once per cell (None for square).
                 poly_verts = cell_polygon(cell_shape, cell_x, cell_y, effective_cell_mm)
                 if poly_verts is not None:
@@ -644,12 +680,18 @@ class PixelArtGenerator(Generator):
         if progress_callback:
             progress_callback(100)
 
+        # Single-tap 'point' cells carry no size in their geometry, so attach the
+        # marker diameter as a render hint: the canvas preview and SVG export use
+        # it (round caps) to show each dot at its true size.
+        spec_info = {"dot_diameter_mm": point_diameter_mm} if fill_style == "point" else None
+
         # Emit one LayerSpec per used index (sorted for determinism).
         return [
             LayerSpec(
                 name=f"Pixel {idx}",
                 color=hex_colors[idx],
                 paths=paths_by_index[idx],
+                generator_info=spec_info,
             )
             for idx in sorted(paths_by_index)
         ]
@@ -661,6 +703,7 @@ class PixelArtGenerator(Generator):
         palette: Any,
         fill_style: str,
         density: float,
+        point_diameter_mm: float,
         cell_border: bool,
         cell_gap_mm: float,
         canvas: Canvas,
@@ -757,6 +800,15 @@ class PixelArtGenerator(Generator):
                 processed += 1
                 continue
 
+            # A 'point' cell is a single pen tap at the hex centre — no fill
+            # geometry and no clip polygon needed.
+            if fill_style == "point":
+                paths_by_index.setdefault(idx, []).append([(cx, cy), (cx + 0.01, cy)])
+                processed += 1
+                if progress_callback and processed % report_every == 0:
+                    progress_callback(int(processed / total_cells * 100))
+                continue
+
             # Apply gap by shrinking the circumradius.
             effective_s = max(0.01, s - cell_gap_mm / 2.0)
             eff_hex_h = effective_s * math.sqrt(3)
@@ -795,11 +847,14 @@ class PixelArtGenerator(Generator):
         if progress_callback:
             progress_callback(100)
 
+        spec_info = {"dot_diameter_mm": point_diameter_mm} if fill_style == "point" else None
+
         return [
             LayerSpec(
                 name=f"Pixel {idx}",
                 color=hex_colors[idx],
                 paths=paths_by_index[idx],
+                generator_info=spec_info,
             )
             for idx in sorted(paths_by_index)
         ]
