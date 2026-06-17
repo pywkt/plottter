@@ -221,6 +221,34 @@ class PixelArtGenerator(Generator):
                     "palette's gray axis (the legacy behaviour)."
                 ),
             ),
+            BoolParam(
+                name="skip_background",
+                label="Skip Background",
+                default=False,
+                description=(
+                    "Don't plot cells that quantise to a near-white palette "
+                    "colour, leaving the paper bare. Use this when your image "
+                    "has a white/removed background and you don't want it filled "
+                    "with the nearest pen. Tune the cut-off with 'Background "
+                    "Brightness'."
+                ),
+            ),
+            FloatParam(
+                name="skip_background_threshold",
+                label="Background Brightness",
+                min=0.0,
+                max=1.0,
+                step=0.01,
+                default=0.9,
+                visible_when={"skip_background": [True]},
+                description=(
+                    "Brightness cut-off for 'Skip Background' (0 = black, "
+                    "1 = white). Any palette colour at or above this brightness "
+                    "is treated as background and not plotted. Lower it if some "
+                    "light background tones are still being drawn; raise it if "
+                    "wanted light colours are being skipped."
+                ),
+            ),
         ]
 
     # ------------------------------------------------------------------
@@ -532,6 +560,8 @@ class PixelArtGenerator(Generator):
         cell_border = bool(params.get("cell_border", False))
         cell_gap_mm = float(params.get("cell_gap_mm", 0.0))
         force_grayscale = bool(params.get("force_grayscale", False))
+        skip_background = bool(params.get("skip_background", False))
+        skip_bg_threshold = float(params.get("skip_background_threshold", 0.9))
 
         # The hex path samples source[py, px, :3], so it needs 3 channels even
         # in the grayscale case.  Broadcast the luminance back to RGB.
@@ -550,6 +580,8 @@ class PixelArtGenerator(Generator):
                 fill_style=fill_style,
                 density=density,
                 point_diameter_mm=point_diameter_mm,
+                skip_background=skip_background,
+                skip_bg_threshold=skip_bg_threshold,
                 cell_border=cell_border,
                 cell_gap_mm=cell_gap_mm,
                 canvas=canvas,
@@ -617,6 +649,12 @@ class PixelArtGenerator(Generator):
             for c in range(n_cols):
                 idx = int(indices[r, c])
                 if idx < 0 or idx >= n_colors:
+                    processed += 1
+                    continue
+
+                # Skip near-white (background) cells when requested, leaving the
+                # paper bare instead of filling it with the nearest pen.
+                if skip_background and color_brightness[idx] >= skip_bg_threshold:
                     processed += 1
                     continue
 
@@ -704,6 +742,8 @@ class PixelArtGenerator(Generator):
         fill_style: str,
         density: float,
         point_diameter_mm: float,
+        skip_background: bool,
+        skip_bg_threshold: float,
         cell_border: bool,
         cell_gap_mm: float,
         canvas: Canvas,
@@ -797,6 +837,12 @@ class PixelArtGenerator(Generator):
                     best_idx = j
             idx = best_idx
             if idx < 0 or idx >= n_colors:
+                processed += 1
+                continue
+
+            # Skip near-white (background) cells when requested, leaving the
+            # paper bare instead of filling it with the nearest pen.
+            if skip_background and color_brightness[idx] >= skip_bg_threshold:
                 processed += 1
                 continue
 
