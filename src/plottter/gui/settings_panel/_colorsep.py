@@ -477,6 +477,9 @@ class _ColorSepMixin:
 
     def _rebuild_color_sep_preset_combo(self) -> None:
         """Rebuild the color separation preset combo based on the selected generator."""
+        # A rebuild means the algorithm changed (or presets were re-read), so
+        # any parameter override belongs to a stale generator/preset pair.
+        self._clear_color_sep_param_override()
         self._color_sep_preset_combo.blockSignals(True)
         self._color_sep_preset_combo.clear()
 
@@ -530,6 +533,156 @@ class _ColorSepMixin:
             pass  # If generator instantiation fails, just show Default
 
         self._color_sep_preset_combo.blockSignals(False)
+
+    # ------------------------------------------------------------------
+    # Line-parameter override (Edit… beside the preset combo)
+    # ------------------------------------------------------------------
+
+    _COLORSEP_MODIFIED_SUFFIX = " (modified)"
+    _COLORSEP_META_KEY = "colorsep_line_params"
+
+    def _color_sep_preset_name(self) -> str:
+        """Current preset's display name, without the modified marker."""
+        text = self._color_sep_preset_combo.currentText()
+        if text.endswith(self._COLORSEP_MODIFIED_SUFFIX):
+            text = text[: -len(self._COLORSEP_MODIFIED_SUFFIX)]
+        return text
+
+    def _color_sep_base_params(self, gen) -> dict:
+        """Generator defaults overlaid with the selected preset's params."""
+        from plottter.gui.dialogs.colorsep_params_dialog import default_params_for
+
+        base = default_params_for(gen)
+        preset_params = self._color_sep_preset_combo.currentData()
+        if isinstance(preset_params, dict):
+            base.update(preset_params)
+        return base
+
+    def _set_color_sep_param_override(self, params: dict | None) -> None:
+        """Store *params* as the active override and sync marker + metadata."""
+        self._color_sep_param_override = dict(params) if params else None
+        self._update_color_sep_modified_marker()
+        self._persist_colorsep_line_params()
+
+    def _clear_color_sep_param_override(self) -> None:
+        if getattr(self, "_color_sep_param_override", None) is None:
+            return
+        self._set_color_sep_param_override(None)
+
+    def _update_color_sep_modified_marker(self) -> None:
+        combo = self._color_sep_preset_combo
+        combo.blockSignals(True)
+        try:
+            suffix = self._COLORSEP_MODIFIED_SUFFIX
+            for i in range(combo.count()):
+                text = combo.itemText(i)
+                if text.endswith(suffix):
+                    combo.setItemText(i, text[: -len(suffix)])
+            if self._color_sep_param_override is not None and combo.currentIndex() >= 0:
+                idx = combo.currentIndex()
+                combo.setItemText(idx, combo.itemText(idx) + suffix)
+        finally:
+            combo.blockSignals(False)
+
+    def _on_color_sep_preset_changed(self, _index: int = -1) -> None:
+        """Picking a different preset discards the tweak made on the old one."""
+        self._clear_color_sep_param_override()
+
+    def _on_edit_color_sep_params(self) -> None:
+        gen_cls = self._color_sep_gen_combo.currentData()
+        if gen_cls is None:
+            return
+        try:
+            gen = gen_cls()
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "Edit Parameters", f"Cannot instantiate generator: {exc}")
+            return
+
+        from plottter.gui.dialogs.colorsep_params_dialog import ColorSepParamsDialog
+
+        preset_name = self._color_sep_preset_name()
+        base = self._color_sep_base_params(gen)
+        dialog = ColorSepParamsDialog(
+            gen,
+            preset_name,
+            base,
+            initial_params=self._color_sep_param_override,
+            parent=self,
+        )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+
+        if dialog.saved_preset_name:
+            # The tweak now lives in a named user preset — select it and drop
+            # the override so the combo is the single source of truth again.
+            self._rebuild_color_sep_preset_combo()
+            idx = self._color_sep_preset_combo.findText(dialog.saved_preset_name)
+            if idx >= 0:
+                self._color_sep_preset_combo.setCurrentIndex(idx)
+            return
+
+        params = dialog.params()
+        if params == base:
+            self._clear_color_sep_param_override()
+        else:
+            self._set_color_sep_param_override(params)
+
+    def _persist_colorsep_line_params(self) -> None:
+        """Mirror the override into ``project.metadata`` (or remove it)."""
+        try:
+            project = self._controller.current_project
+        except Exception:  # noqa: BLE001
+            return
+        if project is None or not hasattr(project, "metadata"):
+            return
+        if self._color_sep_param_override is None:
+            project.metadata.pop(self._COLORSEP_META_KEY, None)
+            return
+        gen_cls = self._color_sep_gen_combo.currentData()
+        project.metadata[self._COLORSEP_META_KEY] = {
+            "generator": getattr(gen_cls, "name", ""),
+            "preset": self._color_sep_preset_name(),
+            "params": dict(self._color_sep_param_override),
+        }
+
+    def _restore_colorsep_line_params_from_metadata(self) -> None:
+        """Re-select the algorithm + preset and re-apply a persisted override."""
+        try:
+            project = self._controller.current_project
+            entry = project.metadata.get(self._COLORSEP_META_KEY) if project else None
+        except Exception:  # noqa: BLE001
+            return
+        if not isinstance(entry, dict) or not isinstance(entry.get("params"), dict):
+            # No override in this project: make sure none leaks over from the
+            # previous project (without re-writing metadata).
+            self._color_sep_param_override = None
+            self._update_color_sep_modified_marker()
+            return
+
+        gen_combo = self._color_sep_gen_combo
+        gen_idx = next(
+            (
+                i
+                for i in range(gen_combo.count())
+                if getattr(gen_combo.itemData(i), "name", None) == entry.get("generator")
+            ),
+            -1,
+        )
+        if gen_idx < 0:
+            return
+        gen_combo.setCurrentIndex(gen_idx)  # triggers rebuild (clears override)
+        self._rebuild_color_sep_preset_combo()
+
+        preset_combo = self._color_sep_preset_combo
+        preset_idx = preset_combo.findText(str(entry.get("preset", "Default")))
+        preset_combo.blockSignals(True)
+        preset_combo.setCurrentIndex(preset_idx if preset_idx >= 0 else 0)
+        preset_combo.blockSignals(False)
+
+        # Set directly rather than via _set_color_sep_param_override so the
+        # metadata entry is left exactly as loaded.
+        self._color_sep_param_override = dict(entry["params"])
+        self._update_color_sep_modified_marker()
 
     def _on_ai_bg_changed(self, state: int) -> None:
         """Handle AI Background Removal toggle: disable manual BG removal when AI is on."""
@@ -969,11 +1122,14 @@ class _ColorSepMixin:
 
         gen = self._lines_gen_cls()
 
-        # Check if a preset is selected in the color sep preset combo
+        # Precedence: Edit… override > selected preset > generator defaults.
+        override = getattr(self, "_color_sep_param_override", None)
         preset_params = self._color_sep_preset_combo.currentData()
-        if preset_params is not None:
+        if override:
+            gen_params: dict = dict(override)
+        elif preset_params is not None:
             # Use preset params as base (copy to avoid mutation)
-            gen_params: dict = dict(preset_params)
+            gen_params = dict(preset_params)
         else:
             # Default: build params from generator defaults
             gen_params = {}

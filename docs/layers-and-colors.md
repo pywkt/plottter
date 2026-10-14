@@ -241,13 +241,27 @@ You can then generate line art for each layer independently:
 1. Select a separation layer in the Layer Panel
 2. Open the Settings Panel (it will show the Image-to-Lines controls with the layer's mask)
 3. Choose a line generation algorithm (Hatching recommended for color separation)
-4. Click **Generate Lines**
+4. Pick a **Preset** for that algorithm, or leave it on Default
+5. Click **Generate Lines**
 
 Plottter processes each layer in sequence, showing a progress bar. When complete, each
 layer contains line-art paths that represent its color region.
 
 Alternatively, use **Generate Lines (All Layers)** to process all separation layers at once
 with the same algorithm settings.
+
+### Tweaking a preset's parameters
+
+Click **Edit…** next to the Preset dropdown to open the full parameter list for the
+selected algorithm, pre-filled with the preset's values. Change whatever you like and
+click **OK**: the dropdown shows the preset name with a *(modified)* marker, and Generate
+Lines uses your edited values instead of the preset. The tweak is saved with the project
+and comes back when you reopen it. Picking a different preset or algorithm discards it.
+
+If a tweak turns out to be a keeper, use **Save as Preset…** inside the dialog. It becomes
+a user preset for that algorithm and is selected automatically, so you never need to
+switch to Image to Lines mode just to save settings. **Reset to Preset** puts the form
+back to the preset's original values.
 
 ---
 

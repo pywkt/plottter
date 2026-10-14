@@ -556,15 +556,35 @@ class _UIBuildMixin:
             self._color_sep_gen_combo.addItem("(no generators)")
         gen_form.addRow(QLabel("Line-Art Algorithm"), self._color_sep_gen_combo)
 
-        # Preset combo for the selected line-art algorithm
+        # Preset combo for the selected line-art algorithm, plus an Edit
+        # button that opens a parameter dialog prefilled from the preset so
+        # individual values can be tweaked without saving a one-off preset.
         self._color_sep_preset_combo = QComboBox()
-        gen_form.addRow(QLabel("Preset"), self._color_sep_preset_combo)
+        self._color_sep_edit_params_btn = QPushButton("Edit…")
+        self._color_sep_edit_params_btn.setToolTip(
+            "Open the selected preset's parameters for editing. Tweaks apply "
+            "to Generate Lines as a session override (persisted with the "
+            "project) until you pick another preset or algorithm."
+        )
+        self._color_sep_edit_params_btn.setFixedWidth(60)
+        preset_row = QWidget()
+        preset_row_layout = QHBoxLayout(preset_row)
+        preset_row_layout.setContentsMargins(0, 0, 0, 0)
+        preset_row_layout.addWidget(self._color_sep_preset_combo, stretch=1)
+        preset_row_layout.addWidget(self._color_sep_edit_params_btn)
+        gen_form.addRow(QLabel("Preset"), preset_row)
 
         color_sep_layout.addLayout(gen_form)
 
         # Connect algorithm change to rebuild preset combo, then populate it
         self._color_sep_gen_combo.currentIndexChanged.connect(
             self._rebuild_color_sep_preset_combo
+        )
+        self._color_sep_preset_combo.currentIndexChanged.connect(
+            self._on_color_sep_preset_changed
+        )
+        self._color_sep_edit_params_btn.clicked.connect(
+            self._on_edit_color_sep_params
         )
         self._rebuild_color_sep_preset_combo()
 

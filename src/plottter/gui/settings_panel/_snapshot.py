@@ -955,6 +955,7 @@ class _SnapshotMixin:
         # Clear any stale layer selection so _on_active_layer_changed starts fresh
         self._load_camera_from_project()
         self._restore_image_view_from_metadata()
+        self._restore_colorsep_line_params_from_metadata()
 
     def _restore_image_view_from_metadata(self) -> None:
         """Re-apply a persisted image_view dict from ``project.metadata``.

@@ -97,6 +97,11 @@ class SettingsPanel(
         # Cached user presets for the current generator (refreshed in _rebuild_preset_combo)
         self._user_presets: list = []
 
+        # Color Separation "Generate Lines" parameter override — set by the
+        # Edit… dialog beside the preset combo.  None means "use the preset
+        # as-is".  Mirrored into project.metadata["colorsep_line_params"].
+        self._color_sep_param_override: dict[str, Any] | None = None
+
         # Dynamic parameter overrides — updated by _rebuild_dynamic_params widgets;
         # merged into params as params["_dynamic_overrides"] before each generation run.
         self._dynamic_overrides: dict[str, Any] = {}
