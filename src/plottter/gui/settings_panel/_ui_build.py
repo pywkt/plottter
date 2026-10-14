@@ -549,6 +549,12 @@ class _UIBuildMixin:
         try:
             from plottter.generators import get_generators_by_category
             for gen_cls in get_generators_by_category("image"):
+                # Multi-layer generators (Pixel Art, Pointillist, CRT TV) are
+                # palette-driven separators in their own right; running them
+                # on a single colour mask is redundant, and the line pump
+                # below only consumes single-layer output.
+                if getattr(gen_cls, "emits_multiple_layers", False):
+                    continue
                 self._color_sep_gen_combo.addItem(gen_cls.name, gen_cls)
         except ImportError:
             pass

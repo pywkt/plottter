@@ -1162,6 +1162,20 @@ class _ColorSepMixin:
 
         worker.finished.connect(on_finished)
         worker.error.connect(on_error)
+        if getattr(gen, "emits_multiple_layers", False):
+            # GeneratorWorker routes multi-layer generators to generate_layers()
+            # and emits layers_finished instead of finished. Without this hook
+            # the pump never drains: buttons stay disabled and the undo macro
+            # opened in _start_line_generation is never closed, which swallows
+            # every later action. Flatten the specs' paths into the mask layer.
+            def on_layers_finished(specs, lid=layer_id, k=key):
+                flat: list = []
+                for spec in specs or []:
+                    flat.extend(getattr(spec, "paths", []) or [])
+                self._controller.set_layer_paths(lid, flat, "Generate Lines")
+                self._on_line_worker_done(k)
+
+            worker.layers_finished.connect(on_layers_finished)
         active[key] = worker
         worker.start()
 
