@@ -136,6 +136,7 @@ class ContourGenerator(Generator):
             fill_style = str(params.get("fill", "None"))
             fill_spacing_mm = float(params.get("fill_spacing_mm", 0.3))
             fill_angle = float(params.get("fill_angle", 45.0))
+            fill_rings = int(params.get("fill_perimeter_rings", 2))
             adaptive_thresh = bool(params.get("adaptive_threshold", False))
             adaptive_c = float(params.get("adaptive_c", 5.0))
             trace_supersample = int(params.get("trace_supersample", 1))
@@ -208,6 +209,11 @@ class ContourGenerator(Generator):
                             outer, holes, 0.0, fill_spacing_mm
                         )
                         result.extend(fill_lines)
+                    elif fill_style == "Solid (Adaptive)":
+                        from ._adaptive_fill import fill_polygon_adaptive
+                        result.extend(fill_polygon_adaptive(
+                            outer, holes, fill_spacing_mm, fill_rings, fill_angle
+                        ))
                     elif fill_style == "Hatching":
                         fill_lines = _fill_polygon_hatch(
                             outer, holes, fill_angle, fill_spacing_mm

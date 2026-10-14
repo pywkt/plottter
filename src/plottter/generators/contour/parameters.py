@@ -366,13 +366,14 @@ def build_parameters() -> list[Parameter]:
         ChoiceParam(
             name="fill",
             label="Fill Style",
-            choices=["None", "Solid", "Hatching", "Cross-hatch", "Concentric"],
+            choices=["None", "Solid", "Solid (Adaptive)", "Hatching", "Cross-hatch", "Concentric"],
             default="None",
             visible_when={"mode": ["Line Art Trace"]},
             description="Fill style for enclosed contour shapes — None traces outlines only, other options fill the interior",
             choice_descriptions={
                 "None": "Outline only — traces the boundary of each shape without filling the interior",
                 "Solid": "Fills the interior with densely-packed parallel lines (spacing ~0.3mm for solid appearance)",
+                "Solid (Adaptive)": "Solid look with far fewer strokes: a few perimeter rings follow each shape's edge, then one continuous zigzag fills what is left. Thin strokes are covered by the rings alone",
                 "Hatching": "Fills with parallel lines at a configurable angle — produces a visible line texture inside the shape",
                 "Cross-hatch": "Fills with two overlapping passes of hatching at perpendicular angles",
                 "Concentric": "Fills with progressively smaller inward offsets of the contour shape — topographic map effect",
@@ -385,7 +386,7 @@ def build_parameters() -> list[Parameter]:
             max=5.0,
             step=0.05,
             default=0.3,
-            visible_when={"mode": ["Line Art Trace"], "fill": ["Solid", "Hatching", "Cross-hatch", "Concentric"]},
+            visible_when={"mode": ["Line Art Trace"], "fill": ["Solid", "Solid (Adaptive)", "Hatching", "Cross-hatch", "Concentric"]},
             description="Spacing between fill lines in millimeters (smaller = denser fill)",
         ),
         FloatParam(
@@ -395,8 +396,18 @@ def build_parameters() -> list[Parameter]:
             max=180.0,
             step=1.0,
             default=45.0,
-            visible_when={"mode": ["Line Art Trace"], "fill": ["Hatching", "Cross-hatch"]},
-            description="Angle of hatch fill lines in degrees (0 = horizontal, 45 = diagonal, 90 = vertical)",
+            visible_when={"mode": ["Line Art Trace"], "fill": ["Solid (Adaptive)", "Hatching", "Cross-hatch"]},
+            description="Angle of hatch / zigzag fill lines in degrees (0 = horizontal, 45 = diagonal, 90 = vertical)",
+        ),
+        IntParam(
+            name="fill_perimeter_rings",
+            label="Perimeter Rings",
+            min=0,
+            max=10,
+            step=1,
+            default=2,
+            visible_when={"mode": ["Line Art Trace"], "fill": ["Solid (Adaptive)"]},
+            description="Inward offset rings drawn along each shape's edge before the zigzag core (0 = zigzag only). Strokes narrower than about twice this many fill spacings are covered by the rings alone",
         ),
         # --- Shared parameters (both modes) ---
         FloatParam(
