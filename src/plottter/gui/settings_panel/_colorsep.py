@@ -92,12 +92,16 @@ def _compute_separation(
     k_amount: float,
     dither: str,
     palette,
+    edge_aware: bool = False,
 ) -> dict:
     """Run one color-separation method and return a result payload.
 
     Pure NumPy work with no Qt access, so it is safe to run in a worker thread
     (see :meth:`_ColorSepMixin._on_separate`) and is directly unit-testable.
-    All widget-derived values are passed in by the caller.  Returns a dict with
+    All widget-derived values are passed in by the caller.  ``edge_aware``
+    re-partitions K-Means and (undithered) Custom Palette output so blended
+    edge pixels go to one of the two colours they mix, not a third pen — see
+    :func:`plottter.color.edge_aware_reassign`.  Returns a dict with
     ``results`` (list of (mask, hex)), ``layer_names``, ``preprocessed`` (the
     image cached as each layer's src_img), and ``cmyk_raw_rgb`` (the RGB input
     for CMYK so the panel can refresh K Amount later, else None).
@@ -122,6 +126,9 @@ def _compute_separation(
             downscale_to_max_pixels(preprocess(source, spatial_params), max_px)
         )
         results = kmeans_separate(raw_rgb, num_colors=num)
+        if edge_aware:
+            from plottter.color import edge_aware_reassign
+            results = edge_aware_reassign(raw_rgb, results)
         layer_names = [f"Cluster {i + 1}" for i in range(len(results))]
     elif method == "Luminance":
         from plottter.color import luminance_separate
@@ -156,6 +163,11 @@ def _compute_separation(
         from plottter.color import palette_separate
         raw_rgb = _ensure_rgb(downscale_to_max_pixels(source, max_px))
         results = palette_separate(raw_rgb, palette, dither=dither)
+        if edge_aware and dither == "none":
+            # Dithering deliberately scatters mixed colours; only clean up
+            # the plain nearest-colour partition.
+            from plottter.color import edge_aware_reassign
+            results = edge_aware_reassign(raw_rgb, results)
         layer_names = [f"Pen: {color}" for _, color in results]
     else:
         results, layer_names = [], []
@@ -239,6 +251,9 @@ class _ColorSepMixin:
         # region).  RGB / CMYK / AI already emit zero ink for white pixels.
         if hasattr(self, "_skip_white_layer_check"):
             self._skip_white_layer_check.setVisible(is_kmeans or is_lum or is_palette)
+        # Edge-aware reassignment only applies to colour partitions.
+        if hasattr(self, "_edge_aware_check"):
+            self._edge_aware_check.setVisible(is_kmeans or is_palette)
 
         if is_palette:
             self._populate_palette_picker()
@@ -395,6 +410,17 @@ class _ColorSepMixin:
         QSettings("Plottter", "Plottter").setValue(
             "colorsep/skip_white_layer", "true" if checked else "false"
         )
+
+    def _on_edge_aware_toggled(self, checked: bool) -> None:
+        """Persist the 'Clean up edge pixels' checkbox state to QSettings."""
+        from PyQt6.QtCore import QSettings
+        QSettings("Plottter", "Plottter").setValue(
+            "colorsep/edge_aware", "true" if checked else "false"
+        )
+
+    def _edge_aware_enabled(self) -> bool:
+        check = getattr(self, "_edge_aware_check", None)
+        return bool(check is not None and check.isChecked())
 
     def _on_downsample_toggled(self, checked: bool) -> None:
         """Persist the 'Downsample large images' checkbox state to QSettings."""
@@ -883,6 +909,7 @@ class _ColorSepMixin:
         }
         k_amount = float(self._cmyk_k_amount_spin.value())
         dither = self._palette_dither_combo.currentText().lower()
+        edge_aware = self._edge_aware_enabled()
 
         def _compute() -> dict:
             return _compute_separation(
@@ -896,6 +923,7 @@ class _ColorSepMixin:
                 k_amount=k_amount,
                 dither=dither,
                 palette=palette,
+                edge_aware=edge_aware,
             )
 
         self._set_color_sep_busy(0)  # indeterminate

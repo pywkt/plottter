@@ -266,12 +266,21 @@ an outline that bled into its neighbour. Selecting any other layer, or leaving t
 puts the normal preprocessed image back. (View › Image Overlay toggles the overlay
 itself.)
 
-Note that for K-Means, Luminance and Custom Palette the layer keeps the image's own
-tones inside its mask, so a dark region inside a colour hatches densely and a few
-anti-aliased pixels along a black outline show up as a darker rim on the neighbouring
-colour's layer. Pick the pen count to include the background (a three-colour drawing on
-white needs four K-Means clusters) or use **Custom Palette** with the exact pen colours
-to keep the assignment clean.
+Two things to know when a colour layer is not as clean as you expect:
+
+- **Pick the pen count to include the background.** A three-colour drawing on white
+  needs four K-Means clusters, otherwise two colours get merged into one layer. Or use
+  **Custom Palette** with the exact pen colours plus white.
+- **Clean up edge pixels** (on by default for K-Means and undithered Custom Palette)
+  deals with the blended pixels along every edge. Anti-aliasing and JPEG compression turn
+  the border of a black line into grays and dark tints, and plain nearest-colour
+  assignment hands those to whichever pen is closest, which for a dark colour like teal
+  means a ghost of every black outline on the teal layer. With the option on, a blended
+  pixel is treated as a mix of two pens and goes to one of those two. Turn it off to get
+  the raw nearest-colour partition.
+
+For K-Means, Luminance and Custom Palette the layer also keeps the image's own tones
+inside its mask, so a dark region inside a colour hatches densely.
 
 ### Tweaking a preset's parameters
 

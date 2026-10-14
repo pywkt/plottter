@@ -618,6 +618,25 @@ class _UIBuildMixin:
         )
         color_sep_layout.addWidget(self._skip_white_layer_check)
 
+        # "Clean up edge pixels" — blended pixels along edges (anti-aliasing,
+        # JPEG ringing) are assigned to one of the two colours they mix
+        # instead of whichever third pen is nearest in Lab.  Without this a
+        # dark pen such as teal collects a ghost of every black line.  K-Means
+        # and undithered Custom Palette only.  On by default.
+        self._edge_aware_check = QCheckBox("Clean up edge pixels")
+        self._edge_aware_check.setToolTip(
+            "Treat blended pixels along edges (anti-aliasing, JPEG halos) as "
+            "a mix of two pen colours and send them to one of those two.  "
+            "Stops a dark colour layer picking up a ghost of the black "
+            "outlines.  Applies to K-Means and undithered Custom Palette."
+        )
+        _saved_edge_aware = _QS("Plottter", "Plottter").value(
+            "colorsep/edge_aware", "true"
+        )
+        self._edge_aware_check.setChecked(str(_saved_edge_aware).lower() == "true")
+        self._edge_aware_check.toggled.connect(self._on_edge_aware_toggled)
+        color_sep_layout.addWidget(self._edge_aware_check)
+
         # "Downsample large images" — caps the resolution used for separation
         # (and therefore the masks fed to the line generators).  Separation
         # masks don't need full photographic resolution and the line
