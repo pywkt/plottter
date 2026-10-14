@@ -256,6 +256,23 @@ the partial run. The same button appears during **Separate into Layers**; separa
 itself can't be interrupted mid-computation, so Cancel discards its result when it
 arrives and hands the controls back right away.
 
+### Seeing what landed on each layer
+
+While you are in Color Separation mode, selecting a separated layer in the Layer Panel
+swaps the canvas image overlay for that layer's mask, drawn exactly as Generate Lines
+will feed it to the algorithm: the layer's pixels keep their gray tone, everything else
+is white. This is the quickest way to spot a colour that was split across two layers or
+an outline that bled into its neighbour. Selecting any other layer, or leaving the mode,
+puts the normal preprocessed image back. (View › Image Overlay toggles the overlay
+itself.)
+
+Note that for K-Means, Luminance and Custom Palette the layer keeps the image's own
+tones inside its mask, so a dark region inside a colour hatches densely and a few
+anti-aliased pixels along a black outline show up as a darker rim on the neighbouring
+colour's layer. Pick the pen count to include the background (a three-colour drawing on
+white needs four K-Means clusters) or use **Custom Palette** with the exact pen colours
+to keep the assignment clean.
+
 ### Tweaking a preset's parameters
 
 Click **Edit…** next to the Preset dropdown to open the full parameter list for the

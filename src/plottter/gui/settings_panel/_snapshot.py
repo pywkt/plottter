@@ -984,6 +984,10 @@ class _SnapshotMixin:
                 if new_layer.paths or info.get("mode") == self._current_mode:
                     self._apply_settings_snapshot(info)
 
+        # In Color Separation mode the canvas overlay follows the selected
+        # separated layer (its mask as the generator will see it).
+        self._update_colorsep_layer_preview(layer_id)
+
     def _on_generator_info_changed(self, layer_id: str) -> None:
         """Refresh offset param widgets when generator_info changes for the active layer.
 

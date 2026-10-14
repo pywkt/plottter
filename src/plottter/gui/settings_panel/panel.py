@@ -208,9 +208,15 @@ class SettingsPanel(
         # clobber the layer being restored.
         if mode != self._current_mode and not self._restoring_snapshot:
             self._flush_snapshot_if_changed()
+        # Leaving Color Separation puts the normal image back on the canvas
+        # (the overlay may be showing one separated layer's mask).
+        if self._current_mode == "Color Separation" and mode != "Color Separation":
+            self._update_colorsep_layer_preview(None)
         self._current_mode = mode
         is_image_mode = mode == "Image to Lines"
         is_color_sep = mode == "Color Separation"
+        if is_color_sep:
+            self._update_colorsep_layer_preview(self._controller.active_layer_id)
         is_mask_paint = mode == "Mask Paint"
         is_shape_draw = mode == "Shape Drawing"
         is_3d = mode == "3D Scene"

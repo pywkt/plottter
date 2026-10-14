@@ -1057,6 +1057,38 @@ class _ColorSepMixin:
         if still_running:
             self._schedule_orphan_reap()
 
+    # ------------------------------------------------------------------
+    # Per-layer preview: show what landed on each separated layer
+    # ------------------------------------------------------------------
+
+    def _colorsep_layer_preview(self, layer_id: str | None) -> "np.ndarray | None":
+        """The exact image Generate Lines feeds the generator for *layer_id*
+        (grayscale, white outside the layer's mask), or None when *layer_id*
+        is not a separated layer."""
+        if not layer_id:
+            return None
+        entry = self._layer_masks.get(layer_id)
+        if entry is None:
+            return None
+        mask, src_img = entry
+        return _separation_mask_to_luminance(mask, src_img)
+
+    def _update_colorsep_layer_preview(self, layer_id: str | None) -> None:
+        """Swap the canvas image overlay for the selected separated layer's
+        generator input, so the user can see what each layer got — including
+        anti-aliased edge pixels that leaked in from a neighbouring colour.
+        Selecting any other layer (or passing None) restores the normal
+        preprocessed image.  Only active in Color Separation mode."""
+        preview = None
+        if self._current_mode == "Color Separation":
+            preview = self._colorsep_layer_preview(layer_id)
+        if preview is not None:
+            self._colorsep_preview_active = True
+            self.image_preprocessed.emit(preview)
+        elif getattr(self, "_colorsep_preview_active", False):
+            self._colorsep_preview_active = False
+            self.image_preprocessed.emit(self._preprocessed_image)
+
     def _apply_separation_results(
         self,
         results: list,
