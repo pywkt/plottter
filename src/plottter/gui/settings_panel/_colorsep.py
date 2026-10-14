@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QCoreApplication, Qt, QTimer
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -845,21 +845,28 @@ class _ColorSepMixin:
                 preprocess(source, params), max_px
             )
 
-            self._separate_btn.setEnabled(False)
-            self._color_sep_progress.setMaximum(0)  # indeterminate while waiting for AI
-            self._color_sep_progress.setVisible(True)
+            self._set_color_sep_busy(0)  # indeterminate while waiting for AI
 
-            self._ai_segment_worker = _AiSegmentWorker(
+            worker = _AiSegmentWorker(
                 api_key=api_key, image=source_img, num_segments=num
             )
-            self._ai_segment_worker.progress.connect(
-                lambda p: self._color_sep_progress.setValue(p)
+            # Each slot carries its own worker so a result from a cancelled
+            # (orphaned) run can be told apart from the live one and dropped.
+            worker.progress.connect(
+                lambda p, w=worker: (
+                    self._color_sep_progress.setValue(p)
+                    if w is self._ai_segment_worker
+                    else None
+                )
             )
-            self._ai_segment_worker.finished.connect(
-                lambda results: self._on_ai_segment_finished(results, method)
+            worker.finished.connect(
+                lambda results, w=worker: self._on_ai_segment_finished(results, method, w)
             )
-            self._ai_segment_worker.error.connect(self._on_ai_segment_error)
-            self._ai_segment_worker.start()
+            worker.error.connect(
+                lambda msg, w=worker: self._on_ai_segment_error(msg, w)
+            )
+            self._ai_segment_worker = worker
+            worker.start()
             return  # layer creation happens asynchronously in _on_ai_segment_finished
 
         # The synchronous separators (K-Means, Luminance, RGB, CMYK, Custom
@@ -891,64 +898,164 @@ class _ColorSepMixin:
                 palette=palette,
             )
 
-        self._separate_btn.setEnabled(False)
-        self._color_sep_progress.setMaximum(0)  # indeterminate
-        self._color_sep_progress.setVisible(True)
+        self._set_color_sep_busy(0)  # indeterminate
 
         worker = _SeparationWorker(_compute)
+        # Each slot carries its own worker so a result from a cancelled
+        # (orphaned) run can be told apart from the live one and dropped.
         worker.finished.connect(
-            lambda payload: self._on_separation_finished(payload, method)
+            lambda payload, w=worker: self._on_separation_finished(payload, method, w)
         )
-        worker.error.connect(self._on_separation_error)
+        worker.error.connect(
+            lambda msg, w=worker: self._on_separation_error(msg, w)
+        )
         self._separation_worker = worker
         worker.start()
 
-    def _on_separation_finished(self, payload: dict, method: str) -> None:
+    def _on_separation_finished(
+        self, payload: dict, method: str, worker: _SeparationWorker | None = None
+    ) -> None:
         """Apply worker results on the main thread (creates layers, undo-safe)."""
-        self._separate_btn.setEnabled(True)
-        self._color_sep_progress.setMaximum(100)
-        self._color_sep_progress.setVisible(False)
+        if not self._retire_separation_worker(worker):
+            return  # cancelled before it finished: drop the result
+        self._set_color_sep_idle()
         if payload.get("cmyk_raw_rgb") is not None:
             self._cmyk_raw_rgb = payload["cmyk_raw_rgb"]
             self._last_sep_method = "CMYK"
-        worker = self._separation_worker
-        self._separation_worker = None
-        if worker is not None:
-            worker.wait()  # join before dropping the ref (avoid GC mid-run)
         self._apply_separation_results(
             payload["results"], payload["layer_names"], method, payload["preprocessed"]
         )
 
-    def _on_separation_error(self, msg: str) -> None:
-        self._separate_btn.setEnabled(True)
-        self._color_sep_progress.setMaximum(100)
-        self._color_sep_progress.setVisible(False)
-        worker = self._separation_worker
-        self._separation_worker = None
-        if worker is not None:
-            worker.wait()
+    def _on_separation_error(
+        self, msg: str, worker: _SeparationWorker | None = None
+    ) -> None:
+        if not self._retire_separation_worker(worker):
+            return
+        self._set_color_sep_idle()
         QMessageBox.critical(self, "Separation Error", str(msg))
 
+    def _retire_separation_worker(self, worker: _SeparationWorker | None) -> bool:
+        """Join *worker* and clear the live ref.  Returns False when *worker*
+        is not the live separation worker (it was cancelled or superseded), in
+        which case the caller must ignore its result."""
+        if worker is None:
+            worker = self._separation_worker
+        live = worker is self._separation_worker
+        if live:
+            self._separation_worker = None
+        if worker is not None:
+            worker.wait()  # join before dropping the ref (avoid GC mid-run)
+        return live
+
     def _on_ai_segment_finished(
-        self, results: list, method: str
+        self, results: list, method: str, worker: _AiSegmentWorker | None = None
     ) -> None:
         """Called on the main thread when the AI segmentation worker succeeds."""
-        self._separate_btn.setEnabled(True)
-        self._color_sep_progress.setMaximum(100)
-        self._color_sep_progress.setVisible(False)
+        if worker is not None and worker is not self._ai_segment_worker:
+            return  # cancelled before it finished: drop the result
+        self._ai_segment_worker = None
+        self._set_color_sep_idle()
 
         layer_names = [f"AI Segment {i + 1}" for i in range(len(results))]
         preprocessed = self._ai_sep_preprocessed
         self._ai_sep_preprocessed = None
         self._apply_separation_results(results, layer_names, method, preprocessed)
 
-    def _on_ai_segment_error(self, msg: str) -> None:
+    def _on_ai_segment_error(
+        self, msg: str, worker: _AiSegmentWorker | None = None
+    ) -> None:
         """Called on the main thread when the AI segmentation worker fails."""
+        if worker is not None and worker is not self._ai_segment_worker:
+            return
+        self._ai_segment_worker = None
+        self._set_color_sep_idle()
+        self._ai_sep_preprocessed = None
+        QMessageBox.critical(self, "AI Segmentation Error", msg)
+
+    # ------------------------------------------------------------------
+    # Busy / idle UI state and the Cancel button
+    # ------------------------------------------------------------------
+
+    def _set_color_sep_busy(self, maximum: int) -> None:
+        """Disable Separate, show the progress bar (0 = indeterminate) and
+        the Cancel button while a separation runs."""
+        self._separate_btn.setEnabled(False)
+        self._color_sep_progress.setMaximum(maximum)
+        self._color_sep_progress.setValue(0)
+        self._color_sep_progress.setVisible(True)
+        self._color_sep_cancel_btn.setVisible(True)
+
+    def _set_color_sep_idle(self) -> None:
         self._separate_btn.setEnabled(True)
         self._color_sep_progress.setMaximum(100)
         self._color_sep_progress.setVisible(False)
-        self._ai_sep_preprocessed = None
-        QMessageBox.critical(self, "AI Segmentation Error", msg)
+        self._color_sep_cancel_btn.setVisible(False)
+
+    def _on_color_sep_cancel(self) -> None:
+        """Cancel whatever the Color Separation page has running.
+
+        * Generate Lines: the queue is dropped and every running
+          GeneratorWorker is asked to stop (generators poll the flag between
+          iterations).  Layers that already finished keep their lines; the
+          undo macro closes so one Ctrl+Z reverts the partial run.
+        * Separate into Layers: the NumPy work cannot be interrupted, so the
+          worker is detached — its result is discarded on arrival — and the
+          controls come back immediately.
+        """
+        if getattr(self, "_lines_running", False):
+            self._cancel_line_generation()
+            return
+        worker = self._separation_worker
+        self._separation_worker = None
+        if worker is not None:
+            self._orphan_worker(worker)
+        ai = self._ai_segment_worker
+        self._ai_segment_worker = None
+        if ai is not None:
+            self._ai_sep_preprocessed = None
+            self._orphan_worker(ai)
+        self._set_color_sep_idle()
+
+    def _cancel_line_generation(self) -> None:
+        self._lines_queue = []
+        active = getattr(self, "_lines_active", None) or {}
+        for worker in list(active.values()):
+            worker.cancel()
+            self._orphan_worker(worker)
+        active.clear()
+        self._finish_line_generation()
+
+    def _orphan_worker(self, worker) -> None:
+        """Park a cancelled/superseded QThread until it exits.
+
+        A GeneratorWorker emits nothing once cancelled and a separation
+        worker's late result is ignored, so nobody else would join these
+        threads.  Dropping the last Python ref to a running QThread crashes,
+        hence the polling reaper instead of a blocking ``wait()`` that would
+        freeze the GUI on a generator that never checks the cancel flag.
+        """
+        orphans = getattr(self, "_color_sep_orphans", None)
+        if orphans is None:
+            orphans = self._color_sep_orphans = []
+        orphans.append(worker)
+        self._schedule_orphan_reap()
+
+    def _schedule_orphan_reap(self) -> None:
+        if QCoreApplication.instance() is None:
+            return  # no event loop (unit tests with stub widgets)
+        QTimer.singleShot(250, self._reap_orphan_workers)
+
+    def _reap_orphan_workers(self) -> None:
+        orphans = getattr(self, "_color_sep_orphans", None) or []
+        still_running = []
+        for worker in orphans:
+            if worker.isRunning():
+                still_running.append(worker)
+            else:
+                worker.wait()
+        orphans[:] = still_running
+        if still_running:
+            self._schedule_orphan_reap()
 
     def _apply_separation_results(
         self,
@@ -1080,12 +1187,14 @@ class _ColorSepMixin:
         self._lines_total = len(self._lines_queue)
         self._lines_done = 0
         self._lines_active: dict = {}
+        self._lines_running = True
 
         self._gen_lines_btn.setEnabled(False)
         self._gen_lines_selected_btn.setEnabled(False)
         self._color_sep_progress.setMaximum(self._lines_total)
         self._color_sep_progress.setValue(0)
         self._color_sep_progress.setVisible(True)
+        self._color_sep_cancel_btn.setVisible(True)
 
         self._controller.undo_stack.beginMacro(macro_name)
         self._pump_line_workers()
@@ -1152,11 +1261,17 @@ class _ColorSepMixin:
         worker = GeneratorWorker(gen, gen_params, self._lines_canvas)
         key = id(worker)
 
+        # ``active`` is this run's dict; Cancel empties it, so a late signal
+        # from a cancelled worker (or one from a previous run) is ignored.
         def on_finished(paths, lid=layer_id, k=key):
+            if k not in active:
+                return
             self._controller.set_layer_paths(lid, paths, "Generate Lines")
             self._on_line_worker_done(k)
 
         def on_error(msg, k=key):
+            if k not in active:
+                return
             QMessageBox.warning(self, "Generate Lines Error", msg)
             self._on_line_worker_done(k)
 
@@ -1169,6 +1284,8 @@ class _ColorSepMixin:
             # opened in _start_line_generation is never closed, which swallows
             # every later action. Flatten the specs' paths into the mask layer.
             def on_layers_finished(specs, lid=layer_id, k=key):
+                if k not in active:
+                    return
                 flat: list = []
                 for spec in specs or []:
                     flat.extend(getattr(spec, "paths", []) or [])
@@ -1183,7 +1300,9 @@ class _ColorSepMixin:
         """One layer finished: update progress, launch the next, finalize at end."""
         active = getattr(self, "_lines_active", {}) or {}
         worker = active.pop(key, None)
-        if worker is not None and hasattr(worker, "wait"):
+        if worker is None:
+            return  # cancelled or stale: already accounted for
+        if hasattr(worker, "wait"):
             worker.wait()  # join before dropping the ref (avoid GC mid-run)
         self._lines_done += 1
         self._color_sep_progress.setValue(self._lines_done)
@@ -1193,8 +1312,16 @@ class _ColorSepMixin:
             self._finish_line_generation()
 
     def _finish_line_generation(self) -> None:
-        """Re-enable controls and close the undo macro once all layers are done."""
+        """Re-enable controls and close the undo macro once all layers are done.
+
+        Idempotent: Cancel calls it directly, and a worker signal that slips
+        through afterwards must not close the macro a second time.
+        """
+        if not getattr(self, "_lines_running", False):
+            return
+        self._lines_running = False
         self._color_sep_progress.setVisible(False)
+        self._color_sep_cancel_btn.setVisible(False)
         self._gen_lines_btn.setEnabled(True)
         self._gen_lines_selected_btn.setEnabled(True)
         self._controller.undo_stack.endMacro()

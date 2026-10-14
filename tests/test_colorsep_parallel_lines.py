@@ -74,6 +74,9 @@ class _Btn:
     def setEnabled(self, v) -> None:
         self.enabled = v
 
+    def setVisible(self, v) -> None:
+        self.visible = v
+
 
 class _Progress:
     def __init__(self) -> None:
@@ -129,6 +132,7 @@ class _Panel(_ColorSepMixin):
         self._gen_lines_btn = _Btn()
         self._gen_lines_selected_btn = _Btn()
         self._color_sep_progress = _Progress()
+        self._color_sep_cancel_btn = _Btn()
 
     def _image_fit_mode(self) -> str:
         return "fill"

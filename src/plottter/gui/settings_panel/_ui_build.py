@@ -23,7 +23,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .workers import _VisibilityTrackedLabel
+from .workers import _SeparationWorker, _VisibilityTrackedLabel
 
 
 class _UIBuildMixin:
@@ -661,6 +661,13 @@ class _UIBuildMixin:
         self._color_sep_progress.setVisible(False)
         color_sep_layout.addWidget(self._color_sep_progress)
 
+        # Cancel button, shown while a separation or Generate Lines run is
+        # in flight (mirrors the Image to Lines Cancel button).
+        self._color_sep_cancel_btn = QPushButton("Cancel")
+        self._color_sep_cancel_btn.setVisible(False)
+        self._color_sep_cancel_btn.clicked.connect(self._on_color_sep_cancel)
+        color_sep_layout.addWidget(self._color_sep_cancel_btn)
+
         # Connect method changed signal now that all dependent widgets exist
         self._color_sep_method_combo.currentTextChanged.connect(self._on_color_sep_method_changed)
         # K Amount spin: refresh cached CMYK channel masks in-place so the
@@ -688,6 +695,12 @@ class _UIBuildMixin:
         # forcing a full Separate Into Layers re-run.
         self._cmyk_raw_rgb = None  # type: ignore[var-annotated]
         self._last_sep_method: str | None = None
+        # Background-work bookkeeping for the Cancel button.  Cancelled or
+        # superseded QThreads are parked in ``_color_sep_orphans`` until they
+        # exit so the Python wrapper is never collected mid-run.
+        self._separation_worker: _SeparationWorker | None = None
+        self._lines_running: bool = False
+        self._color_sep_orphans: list = []
 
         # ----------------------------------------------------------------
         # Mask Paint group (Mask Paint mode only)

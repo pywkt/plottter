@@ -250,6 +250,12 @@ layer contains line-art paths that represent its color region.
 Alternatively, use **Generate Lines (All Layers)** to process all separation layers at once
 with the same algorithm settings.
 
+A **Cancel** button appears under the progress bar while this runs. Clicking it stops the
+remaining layers: layers that already finished keep their lines, and a single Undo reverts
+the partial run. The same button appears during **Separate into Layers**; separation
+itself can't be interrupted mid-computation, so Cancel discards its result when it
+arrives and hands the controls back right away.
+
 ### Tweaking a preset's parameters
 
 Click **Edit…** next to the Preset dropdown to open the full parameter list for the
