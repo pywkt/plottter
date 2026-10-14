@@ -464,7 +464,11 @@ class _SnapshotMixin:
         mode = settings.get("mode", "")
         if mode and mode != self._current_mode:
             # on_mode_changed runs synchronously and rebuilds the generator combo.
-            self.mode_change_requested.emit(mode)
+            self._restoring_snapshot = True
+            try:
+                self.mode_change_requested.emit(mode)
+            finally:
+                self._restoring_snapshot = False
 
         gen_name = settings.get("generator_name", "")
         if gen_name:
@@ -638,6 +642,41 @@ class _SnapshotMixin:
         ):
             self._controller.set_layer_generator_info(layer_id, snapshot)
 
+    def _flush_snapshot_if_changed(self) -> None:
+        """Like :meth:`flush_current_snapshot`, but skip the write (and the
+        project-modified flag it sets) when the layer already holds an
+        identical snapshot. Used on mode switches, which happen far more
+        often than generates."""
+        snapshot = self._get_settings_snapshot()
+        layer_id = self.current_layer_id()
+        if snapshot is None or not layer_id or self._is_multilayer_run_member(layer_id):
+            return
+        layer = self._controller.get_layer(layer_id)
+        if layer is not None and layer.generator_info == snapshot:
+            return
+        self._controller.set_layer_generator_info(layer_id, snapshot)
+
+    def _active_layer_snapshot_for_mode(self, mode: str) -> dict | None:
+        """Return the active layer's saved single-layer snapshot if it was
+        taken in *mode*, else None.
+
+        Multi-layer runs are deliberately excluded — their restore path is
+        ``_apply_multilayer_run_settings`` driven by layer selection, and
+        mode switching has never rebuilt them.
+        """
+        layer_id = self.current_layer_id()
+        if not layer_id:
+            return None
+        layer = self._controller.get_layer(layer_id)
+        if layer is None or not isinstance(layer.generator_info, dict):
+            return None
+        info = layer.generator_info
+        if info.get("_generator_run_id"):
+            return None
+        if info.get("mode") != mode or not info.get("generator_name"):
+            return None
+        return info
+
     # ------------------------------------------------------------------
     # Per-layer generator settings memory
     # ------------------------------------------------------------------
@@ -737,9 +776,15 @@ class _SnapshotMixin:
 
         # Switch mode if needed (ModePanel listens to mode_change_requested)
         if mode and mode != self._current_mode:
-            self.mode_change_requested.emit(mode)
             # on_mode_changed() is called synchronously (direct connection),
-            # which resets the generator combo to the first item.
+            # which resets the generator combo to the first item. The flag
+            # stops it from flushing the outgoing panel state (which belongs
+            # to the previously active layer) onto the layer being restored.
+            self._restoring_snapshot = True
+            try:
+                self.mode_change_requested.emit(mode)
+            finally:
+                self._restoring_snapshot = False
 
         # Select the saved generator by name.
         # Always rebuild the parameter UI even if the same generator is already

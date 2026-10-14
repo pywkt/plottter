@@ -102,6 +102,11 @@ class SettingsPanel(
         # as-is".  Mirrored into project.metadata["colorsep_line_params"].
         self._color_sep_param_override: dict[str, Any] | None = None
 
+        # True while _apply_settings_snapshot / _apply_multilayer_run_settings
+        # drive a mode change; on_mode_changed uses it to avoid flushing the
+        # outgoing (wrong-layer) panel state and to skip a redundant restore.
+        self._restoring_snapshot: bool = False
+
         # Dynamic parameter overrides — updated by _rebuild_dynamic_params widgets;
         # merged into params as params["_dynamic_overrides"] before each generation run.
         self._dynamic_overrides: dict[str, Any] = {}
@@ -195,6 +200,14 @@ class SettingsPanel(
 
     def on_mode_changed(self, mode: str) -> None:
         """Called when the mode panel changes mode."""
+        # Leaving a generator mode tears down the parameter widgets below, so
+        # remember the panel state on the active layer first — the same
+        # snapshot Generate and layer-switching write. Skipped while a
+        # snapshot restore is itself driving the mode change: the panel is
+        # then showing the *previous* layer's settings and flushing them would
+        # clobber the layer being restored.
+        if mode != self._current_mode and not self._restoring_snapshot:
+            self._flush_snapshot_if_changed()
         self._current_mode = mode
         is_image_mode = mode == "Image to Lines"
         is_color_sep = mode == "Color Separation"
@@ -283,7 +296,18 @@ class SettingsPanel(
         self._generator_type_group.setVisible(visible)
 
         if generators and not is_color_sep and not is_mask_paint and not is_shape_draw:
-            self._on_generator_type_changed(0)
+            # Entering a generator mode: bring back the active layer's saved
+            # settings for this mode instead of always resetting to the first
+            # generator with defaults. During a snapshot-driven restore the
+            # caller applies the snapshot itself once we return.
+            snapshot = (
+                None if self._restoring_snapshot
+                else self._active_layer_snapshot_for_mode(mode)
+            )
+            if snapshot is not None:
+                self._apply_settings_snapshot(snapshot)
+            else:
+                self._on_generator_type_changed(0)
         else:
             self.set_generator(None)
 
