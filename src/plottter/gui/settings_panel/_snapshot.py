@@ -972,7 +972,17 @@ class _SnapshotMixin:
             ):
                 self._apply_multilayer_run_settings(info)
             elif info.get("mode") in ("Math Art", "Image to Lines", "3D Scene"):
-                self._apply_settings_snapshot(info)
+                # Snapshots are also written passively — on layer switches and
+                # on leaving a generator mode — so an *empty* layer may carry a
+                # stamp from a mode it was merely visited in (every session
+                # starts in Math Art, so this is common). Following that mode
+                # would yank the user out of what they are doing, e.g. a
+                # re-separation that re-selects "Layer 1" bounced the panel to
+                # Math Art. Only layers with content follow their snapshot's
+                # mode; an empty layer's snapshot is applied just when it
+                # matches the current mode.
+                if new_layer.paths or info.get("mode") == self._current_mode:
+                    self._apply_settings_snapshot(info)
 
     def _on_generator_info_changed(self, layer_id: str) -> None:
         """Refresh offset param widgets when generator_info changes for the active layer.

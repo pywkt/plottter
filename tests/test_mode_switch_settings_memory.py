@@ -35,6 +35,7 @@ def harness(qapp, qtbot):
     qtbot.addWidget(sp)
     # MainWindow._on_mode_change_requested -> settings_panel.on_mode_changed
     sp.mode_change_requested.connect(sp.on_mode_changed)
+    sp.on_mode_changed("Math Art")  # MainWindow seeds the startup mode this way
     layers = controller.current_project.layers
     sp._on_active_layer_changed(layers[0].id)
     return sp, controller, layers
@@ -123,7 +124,9 @@ def test_layer_click_restore_does_not_write_outgoing_state_onto_new_layer(harnes
     That nested call must not flush the *previous* layer's panel state onto
     the newly selected layer."""
     sp, _ctrl, layers = harness
-    # L1: Image to Lines / Hatching. L2: Math Art snapshot.
+    # L1: Image to Lines / Hatching, with content so its mode is followed.
+    # L2: Math Art snapshot.
+    layers[0].paths = [[(0.0, 0.0), (10.0, 10.0)]]
     _pick_hatching(sp, 63.0)
     sp.flush_current_snapshot()
     sp._on_active_layer_changed(layers[1].id)
@@ -150,3 +153,94 @@ def test_mode_switch_with_unchanged_state_does_not_mark_modified(harness):
     sp.on_mode_changed("Mask Paint")
     sp.on_mode_changed("Image to Lines")
     assert not ctrl.modified
+
+
+# ----------------------------------------------------------------------
+# Passive stamps on empty layers must not hijack the mode on layer click
+# ----------------------------------------------------------------------
+
+
+def test_empty_layer_visited_stamp_does_not_switch_mode_on_click(harness):
+    """Layer 1 gets a Math Art stamp just by passing through the startup mode.
+    Clicking it later from Image to Lines must not bounce the panel."""
+    sp, _ctrl, layers = harness
+    assert sp._current_mode == "Math Art"
+    sp.on_mode_changed("Image to Lines")  # flush stamps L1 with Math Art
+    assert layers[0].generator_info["mode"] == "Math Art"
+    assert not layers[0].paths
+
+    _pick_hatching(sp, 63.0)
+    sp._on_active_layer_changed(layers[1].id)  # saves Image to Lines onto L1
+    # Model a layer last *visited* in Math Art and never generated: L2 is
+    # empty, so stamp it and click it from Image to Lines.
+    layers[1].generator_info = {"mode": "Math Art", "generator_name": "Spiral", "params": {}}
+    sp._on_active_layer_changed(layers[0].id)
+    sp._on_active_layer_changed(layers[1].id)
+    assert sp._current_mode == "Image to Lines"
+    assert sp._generator_type_combo.currentText() == "Hatching"
+
+
+def test_layer_with_content_still_follows_its_snapshot_mode(harness):
+    sp, _ctrl, layers = harness
+    math_gen = sp._generator_type_combo.itemText(1)  # any non-default Math Art generator
+    sp.on_mode_changed("Image to Lines")
+    sp._on_active_layer_changed(layers[1].id)
+    layers[0].paths = [[(0.0, 0.0), (10.0, 10.0)]]
+    layers[0].generator_info = {"mode": "Math Art", "generator_name": math_gen, "params": {}}
+    sp._on_active_layer_changed(layers[0].id)
+    assert sp._current_mode == "Math Art"
+    assert sp._generator_type_combo.currentText() == math_gen
+
+
+def test_empty_layer_same_mode_snapshot_is_still_applied(harness):
+    sp, _ctrl, layers = harness
+    sp.on_mode_changed("Image to Lines")
+    layers[1].generator_info = {
+        "mode": "Image to Lines", "generator_name": "Hatching", "params": {"angle_deg": 17.0},
+    }
+    sp._on_active_layer_changed(layers[1].id)
+    assert _shown(sp) == ("Hatching", 17.0)
+
+
+def test_second_separation_does_not_bounce_to_math_art(qapp, qtbot):
+    """End-to-end through MainWindow + LayerPanel: re-running a separation
+    while an old separated layer is active re-selects row 0 (Layer 1), whose
+    passive Math Art stamp used to flip the mode."""
+    from unittest.mock import patch
+
+    import numpy as np
+
+    from plottter.gui.main_window import MainWindow
+    from plottter.gui.project_controller import ProjectController
+
+    ctrl = ProjectController(_make_project(1))
+    win = MainWindow(ctrl)
+    qtbot.addWidget(win)
+    win.show()
+    sp, mp, lp = win._settings_panel, win._mode_panel, win._layer_panel
+
+    def switch(mode):
+        mp.set_mode(mode)
+        sp.on_mode_changed(mode)
+
+    def separate():
+        ramp = np.linspace(0, 255, 160, dtype=np.uint8)
+        sp._raw_image = np.repeat(ramp[None, :], 120, axis=0)[:, :, None].repeat(3, axis=2)
+        sp._color_sep_method_combo.setCurrentText("Luminance")
+        sp._color_sep_num_colors_spin.setValue(3)
+        before = list(sp._separated_layer_ids)
+        with patch("PyQt6.QtWidgets.QMessageBox.information"):
+            sp._on_separate()
+            qtbot.waitUntil(
+                lambda: sp._separated_layer_ids != before and len(sp._separated_layer_ids) == 3,
+                timeout=15000,
+            )
+        qtbot.wait(50)
+
+    switch("Color Separation")
+    separate()
+    lp._list.setCurrentRow(lp._list.count() - 1)  # click a separated layer
+    qtbot.wait(10)
+    separate()
+    assert mp.current_mode() == "Color Separation"
+    assert sp._current_mode == "Color Separation"
