@@ -14,6 +14,7 @@ Dockerfile
 docker-compose.yml
 docker-entrypoint.sh
 setup-mcp.sh
+.mcp.json
 screenshot.js
 screenshot-wrapper.sh
 IMPLEMENTATION_PLAN.md
