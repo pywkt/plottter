@@ -970,6 +970,20 @@ class TestModifiedFlagWithUndoRedo:
         controller.undo_stack.redo()
         assert controller.modified
 
+    def test_save_clears_modified_after_non_undoable_change(self, controller):
+        """set_layer_generator_info marks modified without pushing an undo
+        command; mark_saved must still clear the flag (the undo stack was
+        already clean, so cleanChanged never fires)."""
+        layer = controller.add_layer()
+        controller.mark_saved()
+        assert not controller.modified
+
+        controller.set_layer_generator_info(layer.id, {"mode": "Math Art"})
+        assert controller.modified
+
+        controller.mark_saved()
+        assert not controller.modified
+
 
 # ---------------------------------------------------------------------------
 # 15. Complex scenario: interleaved undo/redo across multiple action types

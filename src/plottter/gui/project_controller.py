@@ -93,8 +93,17 @@ class ProjectController(QObject):
         self.project_loaded.emit()
 
     def mark_saved(self) -> None:
-        """Mark the project as saved (marks undo stack clean position)."""
+        """Mark the project as saved.
+
+        Sets the undo stack's clean position *and* clears the modified flag
+        directly. The flag is normally driven by ``cleanChanged``, but that
+        signal does not fire when the stack was already clean — e.g. when the
+        only changes since the last save were non-undoable metadata writes
+        such as :meth:`set_layer_generator_info` — which left the title-bar
+        asterisk stuck on after a successful save.
+        """
         self._undo_stack.setClean()
+        self._set_modified(False)
 
     # ------------------------------------------------------------------
     # Raw (no-undo) internal methods — called by QUndoCommand subclasses

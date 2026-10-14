@@ -145,9 +145,7 @@ def test_mode_switch_with_unchanged_state_does_not_mark_modified(harness):
     sp, ctrl, _layers = harness
     _pick_hatching(sp, 63.0)
     sp.flush_current_snapshot()
-    # mark_saved() only clears the flag via QUndoStack.cleanChanged, which
-    # does not fire when nothing undoable was pushed — reset directly.
-    ctrl._set_modified(False)
+    ctrl.mark_saved()
     assert not ctrl.modified
     sp.on_mode_changed("Mask Paint")
     sp.on_mode_changed("Image to Lines")
