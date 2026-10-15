@@ -17,6 +17,13 @@ ragged edge.  This fill does what CNC pocketing and 3D-print slicers do:
    path instead of one path per row.
 
 Only broad regions reach step 2, which is where scanlines are efficient.
+
+3. **Chaining** — the rings and zigzag chains of one shape are stitched
+   into as few pen-down paths as possible.  A short straight connector
+   (a few spacings, inside the ink) is drawn directly.  A longer one would
+   be a visible chord cutting across the fill at an arbitrary angle, so
+   instead the pen walks along the innermost perimeter ring — every chain
+   end and ring vertex sits on it — retracing a line that is drawn anyway.
 """
 
 from __future__ import annotations
@@ -27,6 +34,10 @@ from plottter.models import Polyline
 
 #: Containment tolerance for connectors, as a fraction of the spacing.
 _CONTAIN_TOL = 0.05
+
+#: Straight connectors between pieces longer than this many spacings are not
+#: drawn as chords; the pen walks along the perimeter ring instead (or lifts).
+_MAX_CONNECT_SPACINGS = 3.0
 
 
 def fill_polygon_adaptive(
@@ -116,6 +127,11 @@ def _fill_one(poly, spacing: float, n_rings: int, angle_deg: float) -> list[Poly
             break
         rings.extend(_rings_of(shrunk))
         core = shrunk
+    # The innermost ring: zigzag chain ends and the last ring's vertices all
+    # lie on it, so long connectors can travel along it instead of across
+    # the fill.  With no rings the chain ends sit on the outer boundary,
+    # which we must not retrace (the user may have turned the outline off).
+    walk_boundary = core if (n_rings > 0 and not consumed) else None
     if not consumed:
         if n_rings > 0:
             # Drop core slivers no point of which is further than half a
@@ -127,16 +143,79 @@ def _fill_one(poly, spacing: float, n_rings: int, angle_deg: float) -> list[Poly
             core = MultiPolygon(keep) if keep else None
         if core is not None and not core.is_empty:
             chains = _zigzag_fill(core, poly, spacing, angle_deg)
-    return _chain_pieces(rings, chains, poly, spacing)
+    return _chain_pieces(rings, chains, poly, spacing, walk_boundary)
 
 
-def _chain_pieces(rings: list[Polyline], chains: list[Polyline], container, spacing: float) -> list[Polyline]:
+class _RingWalker:
+    """Connectors that follow a (Multi)Polygon's boundary rings.
+
+    ``path(a, b)`` returns the vertices of the shorter arc of whichever ring
+    both *a* and *b* lie on (within *tol*), or ``None`` if no single ring
+    carries both points.  The arc is drawn ink-on-ink over a ring that is
+    part of the fill anyway, so it never shows as a stray line.
+    """
+
+    def __init__(self, geom, tol: float) -> None:
+        from shapely.geometry import LineString
+
+        self._tol = tol
+        self._rings: list = []
+        for p in _polygons_of(geom):
+            for ring in (p.exterior, *p.interiors):
+                if len(ring.coords) >= 4:
+                    self._rings.append(LineString(ring.coords))
+
+    def path(self, a: tuple[float, float], b: tuple[float, float]) -> Polyline | None:
+        from shapely.geometry import Point
+        from shapely.ops import substring
+
+        pa, pb = Point(a), Point(b)
+        for ring in self._rings:
+            if ring.distance(pa) > self._tol or ring.distance(pb) > self._tol:
+                continue
+            length = ring.length
+            ma, mb = ring.project(pa), ring.project(pb)
+            forward = (mb - ma) % length
+            if forward <= length - forward:
+                # Walk in the ring's own direction from ma to mb.
+                if ma <= mb:
+                    parts = [substring(ring, ma, mb)]
+                else:
+                    parts = [substring(ring, ma, length), substring(ring, 0.0, mb)]
+            else:
+                # Walk against the ring's direction from ma back to mb.
+                if mb <= ma:
+                    parts = [substring(ring, ma, mb)]  # start > end: reversed
+                else:
+                    parts = [substring(ring, ma, 0.0), substring(ring, length, mb)]
+            out: Polyline = []
+            for part in parts:
+                if part.is_empty or part.geom_type != "LineString":
+                    continue
+                for c in part.coords:
+                    pt = (float(c[0]), float(c[1]))
+                    if not out or out[-1] != pt:
+                        out.append(pt)
+            return out
+        return None
+
+
+def _chain_pieces(
+    rings: list[Polyline],
+    chains: list[Polyline],
+    container,
+    spacing: float,
+    walk_boundary=None,
+) -> list[Polyline]:
     """Join a shape's rings and zigzag chains into as few paths as possible.
 
     Walks the pieces greedily from the current path's end: a closed ring is
     rotated to start at its vertex nearest that end, an open chain is
-    reversed if its far end is nearer.  The connector must lie inside the
-    shape, so joins only ever cross the ink, never a gap.
+    reversed if its far end is nearer.  A connector up to
+    ``_MAX_CONNECT_SPACINGS`` spacings long is drawn straight if it lies
+    inside the shape.  Anything longer would be a visible chord across the
+    fill, so it is routed along *walk_boundary* (the innermost ring) when
+    both ends sit on it; otherwise the path ends and a new one starts.
     """
     from shapely.geometry import LineString
     from shapely.prepared import prep
@@ -146,7 +225,10 @@ def _chain_pieces(rings: list[Polyline], chains: list[Polyline], container, spac
     pieces: list[tuple[bool, Polyline]] = [(True, r) for r in rings] + [(False, c) for c in chains]
     if len(pieces) <= 1:
         return [pl for _, pl in pieces]
-    inside = prep(container.buffer(_CONTAIN_TOL * spacing))
+    tol = _CONTAIN_TOL * spacing
+    inside = prep(container.buffer(tol))
+    max_connect = _MAX_CONNECT_SPACINGS * spacing
+    walker = _RingWalker(walk_boundary, tol) if walk_boundary is not None else None
     # Vertex arrays for the closed rings (nearest-vertex search is vectorised).
     ring_xy = {
         i: np.asarray(pl[:-1] if pl[0] == pl[-1] else pl, dtype=np.float64)
@@ -186,8 +268,14 @@ def _chain_pieces(rings: list[Polyline], chains: list[Polyline], container, spac
                 nxt = verts[k:] + verts[:k] + [verts[k]]
             else:
                 nxt = list(pl) if k == 0 else list(reversed(pl))
-            if inside.covers(LineString([(ex, ey), nxt[0]])):
+            connector: Polyline | None = None
+            if best_d <= max_connect and inside.covers(LineString([(ex, ey), nxt[0]])):
+                connector = []
+            elif walker is not None:
+                connector = walker.path((ex, ey), nxt[0])
+            if connector is not None:
                 remaining.remove(idx)
+                current.extend(connector)
                 current.extend(nxt)
                 joined = True
         if not joined:

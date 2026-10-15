@@ -256,3 +256,78 @@ def test_trace_outline_off_gives_bare_fill(gen):
     params = {p.name: p for p in gen.get_parameters()}
     assert params["fill_outline"].default is True
     assert all("fill_outline" in p.params for p in gen.get_presets() if p.params.get("mode") == "Line Art Trace")
+
+
+# ----------------------------------------------------------------------
+# Chaining connectors (regression: chord across the block)
+# ----------------------------------------------------------------------
+
+
+def _stray_chords(paths, poly, spacing, angle_deg, rings=1):
+    """Segments longer than 3 spacings that neither follow the fill direction
+    nor lie on the innermost perimeter ring — i.e. visible chords across the
+    fill.  Ring edges and ring walks are on the ring; zigzag rows and their
+    between-row connectors are within a few degrees of the fill angle."""
+    ring = poly.buffer(-rings * spacing).boundary
+    out = []
+    for p in paths:
+        for i in range(len(p) - 1):
+            (x0, y0), (x1, y1) = p[i], p[i + 1]
+            if math.dist(p[i], p[i + 1]) <= 3 * spacing:
+                continue
+            ang = math.degrees(math.atan2(y1 - y0, x1 - x0)) % 180.0
+            off = abs(ang - angle_deg % 180.0)
+            off = min(off, 180.0 - off)
+            on_ring = ring.distance(Point((x0 + x1) / 2, (y0 + y1) / 2)) < 0.1 * spacing
+            if off > 5.0 and not on_ring:
+                out.append((p[i], p[i + 1]))
+    return out
+
+
+_ARCH = [(0, 0), (10, 0), (10, 20), (30, 20), (30, 0), (40, 0), (40, 30), (0, 30), (0, 0)]
+_NOTCHED = [(0, 0), (40, 0), (40, 12), (32, 12), (32, 18), (40, 18), (40, 30), (0, 30),
+            (0, 18), (8, 18), (8, 12), (0, 12), (0, 0)]
+
+
+@pytest.mark.parametrize("shell", [_ARCH, _NOTCHED], ids=["arch", "double-notch"])
+def test_chaining_never_draws_a_chord_across_the_block(shell):
+    """The zigzag splits into several chains around a concavity.  Joining
+    them must not draw a straight line from one edge of the block to another
+    at an angle unrelated to the fill (the Block Fill 'random line' bug)."""
+    poly = Polygon(shell)
+    paths = fill_polygon_adaptive(shell, [], 0.4, perimeter_rings=1, angle_deg=45.0)
+    assert _all_inside(paths, poly)
+    assert _stray_chords(paths, poly, 0.4, 45.0) == []
+
+
+def test_long_connectors_walk_the_ring_and_keep_one_path():
+    """Routing the connector along the innermost ring keeps the pen down, so
+    the arch is still a single path — the chord is replaced, not just cut."""
+    poly = Polygon(_ARCH)
+    paths = fill_polygon_adaptive(_ARCH, [], 0.4, perimeter_rings=1, angle_deg=45.0)
+    assert len(paths) == 1
+    assert _stray_chords(paths, poly, 0.4, 45.0) == []
+
+
+def test_zero_rings_has_no_ring_to_walk_so_it_lifts_instead():
+    """Without a perimeter ring the chain ends sit on the outer boundary,
+    which must not be retraced (the outline may be switched off); a long
+    connector therefore ends the path rather than drawing a chord."""
+    poly = Polygon(_ARCH)
+    paths = fill_polygon_adaptive(_ARCH, [], 0.4, perimeter_rings=0, angle_deg=45.0)
+    assert _all_inside(paths, poly)
+    assert _stray_chords(paths, poly, 0.4, 45.0, rings=0) == []
+    assert len(paths) >= 2
+
+
+def test_ring_walker_takes_the_shorter_arc_in_either_direction():
+    from plottter.generators.contour._adaptive_fill import _RingWalker
+
+    square = Polygon(_rect(0, 0, 10, 10))
+    w = _RingWalker(square, 1e-6)
+    # Along the ring's direction: bottom edge -> right edge, via the corner.
+    assert w.path((2, 0), (10, 3)) == [(2.0, 0.0), (10.0, 0.0), (10.0, 3.0)]
+    # Against it, wrapping past the ring's start/end vertex (0, 0).
+    assert w.path((3, 0), (0, 2)) == [(3.0, 0.0), (0.0, 0.0), (0.0, 2.0)]
+    # Points not on a shared ring: no walk.
+    assert w.path((2, 0), (5, 5)) is None
