@@ -11,9 +11,10 @@ ragged edge.  This fill does what CNC pocketing and 3D-print slicers do:
    it, and every edge is crisp.
 2. **Zigzag core** — whatever area remains inside the last ring is filled
    with scanlines that are chained into continuous boustrophedon paths.
-   Consecutive rows are connected when their spans overlap and the short
-   connector stays inside the shape, so a broad area becomes one path
-   instead of one path per row.
+   Consecutive rows are connected whenever the straight connector between
+   them stays inside the shape — its length does not matter, since a
+   connector inside the ink is just more ink — so a broad area becomes one
+   path instead of one path per row.
 
 Only broad regions reach step 2, which is where scanlines are efficient.
 """
@@ -24,9 +25,8 @@ import math
 
 from plottter.models import Polyline
 
-#: Connectors between consecutive zigzag rows longer than this many spacings
-#: start a new path instead (keeps bridges short on shallow, jagged edges).
-_MAX_CONNECT_SPACINGS = 3.0
+#: Containment tolerance for connectors, as a fraction of the spacing.
+_CONTAIN_TOL = 0.05
 
 
 def fill_polygon_adaptive(
@@ -135,8 +135,8 @@ def _chain_pieces(rings: list[Polyline], chains: list[Polyline], container, spac
 
     Walks the pieces greedily from the current path's end: a closed ring is
     rotated to start at its vertex nearest that end, an open chain is
-    reversed if its far end is nearer.  The connector must be short and lie
-    inside the shape, so joins only ever cross the ink, never a gap.
+    reversed if its far end is nearer.  The connector must lie inside the
+    shape, so joins only ever cross the ink, never a gap.
     """
     from shapely.geometry import LineString
     from shapely.prepared import prep
@@ -146,8 +146,7 @@ def _chain_pieces(rings: list[Polyline], chains: list[Polyline], container, spac
     pieces: list[tuple[bool, Polyline]] = [(True, r) for r in rings] + [(False, c) for c in chains]
     if len(pieces) <= 1:
         return [pl for _, pl in pieces]
-    inside = prep(container.buffer(1e-6))
-    max_connect = _MAX_CONNECT_SPACINGS * spacing
+    inside = prep(container.buffer(_CONTAIN_TOL * spacing))
     # Vertex arrays for the closed rings (nearest-vertex search is vectorised).
     ring_xy = {
         i: np.asarray(pl[:-1] if pl[0] == pl[-1] else pl, dtype=np.float64)
@@ -179,7 +178,7 @@ def _chain_pieces(rings: list[Polyline], chains: list[Polyline], container, spac
             if d < best_d:
                 best, best_d = cand, d
         joined = False
-        if best is not None and best_d <= max_connect:
+        if best is not None:
             idx, k = best
             closed, pl = pieces[idx]
             if closed:
@@ -203,11 +202,13 @@ def _zigzag_fill(core, container, spacing: float, angle_deg: float) -> list[Poly
     """Scanline-fill *core* and chain consecutive rows into zigzag paths.
 
     A row's segment continues the path of a previous-row segment when the
-    connector from that path's end to the segment's nearer end is short and
-    lies inside *container* (the un-offset shape, so a connector may cross
-    the perimeter band but never leave the ink).  Spans need not overlap:
-    on a thin diagonal stroke consecutive rows shift sideways by more than
-    their own width, and the inside test is what stops bridging a gap.
+    connector from that path's end to the segment's nearer end lies inside
+    *container* (the un-offset shape, so a connector may cross the perimeter
+    band but never leave the ink).  Neither span overlap nor connector
+    length is required: on a thin diagonal stroke consecutive rows shift
+    sideways by more than their own width, and along an edge that runs
+    nearly parallel to the rows the next row's end can be far away.  The
+    inside test alone is what stops bridging a gap.
     """
     from shapely import affinity
     from shapely.geometry import LineString
@@ -222,11 +223,13 @@ def _zigzag_fill(core, container, spacing: float, angle_deg: float) -> list[Poly
         cont_r = affinity.rotate(container, -angle_deg, origin=(0.0, 0.0))
     else:
         core_r, cont_r = core, container
-    # Tiny tolerance so endpoints that sit exactly on the boundary count.
-    inside = prep(cont_r.buffer(1e-6))
+    # With no rings the row endpoints sit exactly on the boundary and the
+    # clip can leave them a hair outside; a tolerance of a few percent of the
+    # spacing keeps those connectors (a 25 µm excursion at 0.5 mm is nothing)
+    # without letting one cross a real gap.
+    inside = prep(cont_r.buffer(_CONTAIN_TOL * spacing))
 
     min_x, min_y, max_x, max_y = core_r.bounds
-    max_connect = _MAX_CONNECT_SPACINGS * spacing
 
     chains: list[Polyline] = []
     # Open chains from the previous row: (end_x, end_y, span_lo, span_hi, index)
@@ -269,7 +272,7 @@ def _zigzag_fill(core, container, spacing: float, angle_deg: float) -> list[Poly
                 d, start = (d_lo, "lo") if d_lo <= d_hi else (d_hi, "hi")
                 if d < best_d:
                     best, best_d = (k, start), d
-            if best is not None and best_d <= max_connect:
+            if best is not None:
                 k, start = best
                 ex, ey, _, _, idx = open_prev[k]
                 first, last = ((lo, y), (hi, y)) if start == "lo" else ((hi, y), (lo, y))

@@ -16,7 +16,6 @@ import pytest
 from shapely.geometry import LineString, Point, Polygon
 
 from plottter.generators.contour._adaptive_fill import (
-    _MAX_CONNECT_SPACINGS,
     _zigzag_fill,
     fill_polygon_adaptive,
 )
@@ -118,17 +117,14 @@ def test_angle_rotates_the_zigzag():
     assert len(xs) >= 38  # columns, not rows
 
 
-def test_connector_length_is_bounded():
-    paths = fill_polygon_adaptive(_rect(0, 0, 50, 30), [], 0.4, perimeter_rings=2)
-    limit = _MAX_CONNECT_SPACINGS * 0.4 + 1e-9
-    # Every jump between a ring/zigzag end and the next piece is short: no
-    # step in the chained path is longer than the longest scanline, and the
-    # only steps longer than one ring vertex spacing are rows/connectors.
-    for p in paths:
-        steps = [math.dist(p[i], p[i + 1]) for i in range(len(p) - 1)]
-        long_steps = [d for d in steps if d > 50.0 + 1e-6]
-        assert not long_steps
-    assert limit > 0
+def test_shallow_edge_rows_still_chain():
+    """An edge nearly parallel to the rows makes consecutive rows differ
+    wildly in length; the next row's nearest end is then far from the chain
+    end.  That connector runs inside the ink, so it must still be taken."""
+    slanted = [(0, 0), (140, 1.0), (140, 60), (0, 61), (0, 0)]
+    paths = fill_polygon_adaptive(slanted, [], 0.5, perimeter_rings=0)
+    assert len(paths) == 1
+    assert _all_inside(paths, Polygon(slanted))
 
 
 def test_degenerate_inputs():
@@ -233,3 +229,30 @@ def test_block_fill_preset_fills_light_and_dark_layers(gen):
         assert 2 <= len(paths) <= 6, (tone, len(paths))  # outline + ring/zigzag chain
         assert _ink_length(paths) > 2000  # the block is actually filled
     assert counts[226] == counts[78]
+
+
+def test_trace_outline_off_gives_bare_fill(gen):
+    """Perimeter Rings 0 alone still left an edge line: the traced outline is
+    added for every fill style.  fill_outline=False removes it."""
+    from plottter.models import Canvas
+    import cv2
+
+    canvas = Canvas.from_preset("A4")
+    img = np.full((120, 160), 255, np.uint8)
+    cv2.rectangle(img, (20, 20), (140, 100), 0, -1)
+    base = {
+        "mode": "Line Art Trace", "trace_threshold": 128, "smooth_iterations": 0,
+        "simplify_mm": 0.2, "min_contour_px": 5, "fill": "Solid (Adaptive)",
+        "fill_perimeter_rings": 0, "fill_spacing_mm": 0.5, "fill_angle": 0.0,
+        "_source_image": img, "image_fit_mode": "fill",
+    }
+    with_outline = gen.generate({**base, "fill_outline": True}, canvas)
+    bare = gen.generate({**base, "fill_outline": False}, canvas)
+    assert len(with_outline) == 2  # outline + one zigzag
+    assert len(bare) == 1
+    # The remaining path is the zigzag (many rows), not the closed outline.
+    assert bare[0][0] != bare[0][-1]
+    assert len({round(y, 3) for _, y in bare[0]}) > 20
+    params = {p.name: p for p in gen.get_parameters()}
+    assert params["fill_outline"].default is True
+    assert all("fill_outline" in p.params for p in gen.get_presets() if p.params.get("mode") == "Line Art Trace")

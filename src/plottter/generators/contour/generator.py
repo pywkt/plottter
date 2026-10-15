@@ -137,6 +137,7 @@ class ContourGenerator(Generator):
             fill_spacing_mm = float(params.get("fill_spacing_mm", 0.3))
             fill_angle = float(params.get("fill_angle", 45.0))
             fill_rings = int(params.get("fill_perimeter_rings", 2))
+            fill_outline = bool(params.get("fill_outline", True))
             adaptive_thresh = bool(params.get("adaptive_threshold", False))
             adaptive_c = float(params.get("adaptive_c", 5.0))
             trace_supersample = int(params.get("trace_supersample", 1))
@@ -188,10 +189,12 @@ class ContourGenerator(Generator):
                 # and its holes. Each region's holes are the boundaries of the
                 # bands nested inside it; without them, alternating bands in
                 # nested line-art would have no smooth outline and would be
-                # bounded only by ragged hatch/fill line-ends.
-                for outer, holes in contour_pairs:
-                    result.append(outer)
-                    result.extend(holes)
+                # bounded only by ragged hatch/fill line-ends.  Optional
+                # (fill_outline) so a block can be a bare zigzag.
+                if fill_outline:
+                    for outer, holes in contour_pairs:
+                        result.append(outer)
+                        result.extend(holes)
 
                 if progress_callback:
                     progress_callback(60)

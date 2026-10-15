@@ -399,6 +399,13 @@ def build_parameters() -> list[Parameter]:
             visible_when={"mode": ["Line Art Trace"], "fill": ["Solid (Adaptive)", "Hatching", "Cross-hatch"]},
             description="Angle of hatch / zigzag fill lines in degrees (0 = horizontal, 45 = diagonal, 90 = vertical)",
         ),
+        BoolParam(
+            name="fill_outline",
+            label="Trace Outline",
+            default=True,
+            visible_when={"mode": ["Line Art Trace"], "fill": ["Solid", "Solid (Adaptive)", "Hatching", "Cross-hatch", "Concentric"]},
+            description="Also draw each filled shape's boundary (and the boundaries of its holes). Turn off for a fill with no edge line, e.g. a pure zigzag block",
+        ),
         IntParam(
             name="fill_perimeter_rings",
             label="Perimeter Rings",
