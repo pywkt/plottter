@@ -412,6 +412,57 @@ def build_presets() -> list[Preset]:
             },
         ),
         Preset(
+            name="Block Fill (Zigzag)",
+            params={
+                "trace_supersample": 1,
+                # Uniform back-and-forth fill for solid blocks of colour —
+                # the Color Separation "Generate Lines" case.  Threshold 254
+                # treats every non-white pixel as ink, so a layer keeps its
+                # whole region whatever its tone (a pale yellow layer sits
+                # at ~226 and would be lost at the default 128).  One ring
+                # gives a crisp edge, then one 45° zigzag per block at
+                # 0.4 mm; the outline is traced alongside.  Min contour 20 px
+                # drops the specks a separation leaves behind on noisy scans.
+                "mode": "Line Art Trace",
+                "num_levels": 8,
+                "spacing": "linear",
+                "trace_threshold": 254,
+                "smooth_iterations": 1,
+                "cleanup_kernel": 0,
+                "adaptive_threshold": False,
+                "adaptive_c": 5.0,
+                "fmm_num_contours": 20,
+                "fmm_source_point": "Center",
+                "fmm_source_x_pct": 50.0,
+                "fmm_source_y_pct": 50.0,
+                "fmm_gamma": 1.0,
+                "fmm_speed_floor": 0.01,
+                "fmm_contour_spacing": "Linear",
+                "fmm_min_contour_length_mm": 2.0,
+                "fmm_line_spacing": "Uniform",
+                "fmm_min_spacing_mm": 0.5,
+                "fmm_max_spacing_mm": 5.0,
+                "fmm_group_size": 3,
+                "fmm_group_gap_mm": 4.0,
+                "fmm_group_intra_spacing_mm": 0.5,
+                "fmm_displacement_variation": 0.0,
+                "fill": "Solid (Adaptive)",
+                "fill_perimeter_rings": 1,
+                "fill_spacing_mm": 0.4,
+                "fill_angle": 45.0,
+                "simplify_mm": 0.2,
+                "min_contour_px": 20,
+                "invert": False,
+                "brightness": 0.0,
+                "contrast": 0.0,
+                "blur_radius": 0.0,
+                "smooth_curves": False,
+                "curve_tolerance_mm": 0.5,
+                "x_offset_mm": 0.0,
+                "y_offset_mm": 0.0,
+            },
+        ),
+        Preset(
             name="Line Art / Hatched Fill",
             params={
                 "trace_supersample": 1,

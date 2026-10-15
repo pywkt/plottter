@@ -205,3 +205,31 @@ def test_generator_adaptive_uses_far_fewer_paths_than_solid(gen):
     assert len(adaptive) < len(solid) / 5
     # Same ink coverage within ~15%.
     assert abs(_ink_length(adaptive) - _ink_length(solid)) / _ink_length(solid) < 0.15
+
+
+# ----------------------------------------------------------------------
+# "Block Fill (Zigzag)" preset — colour-separation blocks
+# ----------------------------------------------------------------------
+
+
+def test_block_fill_preset_fills_light_and_dark_layers(gen):
+    """A separated layer arrives as its own tone on white. The preset's
+    threshold of 254 must trace a pale layer (tone ~226) as well as a dark one."""
+    from plottter.models import Canvas
+
+    preset = {p.name: p for p in gen.get_presets()}["Block Fill (Zigzag)"]
+    assert preset.params["fill"] == "Solid (Adaptive)"
+    assert preset.params["trace_threshold"] == 254
+    assert preset.params["fill_perimeter_rings"] == 1
+    canvas = Canvas.from_preset("A4")
+    import cv2
+
+    counts = {}
+    for tone in (226, 78):
+        img = np.full((120, 160), 255, np.uint8)
+        cv2.rectangle(img, (20, 20), (140, 100), int(tone), -1)
+        paths = gen.generate({**preset.params, "_source_image": img, "image_fit_mode": "fill"}, canvas)
+        counts[tone] = len(paths)
+        assert 2 <= len(paths) <= 6, (tone, len(paths))  # outline + ring/zigzag chain
+        assert _ink_length(paths) > 2000  # the block is actually filled
+    assert counts[226] == counts[78]

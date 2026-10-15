@@ -282,6 +282,21 @@ Two things to know when a colour layer is not as clean as you expect:
 For K-Means, Luminance and Custom Palette the layer also keeps the image's own tones
 inside its mask, so a dark region inside a colour hatches densely.
 
+### Filling solid blocks of colour
+
+When a separated layer is a flat block (a sail, a shirt, a logo shape) rather than a
+tonal photo, pick **Contour Lines** as the line-art algorithm and the **Block Fill
+(Zigzag)** preset. It traces each block's outline, draws one ring just inside it for a
+crisp edge, and fills the rest with a single back-and-forth zigzag at 0.4 mm and 45°,
+so a block is a handful of long paths instead of hundreds of separate hatch lines.
+Open **Edit…** to change the spacing, the angle, or the number of perimeter rings
+(0 gives a pure zigzag). The preset uses a trace threshold of 254, so every non-white
+pixel on the layer counts as ink regardless of how light the colour is.
+
+The same fill is available in Image to Lines mode as the Contour generator's
+**Solid (Adaptive)** fill style and the **Line Art / Solid Fill (Adaptive)** preset,
+tuned for black line drawings.
+
 ### Tweaking a preset's parameters
 
 Click **Edit…** next to the Preset dropdown to open the full parameter list for the
