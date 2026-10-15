@@ -39,6 +39,10 @@ _CONTAIN_TOL = 0.05
 #: drawn as chords; the pen walks along the perimeter ring instead (or lifts).
 _MAX_CONNECT_SPACINGS = 3.0
 
+#: Longest connector routed along the innermost perimeter ring, in spacings.
+#: Retracing a ring further than this reads as a darker edge on paper.
+_MAX_WALK_SPACINGS = 10.0
+
 
 def fill_polygon_adaptive(
     polygon_pts: Polyline,
@@ -149,10 +153,12 @@ def _fill_one(poly, spacing: float, n_rings: int, angle_deg: float) -> list[Poly
 class _RingWalker:
     """Connectors that follow a (Multi)Polygon's boundary rings.
 
-    ``path(a, b)`` returns the vertices of the shorter arc of whichever ring
-    both *a* and *b* lie on (within *tol*), or ``None`` if no single ring
-    carries both points.  The arc is drawn ink-on-ink over a ring that is
-    part of the fill anyway, so it never shows as a stray line.
+    ``arc(a, b)`` gives the length of the shorter arc between *a* and *b*
+    along whichever ring carries both (within *tol*), and ``path(a, b)``
+    the vertices of that arc.  The arc is drawn ink-on-ink over a ring that
+    is part of the fill anyway, so it never shows as a stray line.
+    Projections are cached per point: the same chain ends are re-examined
+    on every greedy step.
     """
 
     def __init__(self, geom, tol: float) -> None:
@@ -160,44 +166,71 @@ class _RingWalker:
 
         self._tol = tol
         self._rings: list = []
+        self._cache: dict[tuple[float, float], tuple[int, float] | None] = {}
         for p in _polygons_of(geom):
             for ring in (p.exterior, *p.interiors):
                 if len(ring.coords) >= 4:
                     self._rings.append(LineString(ring.coords))
 
-    def path(self, a: tuple[float, float], b: tuple[float, float]) -> Polyline | None:
+    def _locate(self, pt: tuple[float, float]) -> tuple[int, float] | None:
+        """(ring index, measure along it) for a point on a ring, else None."""
+        if pt in self._cache:
+            return self._cache[pt]
         from shapely.geometry import Point
+
+        p = Point(pt)
+        found = None
+        for i, ring in enumerate(self._rings):
+            if ring.distance(p) <= self._tol:
+                found = (i, ring.project(p))
+                break
+        self._cache[pt] = found
+        return found
+
+    def arc(self, a: tuple[float, float], b: tuple[float, float]) -> float | None:
+        la, lb = self._locate(a), self._locate(b)
+        if la is None or lb is None or la[0] != lb[0]:
+            return None
+        length = self._rings[la[0]].length
+        forward = (lb[1] - la[1]) % length
+        return min(forward, length - forward)
+
+    def path(self, a: tuple[float, float], b: tuple[float, float]) -> Polyline | None:
         from shapely.ops import substring
 
-        pa, pb = Point(a), Point(b)
-        for ring in self._rings:
-            if ring.distance(pa) > self._tol or ring.distance(pb) > self._tol:
-                continue
-            length = ring.length
-            ma, mb = ring.project(pa), ring.project(pb)
-            forward = (mb - ma) % length
-            if forward <= length - forward:
-                # Walk in the ring's own direction from ma to mb.
-                if ma <= mb:
-                    parts = [substring(ring, ma, mb)]
-                else:
-                    parts = [substring(ring, ma, length), substring(ring, 0.0, mb)]
+        la, lb = self._locate(a), self._locate(b)
+        if la is None or lb is None or la[0] != lb[0]:
+            return None
+        ring = self._rings[la[0]]
+        length = ring.length
+        ma, mb = la[1], lb[1]
+        forward = (mb - ma) % length
+        if forward <= length - forward:
+            # Walk in the ring's own direction from ma to mb.
+            if ma <= mb:
+                parts = [substring(ring, ma, mb)]
             else:
-                # Walk against the ring's direction from ma back to mb.
-                if mb <= ma:
-                    parts = [substring(ring, ma, mb)]  # start > end: reversed
-                else:
-                    parts = [substring(ring, ma, 0.0), substring(ring, length, mb)]
-            out: Polyline = []
-            for part in parts:
-                if part.is_empty or part.geom_type != "LineString":
-                    continue
-                for c in part.coords:
-                    pt = (float(c[0]), float(c[1]))
-                    if not out or out[-1] != pt:
-                        out.append(pt)
-            return out
-        return None
+                parts = [substring(ring, ma, length), substring(ring, 0.0, mb)]
+        else:
+            # Walk against the ring's direction from ma back to mb.
+            if mb <= ma:
+                parts = [substring(ring, ma, mb)]  # start > end: reversed
+            else:
+                parts = [substring(ring, ma, 0.0), substring(ring, length, mb)]
+        return _coords_of(parts)
+
+
+def _coords_of(parts) -> Polyline:
+    """Concatenate LineString parts into one Polyline, dropping repeats."""
+    out: Polyline = []
+    for part in parts:
+        if part.is_empty or part.geom_type != "LineString":
+            continue
+        for c in part.coords:
+            pt = (float(c[0]), float(c[1]))
+            if not out or out[-1] != pt:
+                out.append(pt)
+    return out
 
 
 def _chain_pieces(
@@ -209,18 +242,21 @@ def _chain_pieces(
 ) -> list[Polyline]:
     """Join a shape's rings and zigzag chains into as few paths as possible.
 
-    Walks the pieces greedily from the current path's end: a closed ring is
-    rotated to start at its vertex nearest that end, an open chain is
-    reversed if its far end is nearer.  A connector up to
-    ``_MAX_CONNECT_SPACINGS`` spacings long is drawn straight if it lies
-    inside the shape.  Anything longer would be a visible chord across the
-    fill, so it is routed along *walk_boundary* (the innermost ring) when
-    both ends sit on it; otherwise the path ends and a new one starts.
-    """
-    from shapely.geometry import LineString
-    from shapely.prepared import prep
+    Greedy from the current path's end, by connector *cost*: a straight
+    connector of up to ``_MAX_CONNECT_SPACINGS`` spacings that lies inside
+    the shape costs its length; otherwise, if both ends sit on
+    *walk_boundary* (the innermost ring), the connector follows that ring
+    and costs the arc length, allowed up to ``_MAX_WALK_SPACINGS``.  A
+    longer straight line would be a visible chord across the fill, and a
+    longer walk retraces the ring far enough to read as a darker edge, so
+    neither is drawn: the path ends and a new one starts.
 
-    import numpy as np
+    A closed ring is entered at the point nearest the current end (the ring
+    is cut there), an open chain at whichever end costs less.
+    """
+    from shapely.geometry import LineString, Point
+    from shapely.ops import substring
+    from shapely.prepared import prep
 
     pieces: list[tuple[bool, Polyline]] = [(True, r) for r in rings] + [(False, c) for c in chains]
     if len(pieces) <= 1:
@@ -228,12 +264,21 @@ def _chain_pieces(
     tol = _CONTAIN_TOL * spacing
     inside = prep(container.buffer(tol))
     max_connect = _MAX_CONNECT_SPACINGS * spacing
+    max_walk = _MAX_WALK_SPACINGS * spacing
     walker = _RingWalker(walk_boundary, tol) if walk_boundary is not None else None
-    # Vertex arrays for the closed rings (nearest-vertex search is vectorised).
-    ring_xy = {
-        i: np.asarray(pl[:-1] if pl[0] == pl[-1] else pl, dtype=np.float64)
-        for i, (closed, pl) in enumerate(pieces) if closed
-    }
+    ring_ls = {i: LineString(pl) for i, (closed, pl) in enumerate(pieces) if closed}
+
+    def connector_cost(end: tuple[float, float], pt: tuple[float, float]) -> tuple[float, bool] | None:
+        """(cost, walk?) for joining *end* to *pt*, or None if not allowed."""
+        d = math.dist(end, pt)
+        if d <= max_connect and (d < 1e-9 or inside.covers(LineString([end, pt]))):
+            return d, False
+        if walker is not None:
+            arc = walker.arc(end, pt)
+            if arc is not None and arc <= max_walk:
+                return arc, True
+        return None
+
     remaining = list(range(len(pieces)))
     out: list[Polyline] = []
     current: Polyline = []
@@ -242,45 +287,37 @@ def _chain_pieces(
             closed, pl = pieces[remaining.pop(0)]
             current = list(pl)
             continue
-        ex, ey = current[-1]
+        end = current[-1]
         best = None
-        best_d = math.inf
+        best_cost = math.inf
         for idx in remaining:
             closed, pl = pieces[idx]
             if closed:
-                xy = ring_xy[idx]
-                d2 = (xy[:, 0] - ex) ** 2 + (xy[:, 1] - ey) ** 2
-                k = int(np.argmin(d2))
-                d = math.sqrt(float(d2[k]))
-                cand = (idx, k)
+                ls = ring_ls[idx]
+                m = ls.project(Point(end))
+                e = ls.interpolate(m)
+                cands = [((float(e.x), float(e.y)), m)]
             else:
-                d0 = math.hypot(pl[0][0] - ex, pl[0][1] - ey)
-                d1 = math.hypot(pl[-1][0] - ex, pl[-1][1] - ey)
-                d, cand = (d0, (idx, 0)) if d0 <= d1 else (d1, (idx, -1))
-            if d < best_d:
-                best, best_d = cand, d
-        joined = False
-        if best is not None:
-            idx, k = best
-            closed, pl = pieces[idx]
-            if closed:
-                verts = pl[:-1] if pl[0] == pl[-1] else pl
-                nxt = verts[k:] + verts[:k] + [verts[k]]
-            else:
-                nxt = list(pl) if k == 0 else list(reversed(pl))
-            connector: Polyline | None = None
-            if best_d <= max_connect and inside.covers(LineString([(ex, ey), nxt[0]])):
-                connector = []
-            elif walker is not None:
-                connector = walker.path((ex, ey), nxt[0])
-            if connector is not None:
-                remaining.remove(idx)
-                current.extend(connector)
-                current.extend(nxt)
-                joined = True
-        if not joined:
+                cands = [(pl[0], None), (pl[-1], None)]
+            for pt, measure in cands:
+                cc = connector_cost(end, pt)
+                if cc is not None and cc[0] < best_cost:
+                    best, best_cost = (idx, pt, measure, cc[1]), cc[0]
+        if best is None:
             out.append(current)
             current = []
+            continue
+        idx, pt, measure, walk = best
+        closed, pl = pieces[idx]
+        if closed:
+            ls = ring_ls[idx]
+            nxt = _coords_of([substring(ls, measure, ls.length), substring(ls, 0.0, measure)])
+        else:
+            nxt = list(pl) if pt == pl[0] else list(reversed(pl))
+        remaining.remove(idx)
+        if walk:
+            current.extend(walker.path(end, pt) or [])
+        current.extend(nxt)
     if current:
         out.append(current)
     return out

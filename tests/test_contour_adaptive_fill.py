@@ -268,7 +268,10 @@ def _stray_chords(paths, poly, spacing, angle_deg, rings=1):
     nor lie on the innermost perimeter ring — i.e. visible chords across the
     fill.  Ring edges and ring walks are on the ring; zigzag rows and their
     between-row connectors are within a few degrees of the fill angle."""
-    ring = poly.buffer(-rings * spacing).boundary
+    from shapely.ops import unary_union
+
+    ring = unary_union([poly.buffer(-k * spacing).boundary for k in range(1, rings + 1)]) \
+        if rings > 0 else poly.boundary
     out = []
     for p in paths:
         for i in range(len(p) - 1):
@@ -300,13 +303,73 @@ def test_chaining_never_draws_a_chord_across_the_block(shell):
     assert _stray_chords(paths, poly, 0.4, 45.0) == []
 
 
-def test_long_connectors_walk_the_ring_and_keep_one_path():
-    """Routing the connector along the innermost ring keeps the pen down, so
-    the arch is still a single path — the chord is replaced, not just cut."""
+def _slot_block(depth):
+    """20 x 10 block with a 1 mm slot of *depth* cut down from the top edge."""
+    return Polygon([(0, 0), (20, 0), (20, 10), (10.5, 10), (10.5, 10 - depth),
+                    (9.5, 10 - depth), (9.5, 10), (0, 10), (0, 0)])
+
+
+def test_short_ring_walk_joins_chains_across_a_slot():
+    """Two chains end on either wall of a slot.  The straight connector
+    would cross the slot (outside the ink), so the pen walks round the slot
+    bottom along the ring instead: 3 mm here, under the cap, so one path
+    that visits the slot bottom."""
+    from plottter.generators.contour._adaptive_fill import _chain_pieces
+
+    poly = _slot_block(2.0)
+    a = [(2, 9), (2, 2), (9.5, 2), (9.5, 9)]
+    b = [(10.5, 9), (10.5, 2), (18, 2), (18, 9)]
+    paths = _chain_pieces([], [a, b], poly, 0.4, poly)
+    assert len(paths) == 1
+    assert (9.5, 8.0) in paths[0] and (10.5, 8.0) in paths[0]
+    assert _all_inside(paths, poly)
+
+
+def test_ring_walk_over_the_cap_lifts_instead():
+    """Same slot but 6 mm deep: the walk round it is 13 mm, over the cap,
+    so the chains stay separate rather than retracing the ring that far."""
+    from plottter.generators.contour._adaptive_fill import _chain_pieces
+
+    poly = _slot_block(6.0)
+    a = [(2, 9), (2, 2), (9.5, 2), (9.5, 9)]
+    b = [(10.5, 9), (10.5, 2), (18, 2), (18, 9)]
+    paths = _chain_pieces([], [a, b], poly, 0.4, poly)
+    assert len(paths) == 2
+
+
+def test_ring_walks_are_capped_so_the_ring_is_not_retraced_far(monkeypatch):
+    """On the arch the arms' chains end tens of mm apart along the ring.
+    Walking that far would draw the ring twice over a long stretch, which
+    reads as a darker edge line; the path must lift instead."""
+    import plottter.generators.contour._adaptive_fill as af
+
+    walks: list[float] = []
+    orig = af._RingWalker.path
+
+    def logged(self, a, b):
+        r = orig(self, a, b)
+        if r and len(r) > 1:
+            walks.append(LineString(r).length)
+        return r
+
+    monkeypatch.setattr(af._RingWalker, "path", logged)
     poly = Polygon(_ARCH)
     paths = fill_polygon_adaptive(_ARCH, [], 0.4, perimeter_rings=1, angle_deg=45.0)
-    assert len(paths) == 1
+    assert _all_inside(paths, poly)
     assert _stray_chords(paths, poly, 0.4, 45.0) == []
+    assert len(paths) >= 2
+    assert all(w <= af._MAX_WALK_SPACINGS * 0.4 + 1e-6 for w in walks)
+
+
+def test_ring_is_entered_at_the_nearest_point_not_vertex():
+    """An outer ring's only vertices are its corners; the chain end it is
+    joined to lies mid-edge.  Cutting the ring at the projection keeps the
+    connector one spacing long, so two rings + zigzag still chain into
+    one path on a long rectangle."""
+    rect = _rect(0, 0, 80, 20)
+    paths = fill_polygon_adaptive(rect, [], 0.4, perimeter_rings=2, angle_deg=0.0)
+    assert len(paths) == 1
+    assert _stray_chords(paths, Polygon(rect), 0.4, 0.0, rings=2) == []
 
 
 def test_zero_rings_has_no_ring_to_walk_so_it_lifts_instead():
