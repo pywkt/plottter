@@ -606,6 +606,7 @@ def build_presets() -> list[Preset]:
                 "fmm_displacement_variation": 0.0,
                 "fill": "None",
                 "fill_outline": True,
+                "fill_perimeter_rings": 2,
                 "fill_spacing_mm": 0.3,
                 "fill_angle": 45.0,
                 "simplify_mm": 0.3,
